@@ -1,6 +1,6 @@
 [package]
 name = "beamfs-bench"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Aurelien DESBRIERES <aurelien@hackers.camp>"]
 license = "GPL-2.0-only"
@@ -13,6 +13,17 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 anyhow = "1.0"
+# dialoguer: secure interactive prompts. We use it for the device validation
+# table confirmation. Default-N on the [y/N] prompt is critical: if the user
+# accidentally hits Enter, we ABORT instead of formatting the wrong USB stick.
+# Per recadrage R12: "ne jamais faire confiance aux noms /dev/sdX (rebondissent),
+# toujours passer par by-id ou UUID. Si doute : poser la question, ne pas exécuter."
+dialoguer = { version = "0.11", default-features = false }
+# roxmltree: zero-copy XML parser, used to parse `virsh dumpxml <vm>` output
+# and extract the <source dev="..."/> for each virtio-blk target. This is the
+# ONLY source of truth for the by-id mapping vd[c-g] -> physical USB stick,
+# because virtio masks the SCSI/USB serial inside the guest.
+roxmltree = "0.20"
 
 [profile.release]
 opt-level = 3

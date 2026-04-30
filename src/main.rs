@@ -3,22 +3,45 @@
 //! Replaces the legacy bash harness (Tir-*.sh, ~1176 lines) with a single
 //! Rust binary exposing one subcommand per test scope.
 //!
-//! Naming policy (anti-NAK kernel.org): all output prefixed `beamfs-bench:`,
-//! lowercase. Macro identifiers in C (`BEAMFS_*`) keep uppercase per kernel
-//! coding style and are not affected by this tool.
+//! ## Subcommands (in this 0.2.0 release)
 //!
-//! Status:
-//!   - 0.1.0 skeleton: subcommand surface declared.
-//!   - 0.2.0 multifs:  port of Tir-multifs.sh, output byte-identical for diff.
-//!   - 0.3.x analyse:  forensic wrapper (next).
-//!   - 0.4.x bench:    cluster perf bench (later).
-//!   - 0.5.x metadata/crash/bitrot/fsck: new test scopes.
+//! - `version`  : print version + build info
+//! - `multifs`  : multi-FS head-to-head bench (5 FS x 3 probs by default)
+//!                with mandatory device validation prompt before mkfs.
+//! - `analyse`  : multifs + forensic capture (3 scopes: quick/standard/full).
+//!                Full scope = ftrace + perf + cluster-wide attack on the
+//!                4 nodes (master + 3 computes).
+//! - `bench`    : NOT YET IMPLEMENTED (port of Tir.sh / hpc-benchmark-beamfs.sh)
+//! - `metadata` : NOT YET IMPLEMENTED (Test A: superblock/inode/journal attack)
+//! - `crash`    : NOT YET IMPLEMENTED (Test B: virsh destroy mid-write)
+//! - `bitrot`   : NOT YET IMPLEMENTED (Test C: dd random on offline partition)
+//! - `fsck`     : NOT YET IMPLEMENTED (Test D: e2fsck recovery post-FS_PANIC)
+//!
+//! ## Safety model (anti-NAK / R12 / R13 of context-recadrage)
+//!
+//! Before any mkfs/dd/destructive action, beamfs-bench runs a device
+//! validation pipeline:
+//!
+//!   1. `virsh dumpxml <vm>` on the host (no sudo if user is in libvirt group).
+//!   2. Parse XML, extract <source dev="..."/> for each virtio-blk target.
+//!   3. Resolve symlinks to get the kernel device + size.
+//!   4. Render a validation table with by-id paths.
+//!   5. Prompt [y/N] (default = N = abort), unless --auto-confirm.
+//!   6. Persist the validated mapping in <run_dir>/devices-validated.txt.
+//!
+//! For analyse --scope=full, beamfs-bench also discovers the cluster
+//! topology via `discover_cluster` worker action and renders a per-node
+//! state table BEFORE any cluster-wide destructive action.
 //!
 //! Author: Aurelien DESBRIERES <aurelien@hackers.camp>
 //! License: GPL-2.0-only
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
+mod analyse;
+mod cluster;
+mod devices;
+mod forensics;
 mod multifs;
 mod ssh;
 mod synthesis;
@@ -45,15 +68,38 @@ enum Command {
     Version,
 
     /// Multi-FS head-to-head bench under RadFI live injection.
-    /// Targets 5 FS x 3 probabilities. Output byte-identical to legacy
-    /// Tir-multifs.sh for diff-based parity verification against the
-    /// reference run Tir-multifs-20260430-141008.
-    Multifs,
+    /// Targets 5 FS x 3 probabilities by default.
+    /// REQUIRES: device validation prompt (or --auto-confirm).
+    Multifs {
+        /// Skip the [y/N] prompt and proceed (use only in CI / scripted runs).
+        #[arg(long)]
+        auto_confirm: bool,
 
-    /// Forensic wrapper around `multifs`: dmesg + ftrace + perf capture
-    /// per attack run, with tarball archive.
-    /// (Port of legacy Tir-analyse-multifs.sh.)
-    Analyse,
+        /// Render the device validation table and EXIT WITHOUT prompting.
+        /// Useful to verify the mapping before a real run.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// multifs + forensic capture (dmesg + RadFI + ftrace + perf + cluster).
+    /// Three scopes available (--scope=quick|standard|full).
+    Analyse {
+        /// Forensic scope. Default = standard.
+        #[arg(long, value_enum, default_value_t = ScopeArg::Standard)]
+        scope: ScopeArg,
+
+        /// Skip the device validation prompt.
+        #[arg(long)]
+        auto_confirm: bool,
+
+        /// Render the validation table and EXIT WITHOUT prompting.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip the final tar.gz archive generation.
+        #[arg(long)]
+        no_tarball: bool,
+    },
 
     /// Cluster I/O performance baseline (M1-M5 metrics, multi-node).
     /// (Port of legacy Tir.sh / hpc-benchmark-beamfs.sh.)
@@ -67,7 +113,7 @@ enum Command {
     /// New scope, not in legacy harness.
     Crash,
 
-    /// Test C — bit-rot offline (dd random on partition not mounted, then read).
+    /// Test C — bit-rot offline (dd random on offline partition, then read).
     /// New scope, not in legacy harness.
     Bitrot,
 
@@ -76,10 +122,30 @@ enum Command {
     Fsck,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ScopeArg {
+    /// 1 prob (saturation only), no ftrace, no perf, master only forensics.
+    Quick,
+    /// Default probs, no ftrace, no perf, all 4 nodes dmesg/radfi forensics.
+    Standard,
+    /// Default probs, ftrace + perf + cluster_setup/attack/verify on 4 nodes.
+    Full,
+}
+
+impl ScopeArg {
+    fn to_scope(self) -> forensics::Scope {
+        match self {
+            ScopeArg::Quick => forensics::Scope::Quick,
+            ScopeArg::Standard => forensics::Scope::Standard,
+            ScopeArg::Full => forensics::Scope::Full,
+        }
+    }
+}
+
 fn cmd_version() -> i32 {
     println!("beamfs-bench {}", BEAMFS_BENCH_VERSION);
     println!("license GPL-2.0-only");
-    println!("status: multifs implemented; analyse/bench/metadata/crash/bitrot/fsck pending");
+    println!("status: multifs + analyse implemented; bench/metadata/crash/bitrot/fsck pending");
     0
 }
 
@@ -92,20 +158,40 @@ fn cmd_not_yet_implemented(name: &str) -> i32 {
 fn main() {
     let cli = Cli::parse();
     let rc = match cli.command {
-        Command::Version  => cmd_version(),
-        Command::Multifs  => match multifs::run() {
-            Ok(rc) => rc,
-            Err(e) => {
-                eprintln!("beamfs-bench: multifs failed: {e:#}");
-                1
+        Command::Version => cmd_version(),
+
+        Command::Multifs { auto_confirm, dry_run } => {
+            match multifs::run(auto_confirm, dry_run) {
+                Ok(rc) => rc,
+                Err(e) => {
+                    eprintln!("beamfs-bench: multifs failed: {e:#}");
+                    1
+                }
             }
-        },
-        Command::Analyse  => cmd_not_yet_implemented("analyse"),
-        Command::Bench    => cmd_not_yet_implemented("bench"),
+        }
+
+        Command::Analyse { scope, auto_confirm, dry_run, no_tarball } => {
+            let cfg = analyse::AnalyseConfig {
+                scope: scope.to_scope(),
+                auto_confirm,
+                dry_run,
+                make_tarball: !no_tarball,
+                vm_name: multifs::DEFAULT_VM_NAME.to_string(),
+            };
+            match analyse::run(&cfg) {
+                Ok(rc) => rc,
+                Err(e) => {
+                    eprintln!("beamfs-bench: analyse failed: {e:#}");
+                    1
+                }
+            }
+        }
+
+        Command::Bench => cmd_not_yet_implemented("bench"),
         Command::Metadata => cmd_not_yet_implemented("metadata"),
-        Command::Crash    => cmd_not_yet_implemented("crash"),
-        Command::Bitrot   => cmd_not_yet_implemented("bitrot"),
-        Command::Fsck     => cmd_not_yet_implemented("fsck"),
+        Command::Crash => cmd_not_yet_implemented("crash"),
+        Command::Bitrot => cmd_not_yet_implemented("bitrot"),
+        Command::Fsck => cmd_not_yet_implemented("fsck"),
     };
     std::process::exit(rc);
 }

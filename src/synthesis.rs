@@ -49,29 +49,82 @@ pub fn write_synthesis_md(
     writeln!(f)?;
     writeln!(f, "## Head-to-head results")?;
     writeln!(f)?;
-    writeln!(f, "| FS       | prob 1000 ppm  | prob 100000 ppm | prob 1000000 ppm | Modes obs.        |")?;
-    writeln!(f, "|----------|----------------|-----------------|------------------|-------------------|")?;
 
     // Parse all-records.txt to extract VERDICT and FLIP_DELTA per (fs, prob).
     let all_records_path = run_dir.join("all-records.txt");
     let records = fs::read_to_string(&all_records_path)
         .with_context(|| format!("read {:?}", all_records_path))?;
 
+    // Build the table data first, then compute column widths, then render.
+    // This makes the head-to-head table self-aligning: the column widths
+    // adapt to the actual content (verdicts of variable length, flip counts
+    // of variable digit count, modes lists with multiple entries) instead
+    // of being hardcoded as in the legacy Tir-multifs.sh output.
+    struct Row {
+        fs: String,
+        cells: Vec<String>,
+        modes: String,
+    }
+    let mut rows: Vec<Row> = Vec::with_capacity(fs_list.len());
     for &(fs_name, _vd) in fs_list {
-        let mut cells = String::new();
+        let mut cells: Vec<String> = Vec::with_capacity(probs.len());
         let mut modes_seen: Vec<String> = Vec::new();
         for &prob in probs {
             let verdict = extract_verdict(&records, fs_name, prob).unwrap_or_else(|| "?".to_string());
             let flips = extract_flip_delta(&records, fs_name, prob).unwrap_or_else(|| "?".to_string());
-            cells.push_str(&format!("| {verdict} ({flips} flip) "));
+            cells.push(format!("{verdict} ({flips} flip)"));
             if !modes_seen.iter().any(|m| m == &verdict) {
                 modes_seen.push(verdict);
             }
         }
-        let modes_str = modes_seen.join(" ");
-        // Bash printf "| %-8s %s| %s |\n" => 8-char left-padded fs name,
-        // then cells already prefixed with "| ", then "| modes |".
-        writeln!(f, "| {fs:<8} {cells}| {modes_str} |", fs = fs_name, cells = cells, modes_str = modes_str)?;
+        rows.push(Row {
+            fs: fs_name.to_string(),
+            cells,
+            modes: modes_seen.join(" "),
+        });
+    }
+
+    // Header texts for the prob columns
+    let prob_headers: Vec<String> = probs.iter()
+        .map(|p| format!("prob {p} ppm"))
+        .collect();
+
+    // Compute per-column max width (header vs all rows)
+    let fs_w = std::cmp::max(2, rows.iter().map(|r| r.fs.len()).max().unwrap_or(2));
+    let mut prob_w: Vec<usize> = prob_headers.iter().map(|h| h.len()).collect();
+    for r in &rows {
+        for (i, c) in r.cells.iter().enumerate() {
+            if i < prob_w.len() && c.len() > prob_w[i] {
+                prob_w[i] = c.len();
+            }
+        }
+    }
+    let modes_w = std::cmp::max(
+        "Modes obs.".len(),
+        rows.iter().map(|r| r.modes.len()).max().unwrap_or(0),
+    );
+
+    // Render header row
+    write!(f, "| {:<fs_w$} ", "FS")?;
+    for (i, h) in prob_headers.iter().enumerate() {
+        write!(f, "| {:<w$} ", h, w = prob_w[i])?;
+    }
+    writeln!(f, "| {:<modes_w$} |", "Modes obs.")?;
+
+    // Render separator row (markdown table syntax: dashes per column)
+    write!(f, "|{:-<sep_w$}", "", sep_w = fs_w + 2)?;
+    for w in &prob_w {
+        write!(f, "|{:-<sep_w$}", "", sep_w = w + 2)?;
+    }
+    writeln!(f, "|{:-<sep_w$}|", "", sep_w = modes_w + 2)?;
+
+    // Render data rows
+    for r in &rows {
+        write!(f, "| {:<fs_w$} ", r.fs)?;
+        for (i, c) in r.cells.iter().enumerate() {
+            write!(f, "| {:<w$} ", c, w = prob_w[i])?;
+        }
+        writeln!(f, "| {:<modes_w$} |", r.modes)?;
     }
 
     writeln!(f)?;

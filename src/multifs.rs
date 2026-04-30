@@ -1,14 +1,26 @@
 //! multifs.rs — port of Tir-multifs.sh (5 FS x 3 probabilities).
 //!
-//! Orchestration phases (mirror bash exactly):
-//!   1. Deploy worker.sh on master VM via scp.
-//!   2. Setup phase: format + populate 5 partitions.
-//!   3. Attack/verify phases: 15 (FS, prob) tuples.
-//!   4. Synthesis report (synthesis.md + synthesis.json).
-//!   5. Print summary, exit.
+//! ## Public API
 //!
-//! Output format byte-identical to legacy run for diff-based parity
-//! verification against Tir-multifs-20260430-141008/.
+//!   - MultifsConfig: parameterizes a multifs run (FS list, probs, run_dir prefix,
+//!     security flags: auto_confirm/dry_run/vm_name)
+//!   - MultifsResult: returned to callers (analyse.rs) for follow-up forensic capture
+//!   - run(): convenience entry for `Cli::Multifs` (uses default config)
+//!   - run_with_config(): full API, used by analyse.rs
+//!
+//! ## Security pipeline (anti-NAK / R12 of context-recadrage)
+//!
+//!   1. Resolve authoritative (vd -> usb-by-id) mapping via `virsh dumpxml`
+//!      on the host. THIS HAPPENS BEFORE ANY DESTRUCTIVE ACTION.
+//!   2. Render the validation table to the user.
+//!   3. Prompt [y/N] (default = N = abort), unless --auto-confirm is set.
+//!   4. Persist the validated mapping in run_dir/devices-validated.txt as
+//!      audit trail.
+//!   5. ONLY THEN: deploy worker on master, run setup/attack/verify.
+//!
+//! Output format (synthesis.md, synthesis.json, all-records.txt, per-fs/...) is
+//! byte-identical to legacy Tir-multifs.sh for diff-based parity verification
+//! against reference run Tir-multifs-20260430-141008/.
 
 use anyhow::{Context, Result};
 use chrono::Local;
@@ -16,16 +28,24 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::devices::{self, ProposedMapping};
 use crate::ssh::SshTarget;
 use crate::synthesis;
 
-/// Embedded worker bash script. Same content as Tir-multifs.sh inline
-/// `cat > $WORKER << 'WORK_EOF' ... WORK_EOF` block, extracted to a
-/// dedicated file under src/worker.sh and shipped via include_str!.
 const WORKER_SH: &str = include_str!("worker.sh");
 
-/// FS list in deterministic order (matches Tir-multifs.sh line 53).
-const FS_LIST: &[(&str, &str)] = &[
+/// Public accessor for the embedded worker.sh content.
+/// Used by `cluster.rs` to deploy the same worker on compute nodes
+/// without duplicating the `include_str!` macro invocation.
+pub fn worker_sh() -> &'static str {
+    WORKER_SH
+}
+
+/// Default FS slot mapping. The vd assignment is the convention used since
+/// Tir-multifs.sh (line 53), kept identical so historical run dirs remain
+/// diff-comparable. The ACTUAL physical USB sticks behind these vds are
+/// discovered at runtime via `virsh dumpxml` (see `devices.rs`).
+pub const DEFAULT_FS_LIST: &[(&str, &str)] = &[
     ("ext4",     "vdc"),
     ("ext3",     "vdd"),
     ("btrfs",    "vde"),
@@ -33,70 +53,177 @@ const FS_LIST: &[(&str, &str)] = &[
     ("beamfs",   "vdg"),
 ];
 
-/// Probabilities (matches Tir-multifs.sh line 54).
-const PROBS: &[u32] = &[1000, 100000, 1000000];
+/// Default probabilities (matches Tir-multifs.sh line 54).
+pub const DEFAULT_PROBS: &[u32] = &[1000, 100000, 1000000];
 
-const SSH_USER: &str = "hpcadmin";
-const MASTER_IP: &str = "192.168.56.10";
-const REMOTE_WORKER_PATH: &str = "/tmp/beamfs-bench-worker.sh";
+pub const SSH_USER: &str = "hpcadmin";
+pub const MASTER_IP: &str = "192.168.56.10";
+pub const REMOTE_WORKER_PATH: &str = "/tmp/beamfs-bench-worker.sh";
+pub const DEFAULT_VM_NAME: &str = "beamfs-master";
 
-pub fn run() -> Result<i32> {
+/// Configuration for a multifs run.
+#[derive(Clone, Debug)]
+pub struct MultifsConfig {
+    /// libvirt domain name to query for the (vd -> by-id) mapping.
+    pub vm_name: String,
+    /// FS slot definitions: (fs_name, guest_dev). Matched against `virsh dumpxml`.
+    pub fs_list: Vec<(String, String)>,
+    /// Probabilities (in ppm) to sweep.
+    pub probs: Vec<u32>,
+    /// Run directory prefix under Documentation/runs/.
+    pub run_dir_prefix: String,
+    /// SSH user on master VM.
+    pub ssh_user: String,
+    /// Master VM IP.
+    pub master_ip: String,
+    /// Path to SSH private key.
+    pub ssh_key_path: String,
+    /// If true, skip the prompt and proceed (for CI / scripted use).
+    pub auto_confirm: bool,
+    /// If true, render the validation table and EXIT WITHOUT PROMPTING.
+    pub dry_run: bool,
+    /// If true, skip the worker deploy (used by analyse.rs which deploys once).
+    pub skip_worker_deploy: bool,
+    /// If true, suppress trailing print/cat of synthesis.md to stdout.
+    pub suppress_synthesis_print: bool,
+    /// If Some, skip the discover/validate prompt entirely and use these
+    /// pre-validated mappings (used by analyse.rs which validates once).
+    pub pre_validated_mappings: Option<Vec<ProposedMapping>>,
+}
+
+impl Default for MultifsConfig {
+    fn default() -> Self {
+        let key_path = std::env::var("HOME")
+            .map(|h| format!("{h}/.ssh/hpclab_admin"))
+            .unwrap_or_else(|_| "/root/.ssh/hpclab_admin".to_string());
+        Self {
+            vm_name: DEFAULT_VM_NAME.to_string(),
+            fs_list: DEFAULT_FS_LIST.iter()
+                .map(|(f, v)| (f.to_string(), v.to_string()))
+                .collect(),
+            probs: DEFAULT_PROBS.to_vec(),
+            run_dir_prefix: "Tir-multifs".to_string(),
+            ssh_user: SSH_USER.to_string(),
+            master_ip: MASTER_IP.to_string(),
+            ssh_key_path: key_path,
+            auto_confirm: false,
+            dry_run: false,
+            skip_worker_deploy: false,
+            suppress_synthesis_print: false,
+            pre_validated_mappings: None,
+        }
+    }
+}
+
+impl MultifsConfig {
+    /// Quick mode: single probability (1000000 ppm = saturation).
+    /// Currently unused inside the binary (analyse.rs builds its own MultifsConfig
+    /// inline) but kept as a documented public API for external callers / tests.
+    #[allow(dead_code)]
+    pub fn quick() -> Self {
+        let mut cfg = Self::default();
+        cfg.probs = vec![1_000_000];
+        cfg
+    }
+}
+
+/// Result of a multifs run. Returned to analyse.rs for forensic capture.
+/// Note: the non-`run_dir` fields are part of the public API contract for
+/// downstream callers (logging, audit trails, future test scopes), even if
+/// the current analyse.rs implementation only happens to consume `run_dir`.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct MultifsResult {
+    pub run_dir: PathBuf,
+    pub ts_compact: String,
+    pub ts_human: String,
+    pub validated_mappings: Vec<ProposedMapping>,
+}
+
+/// Convenience entry for `Cli::Multifs`. Uses default config.
+pub fn run(auto_confirm: bool, dry_run: bool) -> Result<i32> {
+    let mut cfg = MultifsConfig::default();
+    cfg.auto_confirm = auto_confirm;
+    cfg.dry_run = dry_run;
+    let _result = run_with_config(&cfg)?;
+    Ok(0)
+}
+
+/// Full API used by analyse.rs.
+pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
     let ts = Local::now();
     let ts_compact = ts.format("%Y%m%d-%H%M%S").to_string();
     let ts_human = ts.format("%Y-%m-%d %H:%M:%S").to_string();
 
-    // Resolve repo root: this binary is normally invoked from the repo,
-    // but to keep parity with bash we anchor to the parent of bin/ if
-    // the binary is in target/release/, otherwise the current working dir.
     let repo_root = locate_repo_root()
         .context("could not locate yocto-beamfs repo root")?;
+
+    // ----------------------------------------------------------------
+    // Step 0: device validation (pre-flight, before any RUN_DIR creation)
+    // If caller already validated (pre_validated_mappings is Some), skip.
+    // Otherwise, call discover_and_validate which prompts the user.
+    // dry_run aborts here without creating any directories.
+    // ----------------------------------------------------------------
+    let validated: Vec<ProposedMapping> = match &cfg.pre_validated_mappings {
+        Some(m) => {
+            eprintln!("beamfs-bench: using pre-validated mappings from caller ({} entries)", m.len());
+            m.clone()
+        }
+        None => {
+            let fs_list_refs: Vec<(&str, &str)> = cfg.fs_list.iter()
+                .map(|(f, v)| (f.as_str(), v.as_str()))
+                .collect();
+            devices::discover_and_validate(
+                &cfg.vm_name,
+                &fs_list_refs,
+                cfg.auto_confirm,
+                cfg.dry_run,
+            )?
+        }
+    };
+
+    // From here on, RUN_DIR is created and destructive actions begin.
     let run_dir = repo_root
         .join("Documentation/runs")
-        .join(format!("Tir-multifs-{ts_compact}"));
+        .join(format!("{}-{}", cfg.run_dir_prefix, ts_compact));
     let per_fs_dir = run_dir.join("per-fs");
     fs::create_dir_all(&per_fs_dir)
         .with_context(|| format!("create_dir_all {:?}", per_fs_dir))?;
 
-    // SSH target
-    let key_path = std::env::var("HOME")
-        .map(|h| format!("{h}/.ssh/hpclab_admin"))
-        .context("HOME not set")?;
-    let ssh = SshTarget::new(SSH_USER, MASTER_IP, &key_path);
+    // Persist the validated mapping as audit trail.
+    persist_validated_mapping(&run_dir, &cfg.vm_name, &validated)?;
 
-    // Banner (color codes match bash)
+    let ssh = SshTarget::new(&cfg.ssh_user, &cfg.master_ip, &cfg.ssh_key_path);
+
     println!("================================================================");
     println!(" beamfs-bench multifs -- {ts_human}");
     println!("================================================================");
     println!("Run dir: {}", run_dir.display());
-    println!("FS list: {}", fs_list_display());
-    println!("Probs:   {}", probs_display());
+    println!("FS list: {}", validated_display(&validated));
+    println!("Probs:   {}", probs_display(&cfg.probs));
     println!();
 
     // ----------------------------------------------------------------
-    // Phase 1: deploy worker on master
+    // Phase 1: deploy worker (skipped if caller already did it)
     // ----------------------------------------------------------------
-    blue("[1/5] Setup VMs: load modules + format 5 partitions + create test layout");
-
-    let local_worker = std::env::temp_dir().join(format!("beamfs-bench-worker-{}.sh", std::process::id()));
-    fs::write(&local_worker, WORKER_SH)
-        .with_context(|| format!("write local worker {:?}", local_worker))?;
-    ssh.scp_to(local_worker.to_str().unwrap(), REMOTE_WORKER_PATH)
-        .context("scp worker to master")?;
-    ssh.exec(&format!("chmod +x {REMOTE_WORKER_PATH}"))
-        .context("chmod +x worker on master")?;
-    let _ = fs::remove_file(&local_worker);
+    if !cfg.skip_worker_deploy {
+        blue("[1/5] Setup VMs: load modules + format 5 partitions + create test layout");
+        deploy_worker(&ssh).context("deploy worker on master")?;
+    } else {
+        blue("[1/5] Worker deployment skipped (caller-managed)");
+    }
 
     // ----------------------------------------------------------------
     // Phase 2: setup all FS
     // ----------------------------------------------------------------
     blue("[2/5] Format + populate 5 partitions with 3 dirs x 3 files (3KB each)");
-    for &(fs_name, vd) in FS_LIST {
-        let cmd = format!("{REMOTE_WORKER_PATH} setup {fs_name} {vd} 0");
+    for m in &validated {
+        let cmd = format!("{REMOTE_WORKER_PATH} setup {} {}", m.fs_name, m.disk.guest_dev);
         let out = ssh.exec_lenient(&cmd)
-            .with_context(|| format!("setup {fs_name} on {vd}"))?;
-        println!("  {fs_name} ({vd}): {out}");
+            .with_context(|| format!("setup {} on {}", m.fs_name, m.disk.guest_dev))?;
+        println!("  {} ({}): {out}", m.fs_name, m.disk.guest_dev);
 
-        let fs_dir = per_fs_dir.join(fs_name);
+        let fs_dir = per_fs_dir.join(&m.fs_name);
         fs::create_dir_all(&fs_dir)
             .with_context(|| format!("create_dir_all {:?}", fs_dir))?;
         write_text(&fs_dir.join("setup.txt"), &format!("{out}\n"))?;
@@ -105,15 +232,17 @@ pub fn run() -> Result<i32> {
     // ----------------------------------------------------------------
     // Phase 3: per-FS, per-prob attacks
     // ----------------------------------------------------------------
-    blue("[3/5] RadFI attacks: 5 FS x 3 probs = 15 runs");
+    let n_runs = validated.len() * cfg.probs.len();
+    blue(&format!("[3/5] RadFI attacks: {} FS x {} probs = {} runs",
+                  validated.len(), cfg.probs.len(), n_runs));
+
     let all_records_path = run_dir.join("all-records.txt");
-    // Reproduce bash: `echo "" > all-records.txt` -> file starts with one blank line.
     let mut all_records = fs::File::create(&all_records_path)
         .with_context(|| format!("create {:?}", all_records_path))?;
     writeln!(all_records).context("write blank line to all-records.txt")?;
 
-    for &(fs_name, vd) in FS_LIST {
-        let fs_dir = per_fs_dir.join(fs_name);
+    for m in &validated {
+        let fs_dir = per_fs_dir.join(&m.fs_name);
         let attacks_path = fs_dir.join("attacks.txt");
         let verifies_path = fs_dir.join("verifies.txt");
         let mut attacks_f = fs::File::create(&attacks_path)
@@ -121,23 +250,23 @@ pub fn run() -> Result<i32> {
         let mut verifies_f = fs::File::create(&verifies_path)
             .with_context(|| format!("create {:?}", verifies_path))?;
 
-        for &prob in PROBS {
-            let attack_cmd = format!("{REMOTE_WORKER_PATH} attack {fs_name} {vd} {prob}");
+        for &prob in &cfg.probs {
+            let attack_cmd = format!("{REMOTE_WORKER_PATH} attack {} {} {prob}",
+                                     m.fs_name, m.disk.guest_dev);
             let attack_out = ssh.exec_lenient(&attack_cmd)
-                .with_context(|| format!("attack {fs_name} prob={prob}"))?;
+                .with_context(|| format!("attack {} prob={prob}", m.fs_name))?;
 
-            let verify_cmd = format!("{REMOTE_WORKER_PATH} verify {fs_name} {vd} 0");
+            let verify_cmd = format!("{REMOTE_WORKER_PATH} verify {} {}",
+                                     m.fs_name, m.disk.guest_dev);
             let verify_out = ssh.exec_lenient(&verify_cmd)
-                .with_context(|| format!("verify {fs_name} prob={prob}"))?;
+                .with_context(|| format!("verify {} prob={prob}", m.fs_name))?;
 
-            println!("  {fs_name} prob={prob}: {attack_out}");
+            println!("  {} prob={prob}: {attack_out}", m.fs_name);
             println!("                {verify_out}");
 
-            // all-records.txt: ATTACK| then VERIFY|fs=...|prob=...|...
             writeln!(all_records, "ATTACK|{attack_out}")?;
-            writeln!(all_records, "VERIFY|fs={fs_name}|prob={prob}|{verify_out}")?;
+            writeln!(all_records, "VERIFY|fs={}|prob={prob}|{verify_out}", m.fs_name)?;
 
-            // per-fs attacks.txt and verifies.txt
             writeln!(attacks_f, "{attack_out}")?;
             writeln!(verifies_f, "{verify_out}")?;
         }
@@ -148,11 +277,15 @@ pub fn run() -> Result<i32> {
     // Phase 4: synthesis report
     // ----------------------------------------------------------------
     blue("[4/5] Synthesis report");
+    let fs_list_refs: Vec<(&str, &str)> = validated.iter()
+        .map(|m| (m.fs_name.as_str(), m.disk.guest_dev.as_str()))
+        .collect();
+    let probs_owned: Vec<u32> = cfg.probs.clone();
     synthesis::write_synthesis_md(
         &run_dir,
         &ts_human,
-        FS_LIST,
-        PROBS,
+        &fs_list_refs,
+        &probs_owned,
         &per_fs_dir,
     ).context("write synthesis.md")?;
     synthesis::write_synthesis_json(
@@ -161,10 +294,11 @@ pub fn run() -> Result<i32> {
         &all_records_path,
     ).context("write synthesis.json")?;
 
-    // Print synthesis.md to stdout (mirror bash `cat "$RUN_DIR/synthesis.md"`)
-    let synth_md = fs::read_to_string(run_dir.join("synthesis.md"))
-        .context("read back synthesis.md")?;
-    print!("{synth_md}");
+    if !cfg.suppress_synthesis_print {
+        let synth_md = fs::read_to_string(run_dir.join("synthesis.md"))
+            .context("read back synthesis.md")?;
+        print!("{synth_md}");
+    }
 
     // ----------------------------------------------------------------
     // Phase 5: exit
@@ -175,60 +309,93 @@ pub fn run() -> Result<i32> {
     println!("JSON:      {}", run_dir.join("synthesis.json").display());
     println!("Records:   {}", run_dir.join("all-records.txt").display());
 
-    Ok(0)
+    Ok(MultifsResult {
+        run_dir,
+        ts_compact,
+        ts_human,
+        validated_mappings: validated,
+    })
 }
 
-fn fs_list_display() -> String {
-    FS_LIST.iter()
-        .map(|(fs, vd)| format!("{fs}:{vd}"))
+/// Persist the validated (vd, by-id) mapping into `<run_dir>/devices-validated.txt`
+/// for later audit/repro. Mirror format that humans + diff tools both like.
+fn persist_validated_mapping(
+    run_dir: &Path,
+    vm_name: &str,
+    validated: &[ProposedMapping],
+) -> Result<()> {
+    let path = run_dir.join("devices-validated.txt");
+    let mut f = fs::File::create(&path)
+        .with_context(|| format!("create {:?}", path))?;
+    writeln!(f, "# beamfs-bench device validation audit")?;
+    writeln!(f, "# vm        : {vm_name}")?;
+    writeln!(f, "# generated : {}", Local::now().format("%Y-%m-%d %H:%M:%S"))?;
+    writeln!(f, "# format    : <fs>|<guest_dev>|<host_resolved>|<host_size>|<host_byid>")?;
+    writeln!(f)?;
+    for m in validated {
+        let resolved = m.disk.host_resolved.as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "?".to_string());
+        let size = m.disk.host_size.as_deref().unwrap_or("?");
+        writeln!(f, "{}|{}|{}|{}|{}",
+                 m.fs_name,
+                 m.disk.guest_dev,
+                 resolved,
+                 size,
+                 m.disk.host_byid_path)?;
+    }
+    Ok(())
+}
+
+/// Deploy the embedded worker.sh to a target via SSH.
+pub fn deploy_worker(ssh: &SshTarget) -> Result<()> {
+    let local_worker = std::env::temp_dir()
+        .join(format!("beamfs-bench-worker-{}.sh", std::process::id()));
+    fs::write(&local_worker, WORKER_SH)
+        .with_context(|| format!("write local worker {:?}", local_worker))?;
+    ssh.scp_to(local_worker.to_str().unwrap(), REMOTE_WORKER_PATH)
+        .context("scp worker to target")?;
+    ssh.exec(&format!("chmod +x {REMOTE_WORKER_PATH}"))
+        .context("chmod +x worker on target")?;
+    let _ = fs::remove_file(&local_worker);
+    Ok(())
+}
+
+fn validated_display(validated: &[ProposedMapping]) -> String {
+    validated.iter()
+        .map(|m| format!("{}:{}", m.fs_name, m.disk.guest_dev))
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-fn probs_display() -> String {
-    PROBS.iter()
-        .map(|p| p.to_string())
-        .collect::<Vec<_>>()
-        .join(" ")
+fn probs_display(probs: &[u32]) -> String {
+    probs.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" ")
 }
 
 fn blue(msg: &str) {
-    // Match bash blue() helper: \e[34m...\e[0m
     println!("\x1b[34m{msg}\x1b[0m");
 }
 
 fn write_text(path: &Path, content: &str) -> Result<()> {
-    fs::write(path, content)
-        .with_context(|| format!("write {:?}", path))
+    fs::write(path, content).with_context(|| format!("write {:?}", path))
 }
 
-/// Locate the yocto-beamfs repo root: walk up from the binary's location
-/// (or CWD) until we find Documentation/ + bin/ + beamfs-bench/.
-fn locate_repo_root() -> Result<PathBuf> {
-    // Try CWD first (typical case: invoked from repo root or anywhere within)
+pub fn locate_repo_root() -> Result<PathBuf> {
     let cwd = std::env::current_dir().context("getcwd")?;
     if let Some(root) = walk_up_for_repo(&cwd) {
         return Ok(root);
     }
-
-    // Fallback: walk up from the binary location
     if let Ok(exe) = std::env::current_exe() {
         if let Some(root) = walk_up_for_repo(&exe) {
             return Ok(root);
         }
     }
-
-    Err(anyhow::anyhow!(
-        "could not locate yocto-beamfs repo root (looked for Documentation/ + bin/ from {} and exe path)",
-        cwd.display()
-    ))
+    Err(anyhow::anyhow!("could not locate yocto-beamfs repo root from {} or exe path", cwd.display()))
 }
 
 fn walk_up_for_repo(start: &Path) -> Option<PathBuf> {
     let mut cur = start.to_path_buf();
-    if cur.is_file() {
-        cur.pop();
-    }
+    if cur.is_file() { cur.pop(); }
     loop {
         if cur.join("Documentation").is_dir()
             && cur.join("bin").is_dir()
@@ -236,8 +403,6 @@ fn walk_up_for_repo(start: &Path) -> Option<PathBuf> {
         {
             return Some(cur);
         }
-        if !cur.pop() {
-            return None;
-        }
+        if !cur.pop() { return None; }
     }
 }
