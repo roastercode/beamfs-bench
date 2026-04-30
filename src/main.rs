@@ -1,4 +1,4 @@
-//! beamfs-bench — unified bench harness for BEAMFS resilience testing.
+//! beamfs-bench — unified bench harness for beamfs resilience testing.
 //!
 //! Replaces the legacy bash harness (Tir-*.sh, ~1176 lines) with a single
 //! Rust binary exposing one subcommand per test scope.
@@ -7,14 +7,21 @@
 //! lowercase. Macro identifiers in C (`BEAMFS_*`) keep uppercase per kernel
 //! coding style and are not affected by this tool.
 //!
-//! Status: 0.1.0 skeleton. Subcommands `multifs` and `analyse` follow in
-//! subsequent commits. The 4 new test scopes (metadata, crash, bitrot,
-//! fsck) come after parity validation of the legacy ports.
+//! Status:
+//!   - 0.1.0 skeleton: subcommand surface declared.
+//!   - 0.2.0 multifs:  port of Tir-multifs.sh, output byte-identical for diff.
+//!   - 0.3.x analyse:  forensic wrapper (next).
+//!   - 0.4.x bench:    cluster perf bench (later).
+//!   - 0.5.x metadata/crash/bitrot/fsck: new test scopes.
 //!
 //! Author: Aurelien DESBRIERES <aurelien@hackers.camp>
 //! License: GPL-2.0-only
 
 use clap::{Parser, Subcommand};
+
+mod multifs;
+mod ssh;
+mod synthesis;
 
 const BEAMFS_BENCH_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -38,7 +45,9 @@ enum Command {
     Version,
 
     /// Multi-FS head-to-head bench under RadFI live injection.
-    /// (Port of legacy Tir-multifs.sh; targets 5 FS x 3 probabilities.)
+    /// Targets 5 FS x 3 probabilities. Output byte-identical to legacy
+    /// Tir-multifs.sh for diff-based parity verification against the
+    /// reference run Tir-multifs-20260430-141008.
     Multifs,
 
     /// Forensic wrapper around `multifs`: dmesg + ftrace + perf capture
@@ -69,19 +78,13 @@ enum Command {
 
 fn cmd_version() -> i32 {
     println!("beamfs-bench {}", BEAMFS_BENCH_VERSION);
-    println!("rust {}", env!("CARGO_PKG_RUST_VERSION").to_string()
-        .as_str()
-        .split_whitespace()
-        .next()
-        .unwrap_or("unknown"));
     println!("license GPL-2.0-only");
-    println!("status: 0.1.0 skeleton (multifs/analyse/bench: not yet implemented)");
+    println!("status: multifs implemented; analyse/bench/metadata/crash/bitrot/fsck pending");
     0
 }
 
 fn cmd_not_yet_implemented(name: &str) -> i32 {
     eprintln!("beamfs-bench: subcommand `{name}` not yet implemented");
-    eprintln!("beamfs-bench: this is the 0.1.0 skeleton; subcommand will land in a follow-up commit");
     eprintln!("beamfs-bench: see context/TODO.md (TODO 2) in beamfs-devel for the migration plan");
     2
 }
@@ -90,7 +93,13 @@ fn main() {
     let cli = Cli::parse();
     let rc = match cli.command {
         Command::Version  => cmd_version(),
-        Command::Multifs  => cmd_not_yet_implemented("multifs"),
+        Command::Multifs  => match multifs::run() {
+            Ok(rc) => rc,
+            Err(e) => {
+                eprintln!("beamfs-bench: multifs failed: {e:#}");
+                1
+            }
+        },
         Command::Analyse  => cmd_not_yet_implemented("analyse"),
         Command::Bench    => cmd_not_yet_implemented("bench"),
         Command::Metadata => cmd_not_yet_implemented("metadata"),
