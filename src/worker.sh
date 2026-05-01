@@ -1,5 +1,5 @@
 #!/bin/bash
-# beamfs-bench multifs/analyse worker — embedded as include_str! in the Rust binary.
+# beamfs-bench multifs/analyse worker - embedded as include_str! in the Rust binary.
 #
 # Deployed to /tmp/beamfs-bench-worker.sh on the master VM (and on each compute
 # for cluster scope) via scp, then invoked once per (action, ...) tuple.
@@ -14,6 +14,7 @@
 #   verify <fs> <vd>          : recompute hashes + classify verdict
 #
 # Actions (cluster scope, master + all 3 computes, BEAMFS on /data):
+#   bootstrap_data            : insmod reed_solomon+beamfs, mkfs.beamfs /dev/vdb, mount /data
 #   cluster_setup  <ts>       : create /data/beamfs-bench-<ts>/ test layout
 #   cluster_attack <ts> <prob>: arm RadFI on /dev/vdb + I/O on /data/beamfs-bench-<ts>/
 #   cluster_verify <ts>       : check integrity + cleanup
@@ -84,6 +85,12 @@ ensure_modules() {
     sudo depmod -a 2>/dev/null
     if [ "$fs" = "btrfs" ]; then
         sudo modprobe btrfs 2>/dev/null || true
+    fi
+    if ! lsmod | grep -q '^reed_solomon'; then
+        sudo modprobe reed_solomon 2>/dev/null || true
+    fi
+    if ! lsmod | grep -q '^beamfs'; then
+        sudo /sbin/insmod /lib/modules/$(uname -r)/updates/beamfs.ko 2>/dev/null || true
     fi
     if ! lsmod | grep -q '^radfi'; then
         sudo /sbin/insmod /lib/modules/$(uname -r)/updates/radfi.ko 2>/dev/null || true
@@ -381,10 +388,45 @@ cluster_verify)
     echo "CLUSTER|HOST=$(hostname)|VERDICT=$VERDICT|DIFFS=$DIFFS|details=$DETAILS"
     ;;
 
+bootstrap_data)
+    ensure_modules
+    if ! lsmod | grep -q '^beamfs'; then
+        echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=ERROR|reason=beamfs.ko not loaded"
+        exit 1
+    fi
+    if ! lsmod | grep -q '^reed_solomon'; then
+        echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=ERROR|reason=reed_solomon not loaded"
+        exit 1
+    fi
+    if mountpoint -q /data; then
+        sudo umount /data 2>/dev/null || sudo umount -l /data 2>/dev/null || true
+    fi
+    if [ ! -b /dev/vdb ]; then
+        echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=ERROR|reason=/dev/vdb missing"
+        exit 1
+    fi
+    if ! sudo mkfs.beamfs /dev/vdb >/tmp/mkfs-bootstrap.log 2>&1; then
+        TAIL=$(tail -3 /tmp/mkfs-bootstrap.log | tr '\n' ' ')
+        echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=ERROR|reason=mkfs failed|details=$TAIL"
+        exit 1
+    fi
+    sudo mkdir -p /data
+    if ! sudo mount -t beamfs /dev/vdb /data 2>/tmp/mount-bootstrap.log; then
+        TAIL=$(tail -3 /tmp/mount-bootstrap.log | tr '\n' ' ')
+        echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=ERROR|reason=mount failed|details=$TAIL"
+        exit 1
+    fi
+    if ! mountpoint -q /data; then
+        echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=ERROR|reason=/data not mounted post-mount"
+        exit 1
+    fi
+    DATA_INFO=$(df -h /data 2>/dev/null | awk 'NR==2 {print $2"/"$3}')
+    echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=OK|fs=beamfs|dev=/dev/vdb|info=$DATA_INFO"
+    ;;
 *)
     echo "ERROR: unknown action $ACTION" >&2
     echo "Valid actions: discover_devices, discover_cluster, setup, attack, verify," >&2
-    echo "               cluster_setup, cluster_attack, cluster_verify" >&2
+    echo "               cluster_setup, cluster_attack, cluster_verify, bootstrap_data" >&2
     exit 2
     ;;
 
