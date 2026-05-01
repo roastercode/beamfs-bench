@@ -47,6 +47,7 @@ mod cluster;
 mod devices;
 mod forensics;
 mod lifecycle;
+mod metadata;
 mod multifs;
 mod ssh;
 mod synthesis;
@@ -165,7 +166,7 @@ impl ScopeArg {
 fn cmd_version() -> i32 {
     println!("beamfs-bench {}", BEAMFS_BENCH_VERSION);
     println!("license GPL-2.0-only");
-    println!("status: full + multifs + analyse + bitrot implemented; metadata/crash/fsck pending");
+    println!("status: full + multifs + analyse + bitrot + metadata implemented; crash/fsck pending");
     0
 }
 
@@ -294,7 +295,15 @@ fn main() {
                 }
             }
         }
-        Command::Metadata => cmd_not_yet_implemented("metadata"),
+        Command::Metadata => {
+            match metadata::run() {
+                Ok(rc) => rc,
+                Err(e) => {
+                    eprintln!("beamfs-bench: metadata failed: {e:#}");
+                    1
+                }
+            }
+        }
         Command::Crash => cmd_not_yet_implemented("crash"),
         Command::Bitrot => {
             match bitrot::run() {

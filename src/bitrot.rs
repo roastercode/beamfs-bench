@@ -43,7 +43,7 @@ pub struct BitrotObservation {
 /// Build SshTarget for compute01 (the FS-test victim node).
 /// Master is the orchestrator and is intentionally isolated from
 /// RadFI transverse contamination per recadrage R-isolation.
-fn ssh_target() -> Result<SshTarget> {
+pub(crate) fn ssh_target() -> Result<SshTarget> {
     let key = std::env::var("HOME")
         .map(|h| format!("{h}/.ssh/hpclab_admin"))
         .context("HOME not set")?;

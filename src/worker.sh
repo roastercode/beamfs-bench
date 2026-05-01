@@ -19,6 +19,11 @@
 #   cluster_attack <ts> <prob>: arm RadFI on /dev/vdb + I/O on /data/beamfs-bench-<ts>/
 #   cluster_verify <ts>       : check integrity + cleanup
 #
+# Actions (metadata scope, compute01 only, RadFI deterministic on metadata blocks):
+#   metadata_setup  <ts> <fs> <vd> : format <fs> on /dev/<vd>, populate, capture pre-state
+#   metadata_inject <ts> <fs> <vd> <block> <prob> : arm RadFI target_block=<block>, trigger I/O
+#   metadata_verify <ts> <fs> <vd> : remount + read + parse dmesg + emit observation
+#
 # IMPORTANT (recadrage R12 / R13):
 #   This worker NEVER discovers physical USB identity by itself. The Rust caller
 #   parses `virsh dumpxml <vm>` on the host (spartian) to obtain the authoritative
@@ -36,6 +41,8 @@ ACTION="${1:-}"
 ARG2="${2:-}"
 ARG3="${3:-}"
 ARG4="${4:-}"
+ARG5="${5:-}"
+ARG6="${6:-}"
 
 # ============================================================
 # discover_devices : enumerate /dev/vd[c-z] visible in the guest
@@ -546,10 +553,182 @@ bitrot_verify)
     sudo rm -f "/tmp/bitrot-pre-$TS_TAG.txt" "/tmp/bitrot-post-$TS_TAG.txt" "/tmp/bitrot-target-$TS_TAG.txt" 2>/dev/null
     echo "BITROT|HOST=$(hostname)|VERDICT=$VERDICT|read_ok=$READ_OK|read_fail=$READ_FAIL|diffs=$DIFFS|dmesg_rec=$DMESG_RECOVERED|dmesg_uncorr=$DMESG_UNCORR|rsj_entries=$RSJ_NONZERO|details=$DETAILS"
     ;;
+
+metadata_setup)
+    TS_TAG="$ARG2"
+    FS="$ARG3"
+    VD="$ARG4"
+    DEV="/dev/$VD"
+    MNT="/mnt/meta-$FS-$TS_TAG"
+    SUBDIR="$MNT/test"
+
+    if [ ! -b "$DEV" ]; then
+        echo "METADATA|HOST=$(hostname)|SETUP=ERROR|reason=device_missing|dev=$DEV"
+        exit 1
+    fi
+
+    sudo umount "$MNT" 2>/dev/null
+    sudo rm -rf "$MNT"
+    sudo mkdir -p "$MNT"
+
+    case "$FS" in
+        ext4)     sudo mkfs.ext4  -F -q "$DEV" >/dev/null 2>&1 ;;
+        ext3)     sudo mkfs.ext3  -F -q "$DEV" >/dev/null 2>&1 ;;
+        btrfs)    sudo mkfs.btrfs -f    "$DEV" >/dev/null 2>&1 ;;
+        squashfs) sudo bash -c "mkdir -p /tmp/sq-$TS_TAG && head -c 1M /dev/urandom > /tmp/sq-$TS_TAG/data.bin && mksquashfs /tmp/sq-$TS_TAG $DEV -noappend -quiet" >/dev/null 2>&1 && rm -rf /tmp/sq-$TS_TAG ;;
+        beamfs)
+            ensure_modules
+            sudo mkfs.beamfs "$DEV" >/dev/null 2>&1
+            ;;
+        *) echo "METADATA|HOST=$(hostname)|SETUP=ERROR|reason=unknown_fs|fs=$FS"; exit 1 ;;
+    esac
+
+    if [ "$FS" = "squashfs" ]; then
+        sudo mount -t squashfs -o loop,ro "$DEV" "$MNT" 2>/dev/null
+    else
+        sudo mount "$DEV" "$MNT" 2>/dev/null
+    fi
+    if ! mountpoint -q "$MNT"; then
+        echo "METADATA|HOST=$(hostname)|SETUP=ERROR|reason=mount_failed|fs=$FS|dev=$DEV"
+        exit 1
+    fi
+
+    if [ "$FS" != "squashfs" ]; then
+        sudo mkdir -p "$SUBDIR"
+        for i in 1 2 3; do
+            sudo bash -c "head -c 4096 /dev/urandom > $SUBDIR/file-$i.bin"
+        done
+        sudo sync
+    fi
+
+    HASH_PRE=$(find "$MNT" -type f -exec sha256sum {} \; 2>/dev/null | sort | sha256sum | cut -d' ' -f1)
+    echo "METADATA|HOST=$(hostname)|SETUP=OK|fs=$FS|dev=$DEV|mnt=$MNT|hash_pre=$HASH_PRE"
+    ;;
+
+metadata_inject)
+    TS_TAG="$ARG2"
+    FS="$ARG3"
+    VD="$ARG4"
+    BLOCK="$ARG5"
+    PROB_VAL="$ARG6"
+    DEV="/dev/$VD"
+    MNT="/mnt/meta-$FS-$TS_TAG"
+
+    # Observation factuelle : si pas monte avant cet inject, c'est que
+    # le FS a sature lors d'une iter precedente. On ne peut pas
+    # ajouter une corruption a un FS qui n'est plus accessible. On
+    # emet une observation explicite (pas une erreur) pour que le
+    # bench puisse continuer et l'analyste comprenne le data point.
+    if ! mountpoint -q "$MNT"; then
+        echo "METADATA|HOST=$(hostname)|INJECT=SKIP|reason=saturation_reached_no_remount|mnt=$MNT"
+        exit 0
+    fi
+
+    ensure_modules
+    if ! sudo test -d /sys/kernel/debug/radfi; then
+        echo "METADATA|HOST=$(hostname)|INJECT=SKIP|reason=radfi_unavailable"
+        exit 0
+    fi
+
+    DEV_MAJ=$((0x$(stat -c '%t' $DEV)))
+    DEV_MIN=$((0x$(stat -c '%T' $DEV)))
+    DEV_NUM=$(( (DEV_MAJ << 20) | DEV_MIN ))
+
+    echo 0 | sudo tee /sys/kernel/debug/radfi/enabled  >/dev/null
+    echo 0 | sudo tee /sys/kernel/debug/radfi/hook_blk >/dev/null
+
+    CALL_B=$(sudo cat /sys/kernel/debug/radfi/call_count)
+    FLIP_B=$(sudo cat /sys/kernel/debug/radfi/flip_count)
+
+    echo $DEV_NUM    | sudo tee /sys/kernel/debug/radfi/target_dev   >/dev/null
+    echo $BLOCK      | sudo tee /sys/kernel/debug/radfi/target_block >/dev/null
+    echo $PROB_VAL   | sudo tee /sys/kernel/debug/radfi/probability  >/dev/null
+    echo 1           | sudo tee /sys/kernel/debug/radfi/inject_on_read >/dev/null
+    echo 1           | sudo tee /sys/kernel/debug/radfi/hook_blk     >/dev/null
+    echo 1           | sudo tee /sys/kernel/debug/radfi/enabled      >/dev/null
+
+    # Force re-read of metadata: umount + drop caches + remount + traverse
+    sudo umount "$MNT" 2>/dev/null
+    echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
+
+    if [ "$FS" = "squashfs" ]; then
+        sudo mount -t squashfs -o loop,ro "$DEV" "$MNT" 2>/dev/null
+    else
+        sudo mount "$DEV" "$MNT" 2>/dev/null
+    fi
+    MOUNT_RC=$?
+
+    if [ $MOUNT_RC -eq 0 ]; then
+        sudo find "$MNT" -type f -exec cat {} > /dev/null 2>&1 \;
+    fi
+
+    CALL_A=$(sudo cat /sys/kernel/debug/radfi/call_count)
+    FLIP_A=$(sudo cat /sys/kernel/debug/radfi/flip_count)
+
+    echo 0 | sudo tee /sys/kernel/debug/radfi/enabled  >/dev/null
+    echo 0 | sudo tee /sys/kernel/debug/radfi/hook_blk >/dev/null
+    echo 0 | sudo tee /sys/kernel/debug/radfi/inject_on_read >/dev/null
+    echo 0 | sudo tee /sys/kernel/debug/radfi/target_block >/dev/null
+
+    CALL_DELTA=$((CALL_A - CALL_B))
+    FLIP_DELTA=$((FLIP_A - FLIP_B))
+
+    echo "METADATA|HOST=$(hostname)|INJECT=OK|fs=$FS|dev=$DEV|target_block=$BLOCK|prob=$PROB_VAL|call_delta=$CALL_DELTA|flip_delta=$FLIP_DELTA|mount_rc=$MOUNT_RC"
+    ;;
+
+metadata_verify)
+    TS_TAG="$ARG2"
+    FS="$ARG3"
+    VD="$ARG4"
+    DEV="/dev/$VD"
+    MNT="/mnt/meta-$FS-$TS_TAG"
+
+    # Read scheme from kernel dmesg of most recent mount (canonical source)
+    SCHEME=$(sudo dmesg 2>/dev/null | grep 'beamfs: mounted' | tail -1 \
+             | grep -oE 'scheme=[0-9]+' | tail -1 | cut -d= -f2)
+    [ -z "$SCHEME" ] && SCHEME=na
+
+    # Parse dmesg for FEC events
+    DMESG_RECOVERED=$(sudo dmesg 2>/dev/null | grep -ciE 'beamfs.*(rs.fec.corrected|reed.solomon.corrected|metadata.fec.corrected)' | tr -d '\n')
+    [ -z "$DMESG_RECOVERED" ] && DMESG_RECOVERED=0
+    DMESG_UNCORR=$(sudo dmesg 2>/dev/null | grep -ciE 'beamfs.*uncorrectable|beamfs.*-EIO|reed.solomon.*fail' | tr -d '\n')
+    [ -z "$DMESG_UNCORR" ] && DMESG_UNCORR=0
+    DMESG_EIO=$(sudo dmesg 2>/dev/null | grep -ciE 'beamfs.*EIO|beamfs.*input/output error' | tr -d '\n')
+    [ -z "$DMESG_EIO" ] && DMESG_EIO=0
+    DMESG_PANIC=$(sudo dmesg 2>/dev/null | grep -ciE 'kernel panic|Oops:|Call trace' | tr -d '\n')
+    [ -z "$DMESG_PANIC" ] && DMESG_PANIC=0
+
+    if mountpoint -q "$MNT"; then
+        MOUNTED=1
+        READ_OK=$(sudo find "$MNT" -type f 2>/dev/null | wc -l | tr -d '\n')
+        HASH_POST=$(find "$MNT" -type f -exec sha256sum {} \; 2>/dev/null | sort | sha256sum | cut -d' ' -f1)
+    else
+        MOUNTED=0
+        READ_OK=0
+        HASH_POST=na
+    fi
+
+    # Parse RS journal (BEAMFS only)
+    RSJ_NONZERO=0
+    if [ "$FS" = "beamfs" ]; then
+        RSJ_BYTES=$((64 * 40))
+        RSJ_HEX=$(sudo dd if=$DEV bs=1 skip=116 count=$RSJ_BYTES 2>/dev/null | xxd -p -c 40)
+        RSJ_NONZERO=$(echo "$RSJ_HEX" | grep -cv '^0\+$' | tr -d '\n')
+        [ -z "$RSJ_NONZERO" ] && RSJ_NONZERO=0
+    fi
+
+    echo "METADATA|HOST=$(hostname)|VERIFY=OK|fs=$FS|scheme=$SCHEME|mounted=$MOUNTED|read_ok=$READ_OK|hash_post=$HASH_POST|dmesg_rs_corrected=$DMESG_RECOVERED|dmesg_uncorrectable=$DMESG_UNCORR|dmesg_eio=$DMESG_EIO|dmesg_panic=$DMESG_PANIC|rs_journal_new_entries=$RSJ_NONZERO"
+
+    # Cleanup
+    sudo umount "$MNT" 2>/dev/null
+    sudo rm -rf "$MNT"
+    ;;
+
 *)
     echo "ERROR: unknown action $ACTION" >&2
     echo "Valid actions: discover_devices, discover_cluster, setup, attack, verify," >&2
-    echo "               cluster_setup, cluster_attack, cluster_verify, bootstrap_data," >&2
+    echo "               cluster_setup, cluster_attack, cluster_verify, bootstrap_data,"
+    echo "               metadata_setup, metadata_inject, metadata_verify," >&2
     echo "               bitrot_setup, bitrot_inject, bitrot_verify" >&2
     exit 2
     ;;
