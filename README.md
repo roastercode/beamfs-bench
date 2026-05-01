@@ -9,13 +9,32 @@ fault injection. Replaces the legacy bash harness (`Tir-*.sh`,
 | Subcommand | Status   | Description                                              |
 |------------|----------|----------------------------------------------------------|
 | `version`  | DONE     | Print version + status, exit                             |
-| `multifs`  | DONE     | 5 FS x 3 probs head-to-head bench on USB sticks (master) |
+| `multifs`  | DONE     | 5 FS x 3 probs head-to-head bench on USB (compute01)     |
 | `analyse`  | DONE     | Forensic wrapper, 3 scopes (quick / standard / full)     |
-| `full`     | DONE     | lifecycle + bootstrap + analyse scope=full (autonomous)  |
-| `metadata` | PENDING  | Test A : superblock/inode/journal targeted attack        |
-| `crash`    | PENDING  | Test B : virsh destroy mid-write + remount               |
-| `bitrot`   | PENDING  | Test C : dd random on offline partition, then read       |
+| `full`     | DONE     | Phase 0 isolation pre-flight + lifecycle + bootstrap + analyse |
+| `bitrot`   | DONE     | Test C : offline dd injection + observation (compute01)  |
+| `metadata` | PENDING  | Test A : RadFI deterministic on metadata blocks          |
+| `crash`    | PENDING  | Test B : virsh destroy mid-write + remount observation   |
 | `fsck`     | PENDING  | Test D : fsck recovery post-FS_PANIC                     |
+
+
+
+## Architecture (R-isolation)
+
+The bench enforces a strict separation between the orchestrator and
+the FS-under-test victims. The 5 USB sticks holding the filesystem
+partitions are physically attached to `beamfs-compute01` only.
+Master remains a non-victim observer.
+
+beamfs-master    (192.168.56.10) : vda + vdb only       (orchestrator)
+beamfs-compute01 (192.168.56.11) : vda + vdb + vdc..vdg (FS-test holder)
+beamfs-compute02 (192.168.56.12) : vda + vdb only       (cluster compute)
+beamfs-compute03 (192.168.56.13) : vda + vdb only       (cluster compute)
+
+
+`beamfs-bench full` Phase 0 (`assert_isolation_architecture()`)
+inspects libvirt persistent XML and refuses to run on a
+non-conforming cluster. See `context-recadrage.md` R-isolation.
 
 ## Canonical use : `beamfs-bench full`
 
