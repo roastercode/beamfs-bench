@@ -1,4 +1,4 @@
-//! forensics.rs — multi-node forensic capture for `analyse` subcommand.
+//! forensics.rs - multi-node forensic capture for `analyse` subcommand.
 //!
 //! ## What is captured (per node, by scope)
 //!
@@ -107,9 +107,14 @@ pub fn pre_capture_all(nodes: &[ClusterNode], scope: Scope) -> Result<Vec<(Strin
 /// Returns immediately; stop_perf() must be called before final capture.
 pub fn start_perf_master() -> Result<()> {
     let ssh = ssh_for("192.168.56.10")?;
+    // Wipe stale PID file before launch (idempotent).
+    ssh.exec_lenient("sudo rm -f /tmp/beamfs-bench-perf.pid")?;
     // nohup + sleep 3600 = bounded duration; we'll SIGINT it before that.
-    ssh.exec_lenient("sudo nohup perf record -a -g -o /tmp/beamfs-bench-perf.data -- sleep 3600 >/tmp/beamfs-bench-perf.log 2>&1 &")?;
-    // Give perf a moment to start sampling.
+    // Capture the perf PID via $! into a sidecar file so stop_perf_master
+    // can wait on the exact process and let perf finalize its header.
+    let launch = r#"sudo bash -c 'nohup perf record -a -g -o /tmp/beamfs-bench-perf.data -- sleep 3600 >/tmp/beamfs-bench-perf.log 2>&1 & echo $! > /tmp/beamfs-bench-perf.pid'"#;
+    ssh.exec_lenient(launch)?;
+    // Give perf a moment to start sampling and write its header.
     std::thread::sleep(std::time::Duration::from_millis(1500));
     Ok(())
 }
@@ -120,22 +125,34 @@ pub fn start_perf_master() -> Result<()> {
 /// "data size field is 0" error from `perf report`.
 pub fn stop_perf_master() -> Result<()> {
     let ssh = ssh_for("192.168.56.10")?;
-    // SIGINT first (not SIGTERM/KILL — perf flushes on INT, not on others).
-    ssh.exec_lenient("sudo pkill -INT perf 2>/dev/null || true")?;
-    // Poll for perf process exit + non-zero data file. Up to 10 seconds.
+    // SIGINT to the exact PID, then bounded wait for process exit so perf
+    // can complete its header finalize (perf_session__write_header runs
+    // after main() returns). Validate via perf report --header-only;
+    // if the header parses, data_size is non-zero and the file is intact.
     let probe = r#"
-        for i in $(seq 1 20); do
-            if ! pgrep -x perf >/dev/null 2>&1; then
-                size=$(sudo stat -c '%s' /tmp/beamfs-bench-perf.data 2>/dev/null || echo 0)
-                if [ "${size:-0}" -gt 1024 ]; then
-                    echo "perf_stopped_size=$size"
-                    exit 0
-                fi
+        PID=$(sudo cat /tmp/beamfs-bench-perf.pid 2>/dev/null || echo "")
+        if [ -z "$PID" ]; then
+            echo "perf_no_pid_file"
+            exit 1
+        fi
+        sudo kill -INT "$PID" 2>/dev/null || true
+        for i in $(seq 1 30); do
+            if ! sudo kill -0 "$PID" 2>/dev/null; then
+                break
             fi
             sleep 0.5
         done
+        if sudo kill -0 "$PID" 2>/dev/null; then
+            sudo kill -TERM "$PID" 2>/dev/null || true
+            sleep 1
+        fi
         size=$(sudo stat -c '%s' /tmp/beamfs-bench-perf.data 2>/dev/null || echo 0)
-        echo "perf_stop_timeout_size=$size"
+        if sudo perf report --header-only -i /tmp/beamfs-bench-perf.data >/dev/null 2>&1; then
+            echo "perf_stopped_size=$size header_ok=1"
+            exit 0
+        fi
+        echo "perf_stopped_size=$size header_ok=0"
+        exit 2
     "#;
     let out = ssh.exec_lenient(probe).unwrap_or_default();
     if !out.is_empty() {
