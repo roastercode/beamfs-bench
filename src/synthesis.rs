@@ -42,7 +42,7 @@ pub fn write_synthesis_md(
     writeln!(f, "| ext3     | vdd    | Kingston DataTraveler ...D70052   |")?;
     writeln!(f, "| btrfs    | vde    | Kingston DataTraveler ...E60058   |")?;
     writeln!(f, "| squashfs | vdf    | Kingston DataTraveler ...0ED05    |")?;
-    writeln!(f, "| BEAMFS   | vdg    | SanDisk Cruzer ...09503233        |")?;
+    writeln!(f, "| beamfs   | vdg    | SanDisk Cruzer ...09503233        |")?;
     writeln!(f)?;
     writeln!(f, "Test layout per partition: 3 dirs (A/B/C) x 3 files of 3KB + HASHES.sha256.")?;
     writeln!(f, "Attack target: dir-B/file-B2.bin.")?;
