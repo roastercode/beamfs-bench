@@ -25,7 +25,9 @@
 //! Each scenario is independent (fresh setup + inject + verify cycle).
 
 use anyhow::{anyhow, bail, Context, Result};
-use std::time::SystemTime;
+use std::fs;
+use std::path::PathBuf;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::cluster::REMOTE_WORKER_PATH;
 use crate::ssh::SshTarget;
@@ -100,6 +102,16 @@ pub fn run() -> Result<i32> {
     println!(" Mode: measurement instrument (records observations)");
     println!("================================================================");
 
+    let started_inst = Instant::now();
+    let started_epoch = SystemTime::now().duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0);
+    let ts_compact = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let run_dir = PathBuf::from(format!(
+        "/home/aurelien/git/yocto-beamfs/Documentation/runs/beamfs-bench-bitrot-{ts_compact}"
+    ));
+    fs::create_dir_all(&run_dir).context("create bitrot run dir")?;
+    println!("Run dir: {}", run_dir.display());
+
     println!();
     println!("[bitrot] Deploying worker.sh on compute01 (FS-test victim node)...");
     let target_node = vec![crate::cluster::ClusterNode {
@@ -163,6 +175,79 @@ pub fn run() -> Result<i32> {
     println!(" Note: bench reports observations only. Kernel behavior analysis");
     println!(" (recovery vs. corruption) is performed post-run in synthesis.md.");
     println!();
+
+    // Persist all-records.txt
+    let mut records = String::new();
+    for o in &observations {
+        records.push_str(&format!("--- {} (bytes={}) ---\n", o.scenario, o.bytes));
+        records.push_str(&format!("setup    : {}\n", o.raw_setup.trim()));
+        records.push_str(&format!("inject   : {}\n", o.raw_inject.trim()));
+        records.push_str(&format!("observe  : {}\n", o.raw_verify.trim()));
+        records.push('\n');
+    }
+    fs::write(run_dir.join("all-records.txt"), &records)
+        .context("write bitrot all-records.txt")?;
+
+    // Persist synthesis.md
+    let mut synth = String::new();
+    synth.push_str("# bitrot synthesis\n\n");
+    synth.push_str(&format!("- Started (epoch): {started_epoch}\n"));
+    synth.push_str(&format!("- Scenarios run  : {}\n", observations.len()));
+    synth.push_str(&format!("- Phases OK      : {n_phase_ok}\n"));
+    synth.push_str(&format!("- Phases FAIL    : {n_phase_fail}\n"));
+    synth.push_str("\nbeamfs-bench is a measurement instrument; this file lists raw observations.\n");
+    synth.push_str("Kernel behavior analysis (recovery vs corruption) is performed post-run.\n\n");
+    synth.push_str("## Per-scenario\n\n");
+    for o in &observations {
+        let mark = if o.phase_ok { "OK" } else { "FAIL" };
+        synth.push_str(&format!("- [{mark}] {} (bytes={})\n", o.scenario, o.bytes));
+    }
+    fs::write(run_dir.join("synthesis.md"), &synth)
+        .context("write bitrot synthesis.md")?;
+
+    // Manifest
+    let ended_epoch = SystemTime::now().duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0);
+    let duration_secs = started_inst.elapsed().as_secs();
+    let mut manifest = String::new();
+    manifest.push_str("================================================================\n");
+    manifest.push_str(" beamfs-bench bitrot manifest\n");
+    manifest.push_str("================================================================\n");
+    manifest.push_str(&format!("Run dir         : {}\n", run_dir.display()));
+    manifest.push_str(&format!("Started (epoch) : {started_epoch}\n"));
+    manifest.push_str(&format!("Ended   (epoch) : {ended_epoch}\n"));
+    manifest.push_str(&format!("Duration (s)    : {duration_secs}\n"));
+    manifest.push_str(&format!("EXPECTED PHASES : {}\n", observations.len()));
+    manifest.push_str(&format!("EXECUTED PHASES : {}\n", observations.len()));
+    manifest.push_str(&format!("PASSED          : {n_phase_ok}\n"));
+    manifest.push_str(&format!("FAILED          : {n_phase_fail}\n"));
+    manifest.push_str("\n================================================================\n");
+    manifest.push_str(" PHASE-BY-PHASE\n");
+    manifest.push_str("================================================================\n");
+    for o in &observations {
+        let tag = if o.phase_ok { "[OK]  " } else { "[FAIL]" };
+        let summary = o.raw_verify.trim().chars().take(140).collect::<String>();
+        manifest.push_str(&format!("{tag} {} (bytes={}) : {summary}\n", o.scenario, o.bytes));
+    }
+    manifest.push_str("\n================================================================\n");
+    manifest.push_str(" ARTIFACTS IN RUN DIR\n");
+    manifest.push_str("================================================================\n");
+    if let Ok(rd) = fs::read_dir(&run_dir) {
+        for entry in rd.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                manifest.push_str(&format!("{:<40} : {} bytes\n",
+                    entry.file_name().to_string_lossy(), meta.len()));
+            }
+        }
+    }
+    let manifest_path = run_dir.join("manifest.txt");
+    fs::write(&manifest_path, &manifest)
+        .context("write bitrot manifest.txt")?;
+
+    println!();
+    println!(" Synthesis : {}/synthesis.md", run_dir.display());
+    println!(" Records   : {}/all-records.txt", run_dir.display());
+    println!(" Manifest  : {}/manifest.txt", run_dir.display());
 
     if n_phase_fail > 0 {
         for o in &observations {

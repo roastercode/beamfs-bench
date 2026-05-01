@@ -1,7 +1,7 @@
 //! synthesis.rs - generate synthesis.md + synthesis.json from a completed run.
 //!
 //! Output format byte-identical to Tir-multifs.sh phase 4. Reference target:
-//! Documentation/runs/Tir-multifs-20260430-141008/{synthesis.md,synthesis.json}.
+//! Documentation/runs/beamfs-bench-analyse-20260430-141008/{synthesis.md,synthesis.json}.
 //!
 //! Critical parity points:
 //!   - synthesis.md table headers, column widths, padding match bash printf.
@@ -27,7 +27,7 @@ pub fn write_synthesis_md(
     let mut f = fs::File::create(&synth_path)
         .with_context(|| format!("create {:?}", synth_path))?;
 
-    writeln!(f, "# Tir-multifs head-to-head report")?;
+    writeln!(f, "# beamfs-bench-multifs head-to-head report")?;
     writeln!(f)?;
     writeln!(f, "**Date**: {ts_human}")?;
     writeln!(f, "**Run dir**: `{}`", run_dir.display())?;

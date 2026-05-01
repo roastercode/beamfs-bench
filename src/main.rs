@@ -49,6 +49,7 @@ mod devices;
 mod forensics;
 mod fsck;
 mod lifecycle;
+mod mega;
 mod metadata;
 mod multifs;
 mod pipeline;
@@ -148,6 +149,12 @@ enum Command {
     /// Test D - fsck recovery post-FS_PANIC.
     /// New scope, not in legacy harness.
     Fsck,
+
+    /// Test E - mega: pipeline + analyse Full + bitrot + metadata + crash + fsck.
+    /// Consolidates everything into ONE tarball under /tmp/ for investigation.
+    /// Captures Yocto build logs, kernel config, modinfo, git HEADs, and
+    /// post-attack forensics (dmesg, radfi-counters, lsmod, ftrace, rs-journal SB).
+    Mega,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -391,6 +398,15 @@ fn main() {
                 Ok(rc) => rc,
                 Err(e) => {
                     eprintln!("beamfs-bench: fsck failed: {e:#}");
+                    1
+                }
+            }
+        }
+        Command::Mega => {
+            match mega::run() {
+                Ok(rc) => rc,
+                Err(e) => {
+                    eprintln!("beamfs-bench: mega failed: {e:#}");
                     1
                 }
             }

@@ -52,7 +52,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use std::fs;
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::bitrot::ssh_target;
 use crate::cluster::{ClusterNode, NodeState, REMOTE_WORKER_PATH};
@@ -201,8 +201,11 @@ pub fn run() -> Result<i32> {
     // Run dir setup
     let now = chrono::Local::now();
     let stamp = now.format("%Y%m%d-%H%M%S").to_string();
+    let started_inst = Instant::now();
+    let started_epoch = SystemTime::now().duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0);
     let run_dir = PathBuf::from(format!(
-        "/home/aurelien/git/yocto-beamfs/Documentation/runs/Tir-metadata-{stamp}"
+        "/home/aurelien/git/yocto-beamfs/Documentation/runs/beamfs-bench-metadata-{stamp}"
     ));
     fs::create_dir_all(&run_dir).context("create run dir")?;
     println!("Run dir: {}", run_dir.display());
@@ -260,6 +263,46 @@ pub fn run() -> Result<i32> {
 
     let n_ok = observations.iter().filter(|o| o.phase_ok).count();
     let n_fail = observations.len() - n_ok;
+
+    // Manifest + tarball
+    let ended_epoch = SystemTime::now().duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0);
+    let duration_secs = started_inst.elapsed().as_secs();
+    let mut manifest = String::new();
+    manifest.push_str("================================================================\n");
+    manifest.push_str(" beamfs-bench metadata manifest\n");
+    manifest.push_str("================================================================\n");
+    manifest.push_str(&format!("Run dir         : {}\n", run_dir.display()));
+    manifest.push_str(&format!("Started (epoch) : {started_epoch}\n"));
+    manifest.push_str(&format!("Ended   (epoch) : {ended_epoch}\n"));
+    manifest.push_str(&format!("Duration (s)    : {duration_secs}\n"));
+    manifest.push_str(&format!("EXPECTED PHASES : {}\n", observations.len()));
+    manifest.push_str(&format!("EXECUTED PHASES : {}\n", observations.len()));
+    manifest.push_str(&format!("PASSED          : {n_ok}\n"));
+    manifest.push_str(&format!("FAILED          : {n_fail}\n"));
+    manifest.push_str("\n================================================================\n");
+    manifest.push_str(" PHASE-BY-PHASE\n");
+    manifest.push_str("================================================================\n");
+    for o in &observations {
+        let tag = if o.phase_ok { "[OK]  " } else { "[FAIL]" };
+        let summary = o.raw_verify.trim().chars().take(140).collect::<String>();
+        manifest.push_str(&format!("{tag} {}/{} : {summary}\n", o.fs, o.scenario));
+    }
+    manifest.push_str("\n================================================================\n");
+    manifest.push_str(" ARTIFACTS IN RUN DIR\n");
+    manifest.push_str("================================================================\n");
+    if let Ok(rd) = fs::read_dir(&run_dir) {
+        for entry in rd.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                manifest.push_str(&format!("{:<40} : {} bytes\n",
+                    entry.file_name().to_string_lossy(), meta.len()));
+            }
+        }
+    }
+    let manifest_path = run_dir.join("manifest.txt");
+    fs::write(&manifest_path, &manifest)
+        .context("write metadata manifest.txt")?;
+
 
     println!();
     println!("================================================================");

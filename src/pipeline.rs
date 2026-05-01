@@ -103,8 +103,12 @@ fn ssh_exec(ip: &str, cmd: &str) -> Result<String> {
 // Phase 0.1
 // ---------------------------------------------------------------------
 pub fn verify_clean_working_trees() -> Result<()> {
-    println!("[pipeline 0.1] verify clean working trees on 3 repos");
-    for repo in &[BEAMFS_REPO, YOCTO_REPO, BENCH_REPO] {
+    println!("[pipeline 0.1] verify clean working trees on 2 lockstep repos");
+    // R19 semantics: lockstep is between beamfs and yocto-beamfs (kernel sources
+    // must be byte-identical between the two repos). beamfs-bench is the bench
+    // tool itself; it is intentionally excluded so that bench refactors can
+    // run their own validation chain without requiring a self-commit first.
+    for repo in &[BEAMFS_REPO, YOCTO_REPO] {
         let out = Command::new("git").args(["-C", repo, "status", "-s"]).output()
             .with_context(|| format!("git status in {repo}"))?;
         let dirty = String::from_utf8_lossy(&out.stdout);
@@ -112,6 +116,20 @@ pub fn verify_clean_working_trees() -> Result<()> {
             bail!("repo {repo} not clean:\n{dirty}");
         }
         println!("  {repo} clean");
+    }
+    // beamfs-bench check downgraded from blocking to informative WARN.
+    {
+        let out = Command::new("git").args(["-C", BENCH_REPO, "status", "-s"]).output()
+            .with_context(|| format!("git status in {BENCH_REPO}"))?;
+        let dirty = String::from_utf8_lossy(&out.stdout);
+        if !dirty.trim().is_empty() {
+            println!("  {BENCH_REPO} dirty (informative, non-blocking):");
+            for line in dirty.lines().take(20) {
+                println!("    {line}");
+            }
+        } else {
+            println!("  {BENCH_REPO} clean");
+        }
     }
     Ok(())
 }
@@ -140,15 +158,27 @@ pub fn verify_lockstep_sources() -> Result<Vec<(String, String)>> {
 // Phase 0.3
 // ---------------------------------------------------------------------
 pub fn bitbake_image(skip: bool) -> Result<()> {
+    bitbake_image_to(skip, None)
+}
+
+/// Same as bitbake_image but optionally captures stdout+stderr to a log file
+/// (in addition to streaming to terminal). Used by mega scope to archive build logs.
+pub fn bitbake_image_to(skip: bool, log_dir: Option<&Path>) -> Result<()> {
     if skip {
         println!("[pipeline 0.3] bitbake SKIPPED (--skip-bitbake)");
         return Ok(());
     }
     println!("[pipeline 0.3] bitbake hpc-arm64-research-beamfs (streaming)");
-    let cmd = format!(
+    let mut cmd = format!(
         "cd {POKY_DIR} && source oe-init-build-env {BUILD_DIR_NAME} > /dev/null 2>&1 && \
-         bitbake hpc-arm64-research-beamfs"
+         bitbake hpc-arm64-research-beamfs 2>&1"
     );
+    if let Some(dir) = log_dir {
+        std::fs::create_dir_all(dir).context("create bitbake log dir")?;
+        let log_path = dir.join("bitbake-stdout.log");
+        // tee: keep streaming visible AND capture to file.
+        cmd = format!("({cmd}) | tee {}", log_path.display());
+    }
     let status = Command::new("env")
         .args(["-i", "HOME=/home/aurelien", "TERM=xterm",
                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",

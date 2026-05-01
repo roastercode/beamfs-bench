@@ -20,7 +20,7 @@
 //!
 //! Output format (synthesis.md, synthesis.json, all-records.txt, per-fs/...) is
 //! byte-identical to legacy Tir-multifs.sh for diff-based parity verification
-//! against reference run Tir-multifs-20260430-141008/.
+//! against reference run beamfs-bench-analyse-20260430-141008/.
 
 use anyhow::{Context, Result};
 use chrono::Local;
@@ -102,7 +102,7 @@ impl Default for MultifsConfig {
                 .map(|(f, v)| (f.to_string(), v.to_string()))
                 .collect(),
             probs: DEFAULT_PROBS.to_vec(),
-            run_dir_prefix: "Tir-multifs".to_string(),
+            run_dir_prefix: "beamfs-bench-multifs".to_string(),
             ssh_user: SSH_USER.to_string(),
             master_ip: MULTIFS_TARGET_IP.to_string(),
             ssh_key_path: key_path,

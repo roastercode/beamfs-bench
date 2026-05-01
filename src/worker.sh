@@ -442,9 +442,30 @@ bitrot_setup)
     TS_TAG="$ARG2"
     SUBDIR="/data/bitrot-$TS_TAG"
     ensure_modules
+    # If /data is not mounted (e.g. metadata test left vdb in incoherent state),
+    # auto-bootstrap by re-formatting vdb + mounting /data. This makes bitrot
+    # standalone re-runnable without requiring a fresh bootstrap_data invocation.
     if ! mountpoint -q /data; then
-        echo "BITROT|HOST=$(hostname)|SETUP=ERROR|reason=/data not mounted"
-        exit 1
+        echo "BITROT|HOST=$(hostname)|SETUP=INFO|reason=/data not mounted, auto-bootstrapping"
+        if [ ! -b /dev/vdb ]; then
+            echo "BITROT|HOST=$(hostname)|SETUP=ERROR|reason=/dev/vdb missing"
+            exit 1
+        fi
+        if ! sudo mkfs.beamfs /dev/vdb >/tmp/bitrot-mkfs.log 2>&1; then
+            TAIL=$(tail -3 /tmp/bitrot-mkfs.log | tr '\n' ' ')
+            echo "BITROT|HOST=$(hostname)|SETUP=ERROR|reason=auto_mkfs_failed|details=$TAIL"
+            exit 1
+        fi
+        sudo mkdir -p /data
+        if ! sudo mount -t beamfs /dev/vdb /data 2>/tmp/bitrot-mount.log; then
+            TAIL=$(tail -3 /tmp/bitrot-mount.log | tr '\n' ' ')
+            echo "BITROT|HOST=$(hostname)|SETUP=ERROR|reason=auto_mount_failed|details=$TAIL"
+            exit 1
+        fi
+        if ! mountpoint -q /data; then
+            echo "BITROT|HOST=$(hostname)|SETUP=ERROR|reason=auto_bootstrap_failed_postmount"
+            exit 1
+        fi
     fi
     sudo rm -rf "$SUBDIR" 2>/dev/null || true
     sudo mkdir -p "$SUBDIR"
@@ -515,8 +536,8 @@ bitrot_verify)
         exit 1
     fi
     # Capture dmesg for kernel RS recovery markers
-    DMESG_RECOVERED=$(sudo dmesg --since "1 minute ago" 2>/dev/null | grep -ciE 'beamfs.*corrected by RS|beamfs.*RS recovery' | tr -d '\n')
-    DMESG_UNCORR=$(sudo dmesg --since "1 minute ago" 2>/dev/null | grep -ciE 'beamfs.*UNCORRECTABLE|beamfs.*RS decode failed' | tr -d '\n')
+    DMESG_RECOVERED=$(sudo dmesg --since "1 minute ago" 2>/dev/null | grep -ciE 'beamfs.*corrected by RS|beamfs.*RS recovery|beamfs/inline:.*symbol\(s\) corrected' | tr -d '\n')
+    DMESG_UNCORR=$(sudo dmesg --since "1 minute ago" 2>/dev/null | grep -ciE 'beamfs.*UNCORRECTABLE|beamfs.*RS decode failed|beamfs/inline:.*uncorrectable|beamfs:.*RS block uncorrectable' | tr -d '\n')
     DMESG_EIO=$(sudo dmesg --since "1 minute ago" 2>/dev/null | grep -ciE 'beamfs.*-EIO|beamfs.*Input/output error' | tr -d '\n')
     [ -z "$DMESG_RECOVERED" ] && DMESG_RECOVERED=0
     [ -z "$DMESG_UNCORR" ] && DMESG_UNCORR=0
@@ -586,7 +607,12 @@ metadata_setup)
         squashfs) sudo bash -c "mkdir -p /tmp/sq-$TS_TAG && head -c 1M /dev/urandom > /tmp/sq-$TS_TAG/data.bin && mksquashfs /tmp/sq-$TS_TAG $DEV -noappend -quiet" >/dev/null 2>&1 && rm -rf /tmp/sq-$TS_TAG ;;
         beamfs)
             ensure_modules
-            sudo mkfs.beamfs "$DEV" >/dev/null 2>&1
+            MKFS_LOG=$(sudo mkfs.beamfs "$DEV" 2>&1)
+            MKFS_RC=$?
+            if [ $MKFS_RC -ne 0 ]; then
+                echo "METADATA|HOST=$(hostname)|SETUP=ERROR|reason=mkfs_failed|fs=beamfs|dev=$DEV|mkfs_rc=$MKFS_RC|mkfs_log=$MKFS_LOG"
+                exit 1
+            fi
             ;;
         *) echo "METADATA|HOST=$(hostname)|SETUP=ERROR|reason=unknown_fs|fs=$FS"; exit 1 ;;
     esac
@@ -697,9 +723,9 @@ metadata_verify)
     [ -z "$SCHEME" ] && SCHEME=na
 
     # Parse dmesg for FEC events
-    DMESG_RECOVERED=$(sudo dmesg 2>/dev/null | grep -ciE 'beamfs.*(rs.fec.corrected|reed.solomon.corrected|metadata.fec.corrected)' | tr -d '\n')
+    DMESG_RECOVERED=$(sudo dmesg 2>/dev/null | grep -ciE 'beamfs.*corrected by RS|beamfs/inline:.*symbol\(s\) corrected' | tr -d '\n')
     [ -z "$DMESG_RECOVERED" ] && DMESG_RECOVERED=0
-    DMESG_UNCORR=$(sudo dmesg 2>/dev/null | grep -ciE 'beamfs.*uncorrectable|beamfs.*-EIO|reed.solomon.*fail' | tr -d '\n')
+    DMESG_UNCORR=$(sudo dmesg 2>/dev/null | grep -ciE 'beamfs/inline:.*uncorrectable|beamfs:.*RS block uncorrectable|beamfs.*-EIO' | tr -d '\n')
     [ -z "$DMESG_UNCORR" ] && DMESG_UNCORR=0
     DMESG_EIO=$(sudo dmesg 2>/dev/null | grep -ciE 'beamfs.*EIO|beamfs.*input/output error' | tr -d '\n')
     [ -z "$DMESG_EIO" ] && DMESG_EIO=0
@@ -760,7 +786,12 @@ crash_setup)
             ;;
         beamfs)
             ensure_modules
-            sudo mkfs.beamfs "$DEV" >/dev/null 2>&1
+            MKFS_LOG=$(sudo mkfs.beamfs "$DEV" 2>&1)
+            MKFS_RC=$?
+            if [ $MKFS_RC -ne 0 ]; then
+                echo "CRASH|HOST=$(hostname)|SETUP=ERROR|reason=mkfs_failed|fs=beamfs|dev=$DEV|mkfs_rc=$MKFS_RC|mkfs_log=$MKFS_LOG"
+                exit 1
+            fi
             ;;
         *) echo "CRASH|HOST=$(hostname)|SETUP=ERROR|reason=unknown_fs|fs=$FS"; exit 1 ;;
     esac

@@ -134,9 +134,9 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     // Step 3: Create run dir + persist topology table for audit
     // ----------------------------------------------------------------
     let run_dir_prefix = match cfg.scope {
-        Scope::Quick => "Tir-analyse-multifs-quick",
-        Scope::Standard => "Tir-analyse-multifs",
-        Scope::Full => "Tir-analyse-multifs-full",
+        Scope::Quick => "beamfs-bench-analyse-quick",
+        Scope::Standard => "beamfs-bench-analyse",
+        Scope::Full => "beamfs-bench-analyse-full",
     };
     let run_dir = repo_root
         .join("Documentation/runs")
@@ -183,7 +183,7 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     println!();
     println!("[run]    Wrapped multifs...");
     let mut multifs_cfg = MultifsConfig::default();
-    multifs_cfg.run_dir_prefix = "Tir-multifs".to_string();
+    multifs_cfg.run_dir_prefix = "beamfs-bench-multifs".to_string();
     multifs_cfg.skip_worker_deploy = true;  // we already deployed
     multifs_cfg.suppress_synthesis_print = true;
     multifs_cfg.pre_validated_mappings = Some(validated.clone());
@@ -323,7 +323,7 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     Ok(exit_code)
 }
 
-fn make_tarball(run_dir: &Path) -> Result<PathBuf> {
+pub fn make_tarball(run_dir: &Path) -> Result<PathBuf> {
     let parent = run_dir.parent()
         .ok_or_else(|| anyhow::anyhow!("run_dir has no parent"))?;
     let name = run_dir.file_name()
