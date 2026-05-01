@@ -596,9 +596,23 @@ metadata_setup)
         exit 1
     fi
 
+    # Aggressive cleanup: previous tests (multifs, crash) may have left
+    # stale mountpoints, kernel state, or superblock metadata on $DEV.
+    # We umount any mountpoint that references $DEV, then wipe the first
+    # 1MB of $DEV (kills FS superblock + parent superblock for beamfs).
+    # This makes metadata_setup re-runnable across FS transitions.
     sudo umount "$MNT" 2>/dev/null
+    # Find any other mountpoint using $DEV and umount it (e.g. multifs left
+    # /mnt/test-beamfs mounted on vdg, which blocks subsequent mkfs).
+    for m in $(mount | grep -E "^$DEV " | awk '{print $3}'); do
+        sudo umount "$m" 2>/dev/null || sudo umount -l "$m" 2>/dev/null
+    done
     sudo rm -rf "$MNT"
     sudo mkdir -p "$MNT"
+    # Wipe first 1MB to clear any FS superblock (ext*, btrfs, beamfs all
+    # store SB in the first sectors). Idempotent for next mkfs.
+    sudo dd if=/dev/zero of="$DEV" bs=1M count=1 conv=notrunc status=none 2>/dev/null
+    sudo sync
 
     case "$FS" in
         ext4)     sudo mkfs.ext4  -F -q "$DEV" >/dev/null 2>&1 ;;

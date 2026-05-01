@@ -325,8 +325,13 @@ pub fn emit_manifest(m: &PipelineManifest) -> Result<PathBuf> {
     std::fs::write(&path, &json).with_context(|| format!("write {}", path.display()))?;
     println!("[pipeline 8.2] manifest written: {}", path.display());
 
+    // Use --batch --pinentry-mode loopback to avoid pinentry timeout when
+    // gpg-agent cache is empty. This requires either a populated agent
+    // cache (preauth via dummy sign) or a configured passphrase source.
+    // Without these flags, gpg blocks on pinentry-curses for 30s then fails.
     let st = Command::new("gpg")
-        .args(["--detach-sign", "--armor", "--yes", "--output",
+        .args(["--batch", "--pinentry-mode", "loopback",
+               "--detach-sign", "--armor", "--yes", "--output",
                &format!("{}.asc", path.display()), &path.to_string_lossy()])
         .status();
     match st {

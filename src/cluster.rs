@@ -242,6 +242,13 @@ pub fn cluster_verify_all(nodes: &[ClusterNode], ts_tag: &str) -> Result<Vec<Clu
     run_cluster_action(nodes, &format!("cluster_verify {ts_tag}"))
 }
 
+/// Run `bootstrap_data` on all reachable nodes in parallel. Used as a
+/// recovery action when cluster_setup fails (e.g. /data was umounted
+/// collaterally by RadFI attack on vdb between probability iterations).
+pub fn bootstrap_data_all(nodes: &[ClusterNode]) -> Result<Vec<ClusterActionResult>> {
+    run_cluster_action(nodes, "bootstrap_data")
+}
+
 fn run_cluster_action(nodes: &[ClusterNode], action_args: &str) -> Result<Vec<ClusterActionResult>> {
     let mut handles = Vec::with_capacity(nodes.len());
     for n in nodes {

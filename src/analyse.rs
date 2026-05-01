@@ -247,9 +247,37 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
 
             // Re-create the test layout for the next probability iteration
             // (cluster_verify removes the subdir at the end).
+            //
+            // Critical: previously this used `let _ =` which silently dropped
+            // any setup failure. If /data was umounted collaterally between
+            // probs (RadFI attack on vdb may corrupt mount state), all
+            // subsequent attack/verify would fail with subdir_missing.
+            //
+            // Now: check setup outputs and retry once via bootstrap_data
+            // if any node reports SETUP=ERROR.
             if probs.last() != Some(&prob) {
                 println!("[cluster] cluster_setup again for next prob...");
-                let _ = cluster::cluster_setup_all(&nodes, &ts_compact);
+                let setup_again = cluster::cluster_setup_all(&nodes, &ts_compact)
+                    .context("cluster_setup_all retry failed")?;
+                let any_error = setup_again.iter()
+                    .any(|r| r.raw_output.contains("ERROR"));
+                if any_error {
+                    println!("[cluster] setup retry detected ERROR, running bootstrap_data on all nodes...");
+                    for r in &setup_again {
+                        if r.raw_output.contains("ERROR") {
+                            println!("    {} : {}", r.host, r.raw_output);
+                        }
+                    }
+                    // Best-effort bootstrap; if /data was lost, this re-mounts it
+                    let _ = cluster::bootstrap_data_all(&nodes);
+                    // Then retry setup one more time
+                    println!("[cluster] cluster_setup final retry after bootstrap...");
+                    let setup_final = cluster::cluster_setup_all(&nodes, &ts_compact)
+                        .context("cluster_setup_all final retry failed")?;
+                    for r in &setup_final {
+                        println!("    {} : {}", r.host, r.raw_output);
+                    }
+                }
             }
         }
         cluster_records_path = Some(cluster_log);
