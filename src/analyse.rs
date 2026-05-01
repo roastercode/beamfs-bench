@@ -384,7 +384,11 @@ pub fn make_tarball(run_dir: &Path) -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("run_dir has no basename"))?
         .to_string_lossy()
         .to_string();
-    let archive = parent.join(format!("{name}.tar.gz"));
+    // Tarball lives under /tmp/ (not next to run_dir under Documentation/runs/),
+    // aligning analyse/full behavior with mega (cf. src/mega.rs). Keeps
+    // run_dir as the canonical source of truth on disk; the tarball is a
+    // transient archive for sharing/investigation.
+    let archive = Path::new("/tmp").join(format!("{name}.tar.gz"));
 
     let status = Command::new("tar")
         .arg("-czf")
