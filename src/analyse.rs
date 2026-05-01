@@ -219,6 +219,32 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
         for r in &setup {
             println!("  {} : {}", r.host, r.raw_output);
         }
+        // func-1 fix B placement INITIAL: same retry+bootstrap pattern as
+        // the inter-prob block below. Without this, the FIRST probability
+        // iteration could hit subdir_missing if /data was already in a
+        // degraded state (e.g. previous mega run aborted, mount stale).
+        // Empirical evidence: mega run 20260501-225142 cluster-records.txt
+        // showed 8 events subdir_missing at prob=1000 (first iter), then
+        // 12/12 RECOVERED at prob=100k and 1M.
+        let any_error_initial = setup.iter()
+            .any(|r| r.raw_output.contains("ERROR"));
+        if any_error_initial {
+            println!("[cluster] initial setup detected ERROR, running bootstrap_data on all nodes...");
+            for r in &setup {
+                if r.raw_output.contains("ERROR") {
+                    println!("    {} : {}", r.host, r.raw_output);
+                }
+            }
+            // Best-effort bootstrap; if /data was lost, this re-mounts it
+            let _ = cluster::bootstrap_data_all(&nodes);
+            // Then retry setup one more time
+            println!("[cluster] cluster_setup final retry after bootstrap...");
+            let setup_final = cluster::cluster_setup_all(&nodes, &ts_compact)
+                .context("cluster_setup_all initial retry failed")?;
+            for r in &setup_final {
+                println!("    {} : {}", r.host, r.raw_output);
+            }
+        }
 
         // Sweep the same probs as multifs for consistency. Probs come from
         // multifs_cfg.probs (already adjusted for quick scope above).
