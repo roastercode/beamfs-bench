@@ -13,9 +13,9 @@ fault injection. Replaces the legacy bash harness (`Tir-*.sh`,
 | `analyse`  | DONE     | Forensic wrapper, 3 scopes (quick / standard / full)     |
 | `full`     | DONE     | Phase 0 isolation pre-flight + lifecycle + bootstrap + analyse |
 | `bitrot`   | DONE     | Test C : offline dd injection + observation (compute01)  |
-| `metadata` | PENDING  | Test A : RadFI deterministic on metadata blocks          |
-| `crash`    | PENDING  | Test B : virsh destroy mid-write + remount observation   |
-| `fsck`     | PENDING  | Test D : fsck recovery post-FS_PANIC                     |
+| `metadata` | DONE     | Test A : RadFI deterministic on metadata blocks          |
+| `crash`    | DONE     | Test B : virsh destroy mid-write + remount observation   |
+| `fsck`     | DONE     | Test D : fsck recovery post-FS_PANIC                     |
 
 
 
