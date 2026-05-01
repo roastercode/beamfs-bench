@@ -45,7 +45,7 @@ pub struct VirtioDisk {
 }
 
 /// Skip the system disks (vda = guest root, vdb = system /data).
-/// vdb hosts BEAMFS on /data which is the cluster scope target;
+/// vdb hosts beamfs on /data which is the cluster scope target;
 /// it is intentionally NOT exposed as a multifs candidate.
 const SKIPPED_TARGETS: &[&str] = &["vda", "vdb"];
 

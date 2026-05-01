@@ -169,7 +169,7 @@ fn write_synthesis(run_dir: &PathBuf, observations: &[MetadataObservation]) -> R
     s.push_str("## Notes for analysis\n\n");
     s.push_str("- Verdict interpretation (recovered/corrupted/panicked) is the\n");
     s.push_str("  role of the analyst, not the bench. Parse fields below.\n");
-    s.push_str("- BEAMFS scheme=5 (INODE_UNIVERSAL) protects metadata only;\n");
+    s.push_str("- beamfs scheme=5 (INODE_UNIVERSAL) protects metadata only;\n");
     s.push_str("  data block protection is Stage 4 future work. See\n");
     s.push_str("  Documentation/roadmap.md.\n");
     s.push_str("- DMESG_RS_CORRECTED counts kernel-logged FEC events.\n");

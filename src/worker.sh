@@ -13,7 +13,7 @@
 #   attack <fs> <vd> <prob>   : arm RadFI on <vd> + trigger I/O on dir-B/file-B2.bin
 #   verify <fs> <vd>          : recompute hashes + classify verdict
 #
-# Actions (cluster scope, master + all 3 computes, BEAMFS on /data):
+# Actions (cluster scope, master + all 3 computes, beamfs on /data):
 #   bootstrap_data            : insmod reed_solomon+beamfs, mkfs.beamfs /dev/vdb, mount /data
 #   cluster_setup  <ts>       : create /data/beamfs-bench-<ts>/ test layout
 #   cluster_attack <ts> <prob>: arm RadFI on /dev/vdb + I/O on /data/beamfs-bench-<ts>/
@@ -289,7 +289,7 @@ verify)
     ;;
 
 # ============================================================
-# Cluster scope : run on each node (master + computes), targets BEAMFS on /data.
+# Cluster scope : run on each node (master + computes), targets beamfs on /data.
 # Args: $1=action $2=ts_tag (also $3=prob for cluster_attack)
 # Layout per node : /data/beamfs-bench-<ts_tag>/dir-{A,B,C}/file-{A,B,C}{1,2,3}.bin
 # Cleanup        : cluster_verify removes the test subdirectory after verdict.
@@ -756,7 +756,7 @@ metadata_verify)
         HASH_POST=na
     fi
 
-    # Parse RS journal (BEAMFS only)
+    # Parse RS journal (beamfs only)
     RSJ_NONZERO=0
     if [ "$FS" = "beamfs" ]; then
         RSJ_BYTES=$((64 * 40))

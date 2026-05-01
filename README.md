@@ -126,7 +126,7 @@ bootstrap. The autonomous canonical bench. Run before any commit.
 
 ## License
 
-GPL-2.0-only - same as the BEAMFS kernel module.
+GPL-2.0-only - same as the beamfs kernel module.
 
 ## Source
 

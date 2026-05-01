@@ -266,10 +266,10 @@ fn capture_one_node(
     if (scope == Scope::Standard || scope == Scope::Full) && hostname == "beamfs-master" {
         let rs_cmd = r#"
             if mount | grep -q '/dev/vdb on /data type beamfs'; then
-                echo '--- /data BEAMFS state ---'
+                echo '--- /data beamfs state ---'
                 df -hT /data
                 echo
-                echo '--- BEAMFS dmesg traces (last 5) ---'
+                echo '--- beamfs dmesg traces (last 5) ---'
                 sudo dmesg | grep -E "beamfs:.*mounted|beamfs:.*scheme=" | tail -5
                 echo
                 echo '--- RS event journal (best effort, hexdump SB s_rs_journal area) ---'

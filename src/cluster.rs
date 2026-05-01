@@ -2,8 +2,8 @@
 //!
 //! ## Topology (per recadrage R13)
 //!
-//! The BEAMFS cluster is NOT master-only. Each compute node has its own
-//! BEAMFS instance on /dev/vdb mounted on /data, with kernel 7.0.3 +
+//! The beamfs cluster is NOT master-only. Each compute node has its own
+//! beamfs instance on /dev/vdb mounted on /data, with kernel 7.0.3 +
 //! beamfs.ko + reed_solomon.ko + radfi.ko (loadable). Compute nodes are
 //! first-class targets, not passive observers.
 //!
@@ -178,7 +178,7 @@ pub fn render_cluster_table(nodes: &[ClusterNode]) -> String {
     out.push_str("   radfi    = radfi.ko currently loaded (will be insmod'ed by attack action if missing)\n");
     out.push_str("   radfi.ko = /lib/modules/$(uname -r)/updates/radfi.ko present on disk\n");
     out.push_str("   perf     = /usr/bin/perf available (required for --scope=full perf record)\n");
-    out.push_str("   /data    = used / total on the BEAMFS-on-vdb mount\n");
+    out.push_str("   /data    = used / total on the beamfs-on-vdb mount\n");
     out.push_str("================================================================\n");
     out
 }
