@@ -235,7 +235,86 @@ fn ssh_probe(ip: &str, key_path: &str) -> bool {
 
 /// Top-level entry: run the full Phase 1 lifecycle pipeline.
 /// Returns Ok(()) only when 4 VMs are running and SSH-ready.
+/// Pre-flight assertion: verify the cluster is in the expected isolated
+/// architecture before any other action.
+///
+/// Architecture per recadrage R-isolation:
+///   master    : vda (rootfs) + vdb (cluster /data) ONLY
+///                (orchestrator, never RadFI target, no FS-test USB)
+///   compute01 : vda + vdb + vdc..vdg (5 USB FS-test victims)
+///   compute02 : vda + vdb only
+///   compute03 : vda + vdb only
+///
+/// Returns Err if the persistent libvirt XML diverges from this contract.
+/// This guarantees the bench cannot run on a misconfigured cluster
+/// where transverse RadFI contamination would invalidate results.
+pub fn assert_isolation_architecture() -> Result<()> {
+    use std::process::Command;
+
+    println!("================================================================");
+    println!(" beamfs-bench lifecycle - Phase 0: isolation pre-flight check");
+    println!("================================================================");
+
+    // Per-VM expected target dev set
+    let expected: &[(&str, &[&str])] = &[
+        ("beamfs-master",    &["vda", "vdb"]),
+        ("beamfs-compute01", &["vda", "vdb", "vdc", "vdd", "vde", "vdf", "vdg"]),
+        ("beamfs-compute02", &["vda", "vdb"]),
+        ("beamfs-compute03", &["vda", "vdb"]),
+    ];
+
+    for (vm, want) in expected {
+        let out = Command::new("sudo")
+            .args(["virsh", "-c", "qemu:///system", "dumpxml", vm])
+            .output()
+            .with_context(|| format!("virsh dumpxml {vm}"))?;
+        if !out.status.success() {
+            bail!("virsh dumpxml {vm} failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        let xml = String::from_utf8_lossy(&out.stdout);
+
+        // Extract all <target dev='vdN' bus='virtio'/> lines for disk targets
+        let mut found: Vec<String> = xml.lines()
+            .filter_map(|l| {
+                let l = l.trim();
+                if l.starts_with("<target dev='vd") && l.contains("bus='virtio'") {
+                    let start = l.find("dev='").map(|i| i + 5)?;
+                    let rest = &l[start..];
+                    let end = rest.find('\'')?;
+                    Some(rest[..end].to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        found.sort();
+
+        let mut want_sorted: Vec<String> = want.iter().map(|s| s.to_string()).collect();
+        want_sorted.sort();
+
+        if found != want_sorted {
+            eprintln!("  [{vm}] FAIL");
+            eprintln!("    expected : {want_sorted:?}");
+            eprintln!("    found    : {found:?}");
+            bail!(
+                "isolation architecture violation on {vm}: expected disk targets {want_sorted:?}, found {found:?}. \
+                 The cluster has been modified outside beamfs-bench and the FS-test isolation \
+                 contract is broken. Restore architecture before running this bench. \
+                 See context-recadrage.md R-isolation."
+            );
+        }
+        println!("  [{vm}] OK ({} disks: {})", found.len(), found.join(","));
+    }
+
+    println!("[isolation] Phase 0 complete - architecture matches R-isolation contract");
+    Ok(())
+}
+
 pub fn bring_cluster_up() -> Result<()> {
+    // Phase 0 first - architecture isolation must be verified before
+    // any destructive action on the cluster.
+    assert_isolation_architecture()?;
+
     println!("================================================================");
     println!(" beamfs-bench lifecycle - Phase 1: bring cluster up");
     println!("================================================================");

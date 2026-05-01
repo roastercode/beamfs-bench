@@ -1,4 +1,4 @@
-//! multifs.rs — port of Tir-multifs.sh (5 FS x 3 probabilities).
+//! multifs.rs - port of Tir-multifs.sh (5 FS x 3 probabilities).
 //!
 //! ## Public API
 //!
@@ -57,9 +57,9 @@ pub const DEFAULT_FS_LIST: &[(&str, &str)] = &[
 pub const DEFAULT_PROBS: &[u32] = &[1000, 100000, 1000000];
 
 pub const SSH_USER: &str = "hpcadmin";
-pub const MASTER_IP: &str = "192.168.56.10";
+pub const MULTIFS_TARGET_IP: &str = "192.168.56.11";  // compute01 holds the 5 USB sticks (isolation per recadrage R-isolation)
 pub const REMOTE_WORKER_PATH: &str = "/tmp/beamfs-bench-worker.sh";
-pub const DEFAULT_VM_NAME: &str = "beamfs-master";
+pub const DEFAULT_VM_NAME: &str = "beamfs-compute01";
 
 /// Configuration for a multifs run.
 #[derive(Clone, Debug)]
@@ -104,7 +104,7 @@ impl Default for MultifsConfig {
             probs: DEFAULT_PROBS.to_vec(),
             run_dir_prefix: "Tir-multifs".to_string(),
             ssh_user: SSH_USER.to_string(),
-            master_ip: MASTER_IP.to_string(),
+            master_ip: MULTIFS_TARGET_IP.to_string(),
             ssh_key_path: key_path,
             auto_confirm: false,
             dry_run: false,

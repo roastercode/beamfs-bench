@@ -1,4 +1,4 @@
-//! synthesis.rs — generate synthesis.md + synthesis.json from a completed run.
+//! synthesis.rs - generate synthesis.md + synthesis.json from a completed run.
 //!
 //! Output format byte-identical to Tir-multifs.sh phase 4. Reference target:
 //! Documentation/runs/Tir-multifs-20260430-141008/{synthesis.md,synthesis.json}.
@@ -34,7 +34,7 @@ pub fn write_synthesis_md(
     writeln!(f)?;
     writeln!(f, "## Topology")?;
     writeln!(f)?;
-    writeln!(f, "5 USB physical disks attached to beamfs-master VM (cache='none' io='threads'):")?;
+    writeln!(f, "5 USB physical disks attached to beamfs-compute01 VM (cache='none' io='threads'); master is isolated orchestrator:")?;
     writeln!(f)?;
     writeln!(f, "| FS       | Device | USB by-id (truncated)             |")?;
     writeln!(f, "|----------|--------|-----------------------------------|")?;

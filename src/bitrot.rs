@@ -40,11 +40,14 @@ pub struct BitrotObservation {
     pub phase_ok: bool,
 }
 
-fn ssh_master() -> Result<SshTarget> {
+/// Build SshTarget for compute01 (the FS-test victim node).
+/// Master is the orchestrator and is intentionally isolated from
+/// RadFI transverse contamination per recadrage R-isolation.
+fn ssh_target() -> Result<SshTarget> {
     let key = std::env::var("HOME")
         .map(|h| format!("{h}/.ssh/hpclab_admin"))
         .context("HOME not set")?;
-    Ok(SshTarget::new("hpcadmin", "192.168.56.10", &key))
+    Ok(SshTarget::new("hpcadmin", "192.168.56.11", &key))
 }
 
 fn ts_tag() -> String {
@@ -56,7 +59,7 @@ fn ts_tag() -> String {
 }
 
 fn run_scenario(scenario: &str, bytes: u32) -> Result<BitrotObservation> {
-    let ssh = ssh_master()?;
+    let ssh = ssh_target()?;
     let tag = ts_tag();
 
     // Phase 1: setup (worker auto-detects target block by scanning disk)
@@ -98,16 +101,16 @@ pub fn run() -> Result<i32> {
     println!("================================================================");
 
     println!();
-    println!("[bitrot] Deploying worker.sh on master...");
-    let master_node = vec![crate::cluster::ClusterNode {
-        ip: "192.168.56.10".to_string(),
-        expected_hostname: "beamfs-master".to_string(),
+    println!("[bitrot] Deploying worker.sh on compute01 (FS-test victim node)...");
+    let target_node = vec![crate::cluster::ClusterNode {
+        ip: "192.168.56.11".to_string(),
+        expected_hostname: "beamfs-compute01".to_string(),
         discovered: crate::cluster::NodeState {
             reachable: true,
             ..Default::default()
         },
     }];
-    let deploys = crate::cluster::deploy_worker_all(&master_node)
+    let deploys = crate::cluster::deploy_worker_all(&target_node)
         .context("worker deploy")?;
     for (host, r) in &deploys {
         match r {
