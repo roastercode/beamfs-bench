@@ -310,23 +310,6 @@ pub fn assert_isolation_architecture() -> Result<()> {
     Ok(())
 }
 
-pub fn bring_cluster_up() -> Result<()> {
-    // Phase 0 first - architecture isolation must be verified before
-    // any destructive action on the cluster.
-    assert_isolation_architecture()?;
-
-    println!("================================================================");
-    println!(" beamfs-bench lifecycle - Phase 1: bring cluster up");
-    println!("================================================================");
-    define_missing_vms().context("define missing VMs")?;
-    destroy_all_vms().context("destroy all VMs (aveugle)")?;
-    start_network().context("start hpcnet")?;
-    start_all_vms().context("start all VMs")?;
-    wait_ssh_ready_parallel().context("wait SSH ready (parallel)")?;
-    println!("[lifecycle] Phase 1 complete - 4 VMs running, SSH ready");
-    Ok(())
-}
-
 /// Optional shutdown phase (called by `full --shutdown` only).
 pub fn bring_cluster_down() -> Result<()> {
     println!("[lifecycle] Phase 8 - shutdown (--shutdown given)");

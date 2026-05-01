@@ -51,6 +51,7 @@ mod fsck;
 mod lifecycle;
 mod metadata;
 mod multifs;
+mod pipeline;
 mod ssh;
 mod synthesis;
 
@@ -126,6 +127,10 @@ enum Command {
         /// Use only for repeated runs on a known-good cluster.
         #[arg(long)]
         skip_vm_bootstrap: bool,
+        /// Skip the bitbake image rebuild (use existing canonical .ext2).
+        /// Use when iterating on the pipeline itself; never skip in R19 production.
+        #[arg(long)]
+        skip_bitbake: bool,
     },
 
     /// Test A - metadata-targeted attack (superblock, inode bitmap, journal).
@@ -174,17 +179,69 @@ fn cmd_version() -> i32 {
 
 /// Full bench pipeline: lifecycle (VM up) + bootstrap (/data) + analyse scope=full.
 /// R0/R19: exit 0 only when all phases complete cleanly.
-fn cmd_full(auto_confirm: bool, no_tarball: bool, shutdown: bool, skip_vm_bootstrap: bool) -> anyhow::Result<i32> {
+fn cmd_full(auto_confirm: bool, no_tarball: bool, shutdown: bool, skip_vm_bootstrap: bool, skip_bitbake: bool) -> anyhow::Result<i32> {
     use anyhow::Context;
 
     println!("================================================================");
-    println!(" beamfs-bench full - autonomous bench pipeline");
+    println!(" beamfs-bench full - MIL no-NAK validation pipeline");
     println!("================================================================");
 
-    if !skip_vm_bootstrap {
-        lifecycle::bring_cluster_up().context("Phase 1 lifecycle failed")?;
-    } else {
-        println!("[full] Phase 1 skipped (--skip-vm-bootstrap)");
+    let mut manifest = pipeline::build_initial_manifest()
+        .context("manifest init")?;
+
+    // Phase 0.0 -- R21 isolation architecture invariant
+    if let Err(e) = pipeline::assert_isolation_r21() {
+        return Err(pipeline::fail(&mut manifest, "0.0_isolation_r21", &e));
+    }
+    pipeline::record(&mut manifest, "0.0_isolation_r21", 0);
+
+    // Phase 0.1
+    if let Err(e) = pipeline::verify_clean_working_trees() {
+        return Err(pipeline::fail(&mut manifest, "0.1_clean_trees", &e));
+    }
+    pipeline::record(&mut manifest, "0.1_clean_trees", 0);
+
+    // Phase 0.2
+    let src_manifest = pipeline::verify_lockstep_sources()
+        .map_err(|e| pipeline::fail(&mut manifest, "0.2_lockstep", &e))?;
+    manifest.source_sha256 = src_manifest;
+    pipeline::record(&mut manifest, "0.2_lockstep", 0);
+
+    // Phase 0.3
+    if let Err(e) = pipeline::bitbake_image(skip_bitbake) {
+        return Err(pipeline::fail(&mut manifest, "0.3_bitbake", &e));
+    }
+    pipeline::record(&mut manifest, "0.3_bitbake", 0);
+
+    // Phase 0.4
+    let (ref_ko, ext2_sha) = pipeline::extract_reference_ko_sha()
+        .map_err(|e| pipeline::fail(&mut manifest, "0.4_extract_ref", &e))?;
+    manifest.reference_ko_sha256   = ref_ko.clone();
+    manifest.canonical_ext2_sha256 = ext2_sha;
+    pipeline::record(&mut manifest, "0.4_extract_ref", 0);
+
+    // Phase 0.5
+    if let Err(e) = pipeline::redeploy_4_vms() {
+        return Err(pipeline::fail(&mut manifest, "0.5_redeploy", &e));
+    }
+    pipeline::record(&mut manifest, "0.5_redeploy", 0);
+
+    // Phase 0.6 -- reuse lifecycle wait_ssh_ready_parallel
+    if let Err(e) = lifecycle::wait_ssh_ready_parallel() {
+        return Err(pipeline::fail(&mut manifest, "0.6_ssh_ready", &e));
+    }
+    pipeline::record(&mut manifest, "0.6_ssh_ready", 0);
+
+    // Phase 0.7
+    let in_vm_shas = pipeline::verify_module_identity_in_vm(&ref_ko)
+        .map_err(|e| pipeline::fail(&mut manifest, "0.7_identity", &e))?;
+    manifest.in_vm_ko_sha256 = in_vm_shas;
+    pipeline::record(&mut manifest, "0.7_identity", 0);
+
+    // Phase 1 lifecycle (legacy bring_cluster_up) is fully absorbed by
+    // pipeline phases 0.0/0.5/0.6; no separate legacy invocation needed.
+    if skip_vm_bootstrap {
+        println!("[full] WARNING: --skip-vm-bootstrap given but pipeline already redeployed VMs in Phase 0.5");
     }
 
     println!();
@@ -243,6 +300,17 @@ fn cmd_full(auto_confirm: bool, no_tarball: bool, shutdown: bool, skip_vm_bootst
         lifecycle::bring_cluster_down().context("shutdown phase failed")?;
     }
 
+    // Phase 8.1
+    if let Err(e) = pipeline::verify_dmesg_clean() {
+        return Err(pipeline::fail(&mut manifest, "8.1_dmesg", &e));
+    }
+    pipeline::record(&mut manifest, "8.1_dmesg", 0);
+
+    // Phase 8.2
+    manifest.overall_rc  = analyse_rc;
+    manifest.finished_at = pipeline::now_iso();
+    let _ = pipeline::emit_manifest(&manifest);
+
     println!();
     println!("================================================================");
     println!(" beamfs-bench full complete - exit code {analyse_rc}");
@@ -282,8 +350,8 @@ fn main() {
             }
         }
 
-        Command::Full { auto_confirm, no_tarball, shutdown, skip_vm_bootstrap } => {
-            match cmd_full(auto_confirm, no_tarball, shutdown, skip_vm_bootstrap) {
+        Command::Full { auto_confirm, no_tarball, shutdown, skip_vm_bootstrap, skip_bitbake } => {
+            match cmd_full(auto_confirm, no_tarball, shutdown, skip_vm_bootstrap, skip_bitbake) {
                 Ok(rc) => rc,
                 Err(e) => {
                     eprintln!("beamfs-bench: full failed: {e:#}");
