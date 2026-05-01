@@ -41,6 +41,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod analyse;
+mod bitrot;
 mod bootstrap;
 mod cluster;
 mod devices;
@@ -164,7 +165,7 @@ impl ScopeArg {
 fn cmd_version() -> i32 {
     println!("beamfs-bench {}", BEAMFS_BENCH_VERSION);
     println!("license GPL-2.0-only");
-    println!("status: full + multifs + analyse implemented; metadata/crash/bitrot/fsck pending");
+    println!("status: full + multifs + analyse + bitrot implemented; metadata/crash/fsck pending");
     0
 }
 
@@ -295,7 +296,15 @@ fn main() {
         }
         Command::Metadata => cmd_not_yet_implemented("metadata"),
         Command::Crash => cmd_not_yet_implemented("crash"),
-        Command::Bitrot => cmd_not_yet_implemented("bitrot"),
+        Command::Bitrot => {
+            match bitrot::run() {
+                Ok(rc) => rc,
+                Err(e) => {
+                    eprintln!("beamfs-bench: bitrot failed: {e:#}");
+                    1
+                }
+            }
+        }
         Command::Fsck => cmd_not_yet_implemented("fsck"),
     };
     std::process::exit(rc);

@@ -423,10 +423,134 @@ bootstrap_data)
     DATA_INFO=$(df -h /data 2>/dev/null | awk 'NR==2 {print $2"/"$3}')
     echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=OK|fs=beamfs|dev=/dev/vdb|info=$DATA_INFO"
     ;;
+bitrot_setup)
+    TS_TAG="$ARG2"
+    SUBDIR="/data/bitrot-$TS_TAG"
+    ensure_modules
+    if ! mountpoint -q /data; then
+        echo "BITROT|HOST=$(hostname)|SETUP=ERROR|reason=/data not mounted"
+        exit 1
+    fi
+    sudo rm -rf "$SUBDIR" 2>/dev/null || true
+    sudo mkdir -p "$SUBDIR"
+    # 5 fichiers de 4 KB chacun (1 block beamfs chacun)
+    for n in 1 2 3 4 5; do
+        sudo bash -c "head -c 4096 /dev/urandom > $SUBDIR/file-$n.bin"
+    done
+    sudo sync
+    # Baseline sha256
+    sudo find "$SUBDIR" -type f -exec sha256sum {} \; 2>/dev/null | sort > "/tmp/bitrot-pre-$TS_TAG.txt"
+    HASH_PRE=$(sudo cat "/tmp/bitrot-pre-$TS_TAG.txt" | sha256sum | awk '{print $1}')
+    # Detection dynamique : scan /dev/vdb pour trouver le block de file-3.bin
+    TARGET_FILE="$SUBDIR/file-3.bin"
+    PATTERN=$(sudo head -c 16 "$TARGET_FILE" | xxd -p)
+    TARGET_BLOCK=0
+    sudo sync
+    echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
+    for blk in $(seq 5 200); do
+        BYTE_OFFSET=$((blk * 4096))
+        BLOCK_HEAD=$(sudo dd if=/dev/vdb bs=1 skip=$BYTE_OFFSET count=16 2>/dev/null | xxd -p)
+        if [ "$BLOCK_HEAD" = "$PATTERN" ]; then
+            TARGET_BLOCK=$blk
+            break
+        fi
+    done
+    if [ "$TARGET_BLOCK" = "0" ]; then
+        echo "BITROT|HOST=$(hostname)|SETUP=ERROR|reason=could not locate file-3.bin on disk"
+        exit 1
+    fi
+    # Persist target block for inject step (clean re-mount safe)
+    echo "$TARGET_BLOCK" | sudo tee "/tmp/bitrot-target-$TS_TAG.txt" >/dev/null
+    echo "BITROT|HOST=$(hostname)|SETUP=OK|SUBDIR=$SUBDIR|FILES=5|HASH_PRE=$HASH_PRE|TARGET_FILE=$TARGET_FILE|TARGET_BLOCK=$TARGET_BLOCK"
+    ;;
+bitrot_inject)
+    TS_TAG="$ARG2"
+    BYTES="${ARG3:-1}"
+    # Lire le block cible detecte par setup
+    TARGET_FILE="/tmp/bitrot-target-$TS_TAG.txt"
+    if [ ! -f "$TARGET_FILE" ]; then
+        echo "BITROT|HOST=$(hostname)|INJECT=ERROR|reason=target block file missing"
+        exit 1
+    fi
+    BLOCK_OFFSET=$(sudo cat "$TARGET_FILE")
+    # Flush + umount aveugle
+    sudo sync
+    if mountpoint -q /data; then
+        sudo umount /data 2>/dev/null || sudo umount -l /data 2>/dev/null
+    fi
+    BYTE_OFFSET=$((BLOCK_OFFSET * 4096))
+    # dd random bytes a l'offset detecte
+    sudo dd if=/dev/urandom of=/dev/vdb bs=1 count=$BYTES seek=$BYTE_OFFSET conv=notrunc 2>/dev/null
+    sudo sync
+    echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
+    sudo mount -t beamfs /dev/vdb /data 2>/tmp/bitrot-remount.log
+    REMOUNT_RC=$?
+    if [ $REMOUNT_RC -ne 0 ]; then
+        TAIL=$(tail -3 /tmp/bitrot-remount.log | tr '\n' ' ')
+        echo "BITROT|HOST=$(hostname)|INJECT=FAIL_REMOUNT|bytes=$BYTES|byte_offset=$BYTE_OFFSET|block=$BLOCK_OFFSET|details=$TAIL"
+        exit 0
+    fi
+    echo "BITROT|HOST=$(hostname)|INJECT=OK|bytes=$BYTES|byte_offset=$BYTE_OFFSET|block=$BLOCK_OFFSET"
+    ;;
+bitrot_verify)
+    TS_TAG="$ARG2"
+    SUBDIR="/data/bitrot-$TS_TAG"
+    if [ ! -d "$SUBDIR" ]; then
+        echo "BITROT|HOST=$(hostname)|VERIFY=ERROR|reason=subdir_missing"
+        exit 1
+    fi
+    # Capture dmesg for kernel RS recovery markers
+    DMESG_RECOVERED=$(sudo dmesg --since "1 minute ago" 2>/dev/null | grep -ciE 'beamfs.*corrected by RS|beamfs.*RS recovery' | tr -d '\n')
+    DMESG_UNCORR=$(sudo dmesg --since "1 minute ago" 2>/dev/null | grep -ciE 'beamfs.*UNCORRECTABLE|beamfs.*RS decode failed' | tr -d '\n')
+    DMESG_EIO=$(sudo dmesg --since "1 minute ago" 2>/dev/null | grep -ciE 'beamfs.*-EIO|beamfs.*Input/output error' | tr -d '\n')
+    [ -z "$DMESG_RECOVERED" ] && DMESG_RECOVERED=0
+    [ -z "$DMESG_UNCORR" ] && DMESG_UNCORR=0
+    [ -z "$DMESG_EIO" ] && DMESG_EIO=0
+    # Read tous les fichiers (force IO path)
+    READ_OK=0
+    READ_FAIL=0
+    for n in 1 2 3 4 5; do
+        if sudo cat "$SUBDIR/file-$n.bin" > /dev/null 2>&1; then
+            READ_OK=$((READ_OK+1))
+        else
+            READ_FAIL=$((READ_FAIL+1))
+        fi
+    done
+    # SHA-256 post
+    sudo sync
+    echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
+    sudo find "$SUBDIR" -type f -exec sha256sum {} \; 2>/dev/null | sort > "/tmp/bitrot-post-$TS_TAG.txt"
+    DIFFS=$(awk '
+        FNR==NR { hash_pre[$2]=$1; next }
+        { if ($1 != hash_pre[$2]) mismatch++ }
+        END { print mismatch+0 }
+    ' "/tmp/bitrot-pre-$TS_TAG.txt" "/tmp/bitrot-post-$TS_TAG.txt" 2>/dev/null)
+    [ -z "$DIFFS" ] && DIFFS=0
+    # Read scheme from kernel dmesg of the most recent mount.
+    # Kernel prints "beamfs: mounted v1 ... scheme=N ..." at every mount.
+    # This is the canonical source of truth (independent of on-disk
+    # offset version drift between format revisions).
+    SCHEME=$(sudo dmesg 2>/dev/null | grep 'beamfs: mounted' | tail -1 \
+             | grep -oE 'scheme=[0-9]+' | tail -1 | cut -d= -f2)
+    [ -z "$SCHEME" ] && SCHEME=unknown
+
+    # Parse RS journal as 64 events of 40 bytes each (struct beamfs_rs_event v4)
+    RSJ_BYTES=$((64 * 40))
+    RSJ_HEX=$(sudo dd if=/dev/vdb bs=1 skip=116 count=$RSJ_BYTES 2>/dev/null | xxd -p -c 40)
+    RSJ_NONZERO=$(echo "$RSJ_HEX" | grep -cv '^0\+$' | tr -d '\n')
+    [ -z "$RSJ_NONZERO" ] && RSJ_NONZERO=0
+
+    # Emit pure observation record (no PASS/FAIL judgment)
+    echo "BITROT|HOST=$(hostname)|SCHEME=$SCHEME|READ_OK=$READ_OK|READ_FAIL=$READ_FAIL|DATA_HASH_DIFF=$DIFFS|DMESG_RS_CORRECTED=$DMESG_RECOVERED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|RS_JOURNAL_NEW_ENTRIES=$RSJ_NONZERO"
+    sudo rm -rf "$SUBDIR" 2>/dev/null || true
+    sudo rm -f "/tmp/bitrot-pre-$TS_TAG.txt" "/tmp/bitrot-post-$TS_TAG.txt" "/tmp/bitrot-target-$TS_TAG.txt" 2>/dev/null
+    echo "BITROT|HOST=$(hostname)|VERDICT=$VERDICT|read_ok=$READ_OK|read_fail=$READ_FAIL|diffs=$DIFFS|dmesg_rec=$DMESG_RECOVERED|dmesg_uncorr=$DMESG_UNCORR|rsj_entries=$RSJ_NONZERO|details=$DETAILS"
+    ;;
 *)
     echo "ERROR: unknown action $ACTION" >&2
     echo "Valid actions: discover_devices, discover_cluster, setup, attack, verify," >&2
-    echo "               cluster_setup, cluster_attack, cluster_verify, bootstrap_data" >&2
+    echo "               cluster_setup, cluster_attack, cluster_verify, bootstrap_data," >&2
+    echo "               bitrot_setup, bitrot_inject, bitrot_verify" >&2
     exit 2
     ;;
 
