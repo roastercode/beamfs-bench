@@ -44,8 +44,10 @@ mod analyse;
 mod bitrot;
 mod bootstrap;
 mod cluster;
+mod crash;
 mod devices;
 mod forensics;
+mod fsck;
 mod lifecycle;
 mod metadata;
 mod multifs;
@@ -166,14 +168,8 @@ impl ScopeArg {
 fn cmd_version() -> i32 {
     println!("beamfs-bench {}", BEAMFS_BENCH_VERSION);
     println!("license GPL-2.0-only");
-    println!("status: full + multifs + analyse + bitrot + metadata implemented; crash/fsck pending");
+    println!("status: full + multifs + analyse + bitrot + metadata + crash + fsck implemented");
     0
-}
-
-fn cmd_not_yet_implemented(name: &str) -> i32 {
-    eprintln!("beamfs-bench: subcommand `{name}` not yet implemented");
-    eprintln!("beamfs-bench: see context/TODO.md (TODO 2) in beamfs-devel for the migration plan");
-    2
 }
 
 /// Full bench pipeline: lifecycle (VM up) + bootstrap (/data) + analyse scope=full.
@@ -304,7 +300,15 @@ fn main() {
                 }
             }
         }
-        Command::Crash => cmd_not_yet_implemented("crash"),
+        Command::Crash => {
+            match crash::run() {
+                Ok(rc) => rc,
+                Err(e) => {
+                    eprintln!("beamfs-bench: crash failed: {e:#}");
+                    1
+                }
+            }
+        }
         Command::Bitrot => {
             match bitrot::run() {
                 Ok(rc) => rc,
@@ -314,7 +318,15 @@ fn main() {
                 }
             }
         }
-        Command::Fsck => cmd_not_yet_implemented("fsck"),
+        Command::Fsck => {
+            match fsck::run() {
+                Ok(rc) => rc,
+                Err(e) => {
+                    eprintln!("beamfs-bench: fsck failed: {e:#}");
+                    1
+                }
+            }
+        }
     };
     std::process::exit(rc);
 }

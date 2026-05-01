@@ -24,6 +24,14 @@
 #   metadata_inject <ts> <fs> <vd> <block> <prob> : arm RadFI target_block=<block>, trigger I/O
 #   metadata_verify <ts> <fs> <vd> : remount + read + parse dmesg + emit observation
 #
+# Actions (crash scope, compute01 only, simulate power-loss mid-write):
+#   crash_setup        <ts> <fs> <vd> : format <fs>, populate stable files, capture hash_pre
+#   crash_start_writer <ts> <fs> <vd> : start dd loop in background; bench then virsh-destroys
+#   crash_verify       <ts> <fs> <vd> : remount post-reboot, parse dmesg journal-replay, emit obs
+#
+# Actions (fsck scope, compute01 only, offline recovery):
+#   fsck_check <ts> <fs> <vd> : run fsck.<fs> on /dev/<vd>, capture rc + output
+#
 # IMPORTANT (recadrage R12 / R13):
 #   This worker NEVER discovers physical USB identity by itself. The Rust caller
 #   parses `virsh dumpxml <vm>` on the host (spartian) to obtain the authoritative
@@ -724,11 +732,196 @@ metadata_verify)
     sudo rm -rf "$MNT"
     ;;
 
+
+crash_setup)
+    TS_TAG="$ARG2"
+    FS="$ARG3"
+    VD="$ARG4"
+    DEV="/dev/$VD"
+    MNT="/mnt/crash-$FS-$TS_TAG"
+
+    if [ ! -b "$DEV" ]; then
+        echo "CRASH|HOST=$(hostname)|SETUP=ERROR|reason=device_missing|dev=$DEV"
+        exit 1
+    fi
+
+    sudo umount "$MNT" 2>/dev/null
+    sudo rm -rf "$MNT"
+    sudo mkdir -p "$MNT"
+
+    case "$FS" in
+        ext4)     sudo mkfs.ext4  -F -q "$DEV" >/dev/null 2>&1 ;;
+        ext3)     sudo mkfs.ext3  -F -q "$DEV" >/dev/null 2>&1 ;;
+        btrfs)    sudo mkfs.btrfs -f    "$DEV" >/dev/null 2>&1 ;;
+        squashfs)
+            # squashfs is RO: skip (cannot test crash mid-write on RO FS)
+            echo "CRASH|HOST=$(hostname)|SETUP=SKIP|fs=squashfs|reason=read_only_filesystem"
+            exit 0
+            ;;
+        beamfs)
+            ensure_modules
+            sudo mkfs.beamfs "$DEV" >/dev/null 2>&1
+            ;;
+        *) echo "CRASH|HOST=$(hostname)|SETUP=ERROR|reason=unknown_fs|fs=$FS"; exit 1 ;;
+    esac
+
+    sudo mount "$DEV" "$MNT" 2>/dev/null
+    if ! mountpoint -q "$MNT"; then
+        echo "CRASH|HOST=$(hostname)|SETUP=ERROR|reason=mount_failed|fs=$FS|dev=$DEV"
+        exit 1
+    fi
+
+    # Populate 5 stable files (these are the "before crash" baseline)
+    for i in 1 2 3 4 5; do
+        sudo bash -c "head -c 4096 /dev/urandom > $MNT/stable-$i.bin"
+    done
+    sudo sync
+
+    HASH_PRE=$(find "$MNT" -type f -exec sha256sum {} \; 2>/dev/null | sort | sha256sum | cut -d' ' -f1)
+    echo "CRASH|HOST=$(hostname)|SETUP=OK|fs=$FS|dev=$DEV|mnt=$MNT|hash_pre=$HASH_PRE"
+    ;;
+
+crash_start_writer)
+    TS_TAG="$ARG2"
+    FS="$ARG3"
+    VD="$ARG4"
+    MNT="/mnt/crash-$FS-$TS_TAG"
+
+    if [ "$FS" = "squashfs" ]; then
+        echo "CRASH|HOST=$(hostname)|WRITER=SKIP|fs=squashfs|reason=read_only_filesystem"
+        exit 0
+    fi
+
+    if ! mountpoint -q "$MNT"; then
+        echo "CRASH|HOST=$(hostname)|WRITER=ERROR|reason=not_mounted|mnt=$MNT"
+        exit 1
+    fi
+
+    # Start a background writer that loops dd urandom into a file.
+    # The bench will virsh-destroy compute01 ~500ms after this returns,
+    # so dd is in-flight when power is cut.
+    # Start writer in fully-detached background using setsid + nohup-like
+    # redirection. Without these, the parent ssh connection blocks waiting
+    # for the inherited FDs to close.
+    sudo nohup bash -c "
+        while true; do
+            dd if=/dev/urandom of=$MNT/crash-write.bin bs=4096 count=128 oflag=direct 2>/dev/null
+        done
+    " </dev/null >/dev/null 2>&1 &
+    PID=$!
+    disown $PID 2>/dev/null || true
+    echo $PID > /tmp/crash-writer-$TS_TAG.pid
+    echo "CRASH|HOST=$(hostname)|WRITER=STARTED|fs=$FS|pid=$PID|mnt=$MNT"
+    ;;
+
+crash_verify)
+    TS_TAG="$ARG2"
+    FS="$ARG3"
+    VD="$ARG4"
+    DEV="/dev/$VD"
+    MNT="/mnt/crash-$FS-$TS_TAG"
+
+    if [ "$FS" = "squashfs" ]; then
+        echo "CRASH|HOST=$(hostname)|VERIFY=SKIP|fs=squashfs|reason=read_only_filesystem"
+        exit 0
+    fi
+
+    # Read scheme from dmesg (canonical, applies only to beamfs)
+    SCHEME=$(sudo dmesg 2>/dev/null | grep 'beamfs: mounted' | tail -1 \
+             | grep -oE 'scheme=[0-9]+' | tail -1 | cut -d= -f2)
+    [ -z "$SCHEME" ] && SCHEME=na
+
+    sudo mkdir -p "$MNT"
+
+    # Try mount post-reboot
+    if [ "$FS" = "beamfs" ]; then
+        ensure_modules
+    fi
+    sudo mount "$DEV" "$MNT" 2>&1
+    MOUNT_RC=$?
+
+    # Parse dmesg for journal replay / EIO / panic events
+    DMESG_JOURNAL_REPLAY=$(sudo dmesg 2>/dev/null | grep -ciE 'recovery|journal.*recovered|replay|orphan inode' | tr -d '\n')
+    [ -z "$DMESG_JOURNAL_REPLAY" ] && DMESG_JOURNAL_REPLAY=0
+    DMESG_EIO=$(sudo dmesg 2>/dev/null | grep -ciE 'EIO|input/output error' | tr -d '\n')
+    [ -z "$DMESG_EIO" ] && DMESG_EIO=0
+    DMESG_FSCK_NEEDED=$(sudo dmesg 2>/dev/null | grep -ciE 'fsck.*needed|fsck.*recommended|run.*fsck|forced.*recovery' | tr -d '\n')
+    [ -z "$DMESG_FSCK_NEEDED" ] && DMESG_FSCK_NEEDED=0
+    DMESG_PANIC=$(sudo dmesg 2>/dev/null | grep -ciE 'kernel panic|Oops:|Call trace' | tr -d '\n')
+    [ -z "$DMESG_PANIC" ] && DMESG_PANIC=0
+
+    if mountpoint -q "$MNT"; then
+        MOUNTED=1
+        STABLE_OK=$(find "$MNT" -name 'stable-*.bin' -type f 2>/dev/null | wc -l | tr -d '\n')
+        HASH_STABLE=$(find "$MNT" -name 'stable-*.bin' -type f -exec sha256sum {} \; 2>/dev/null | sort | sha256sum | cut -d' ' -f1)
+        CRASH_FILE_PRESENT=0
+        [ -f "$MNT/crash-write.bin" ] && CRASH_FILE_PRESENT=1
+    else
+        MOUNTED=0
+        STABLE_OK=0
+        HASH_STABLE=na
+        CRASH_FILE_PRESENT=0
+    fi
+
+    echo "CRASH|HOST=$(hostname)|VERIFY=OK|fs=$FS|scheme=$SCHEME|mount_rc=$MOUNT_RC|mounted=$MOUNTED|stable_files_ok=$STABLE_OK|hash_stable=$HASH_STABLE|crash_file_present=$CRASH_FILE_PRESENT|dmesg_journal_replay=$DMESG_JOURNAL_REPLAY|dmesg_eio=$DMESG_EIO|dmesg_fsck_needed=$DMESG_FSCK_NEEDED|dmesg_panic=$DMESG_PANIC"
+
+    sudo umount "$MNT" 2>/dev/null
+    sudo rm -rf "$MNT"
+    ;;
+
+fsck_check)
+    TS_TAG="$ARG2"
+    FS="$ARG3"
+    VD="$ARG4"
+    DEV="/dev/$VD"
+
+    if [ "$FS" = "squashfs" ]; then
+        echo "FSCK|HOST=$(hostname)|CHECK=SKIP|fs=squashfs|reason=read_only_filesystem_no_fsck"
+        exit 0
+    fi
+
+    case "$FS" in
+        ext4|ext3)
+            FSCK_BIN="fsck.$FS"
+            FSCK_ARGS="-f -y"
+            ;;
+        btrfs)
+            FSCK_BIN="btrfs"
+            FSCK_ARGS="check"
+            ;;
+        beamfs)
+            # fsck.beamfs not yet implemented (Phase 1.5 mainline-prep)
+            echo "FSCK|HOST=$(hostname)|CHECK=NOT_IMPLEMENTED|fs=beamfs|reason=fsck_beamfs_pending_phase_1_5"
+            exit 0
+            ;;
+        *) echo "FSCK|HOST=$(hostname)|CHECK=ERROR|reason=unknown_fs|fs=$FS"; exit 1 ;;
+    esac
+
+    if ! command -v "$FSCK_BIN" >/dev/null 2>&1; then
+        echo "FSCK|HOST=$(hostname)|CHECK=ERROR|fs=$FS|reason=fsck_binary_missing|bin=$FSCK_BIN"
+        exit 1
+    fi
+
+    # Make sure the fs is unmounted before fsck
+    sudo umount "/dev/$VD" 2>/dev/null || true
+
+    if [ "$FS" = "btrfs" ]; then
+        FSCK_OUT=$(sudo "$FSCK_BIN" $FSCK_ARGS "$DEV" 2>&1 | head -20 | tr '\n' ';')
+        FSCK_RC=$?
+    else
+        FSCK_OUT=$(sudo "$FSCK_BIN" $FSCK_ARGS "$DEV" 2>&1 | head -20 | tr '\n' ';')
+        FSCK_RC=$?
+    fi
+
+    echo "FSCK|HOST=$(hostname)|CHECK=OK|fs=$FS|dev=$DEV|fsck_rc=$FSCK_RC|fsck_summary=$FSCK_OUT"
+    ;;
+
 *)
     echo "ERROR: unknown action $ACTION" >&2
     echo "Valid actions: discover_devices, discover_cluster, setup, attack, verify," >&2
     echo "               cluster_setup, cluster_attack, cluster_verify, bootstrap_data,"
-    echo "               metadata_setup, metadata_inject, metadata_verify," >&2
+    echo "               metadata_setup, metadata_inject, metadata_verify,"
+    echo "               crash_setup, crash_start_writer, crash_verify, fsck_check," >&2
     echo "               bitrot_setup, bitrot_inject, bitrot_verify" >&2
     exit 2
     ;;

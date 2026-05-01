@@ -57,7 +57,7 @@ fn virsh_sudo(args: &[&str]) -> Result<String> {
 
 /// Same as virsh_sudo but tolerates non-zero exit (some virsh subcommands
 /// like `domstate` on undefined domain return 1 normally).
-fn virsh_sudo_lenient(args: &[&str]) -> (i32, String, String) {
+pub(crate) fn virsh_sudo_lenient(args: &[&str]) -> (i32, String, String) {
     let mut full_args = vec!["virsh", "-c", "qemu:///system"];
     full_args.extend_from_slice(args);
 
@@ -214,7 +214,7 @@ pub fn wait_ssh_ready_parallel() -> Result<()> {
 
 /// Single SSH probe: ssh -BatchMode -ConnectTimeout=2 'true'.
 /// Returns true on exit 0, false otherwise.
-fn ssh_probe(ip: &str, key_path: &str) -> bool {
+pub(crate) fn ssh_probe(ip: &str, key_path: &str) -> bool {
     let status = Command::new("ssh")
         .args([
             "-o", "BatchMode=yes",
