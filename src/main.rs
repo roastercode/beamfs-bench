@@ -1,4 +1,4 @@
-//! beamfs-bench — unified bench harness for beamfs resilience testing.
+//! beamfs-bench - unified bench harness for beamfs resilience testing.
 //!
 //! Replaces the legacy bash harness (Tir-*.sh, ~1176 lines) with a single
 //! Rust binary exposing one subcommand per test scope.
@@ -11,7 +11,9 @@
 //! - `analyse`  : multifs + forensic capture (3 scopes: quick/standard/full).
 //!                Full scope = ftrace + perf + cluster-wide attack on the
 //!                4 nodes (master + 3 computes).
-//! - `bench`    : NOT YET IMPLEMENTED (port of Tir.sh / hpc-benchmark-beamfs.sh)
+//! - `full`     : VM lifecycle + cluster bootstrap + analyse scope=full.
+//!                One-command autonomous bench. Required to pass before
+//!                any commit/push (R0/R19 of context-recadrage).
 //! - `metadata` : NOT YET IMPLEMENTED (Test A: superblock/inode/journal attack)
 //! - `crash`    : NOT YET IMPLEMENTED (Test B: virsh destroy mid-write)
 //! - `bitrot`   : NOT YET IMPLEMENTED (Test C: dd random on offline partition)
@@ -39,9 +41,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
 mod analyse;
+mod bootstrap;
 mod cluster;
 mod devices;
 mod forensics;
+mod lifecycle;
 mod multifs;
 mod ssh;
 mod synthesis;
@@ -101,23 +105,38 @@ enum Command {
         no_tarball: bool,
     },
 
-    /// Cluster I/O performance baseline (M1-M5 metrics, multi-node).
-    /// (Port of legacy Tir.sh / hpc-benchmark-beamfs.sh.)
-    Bench,
+    /// Full bench: VM lifecycle + cluster /data bootstrap + analyse --scope=full.
+    /// One command, autonomous, deterministic. R0/R19: must exit 0 before any
+    /// commit/push.
+    Full {
+        /// Skip the device validation prompt.
+        #[arg(long)]
+        auto_confirm: bool,
+        /// Skip the final tar.gz archive generation.
+        #[arg(long)]
+        no_tarball: bool,
+        /// Destroy VMs after bench (default: leave running).
+        #[arg(long)]
+        shutdown: bool,
+        /// Assume cluster already up + /data mounted (skip lifecycle + bootstrap).
+        /// Use only for repeated runs on a known-good cluster.
+        #[arg(long)]
+        skip_vm_bootstrap: bool,
+    },
 
-    /// Test A — metadata-targeted attack (superblock, inode bitmap, journal).
+    /// Test A - metadata-targeted attack (superblock, inode bitmap, journal).
     /// New scope, not in legacy harness.
     Metadata,
 
-    /// Test B — crash consistency (virsh destroy mid-write + remount).
+    /// Test B - crash consistency (virsh destroy mid-write + remount).
     /// New scope, not in legacy harness.
     Crash,
 
-    /// Test C — bit-rot offline (dd random on offline partition, then read).
+    /// Test C - bit-rot offline (dd random on offline partition, then read).
     /// New scope, not in legacy harness.
     Bitrot,
 
-    /// Test D — fsck recovery post-FS_PANIC.
+    /// Test D - fsck recovery post-FS_PANIC.
     /// New scope, not in legacy harness.
     Fsck,
 }
@@ -145,7 +164,7 @@ impl ScopeArg {
 fn cmd_version() -> i32 {
     println!("beamfs-bench {}", BEAMFS_BENCH_VERSION);
     println!("license GPL-2.0-only");
-    println!("status: multifs + analyse implemented; bench/metadata/crash/bitrot/fsck pending");
+    println!("status: full + multifs + analyse implemented; metadata/crash/bitrot/fsck pending");
     0
 }
 
@@ -153,6 +172,84 @@ fn cmd_not_yet_implemented(name: &str) -> i32 {
     eprintln!("beamfs-bench: subcommand `{name}` not yet implemented");
     eprintln!("beamfs-bench: see context/TODO.md (TODO 2) in beamfs-devel for the migration plan");
     2
+}
+
+/// Full bench pipeline: lifecycle (VM up) + bootstrap (/data) + analyse scope=full.
+/// R0/R19: exit 0 only when all phases complete cleanly.
+fn cmd_full(auto_confirm: bool, no_tarball: bool, shutdown: bool, skip_vm_bootstrap: bool) -> anyhow::Result<i32> {
+    use anyhow::Context;
+
+    println!("================================================================");
+    println!(" beamfs-bench full - autonomous bench pipeline");
+    println!("================================================================");
+
+    if !skip_vm_bootstrap {
+        lifecycle::bring_cluster_up().context("Phase 1 lifecycle failed")?;
+    } else {
+        println!("[full] Phase 1 skipped (--skip-vm-bootstrap)");
+    }
+
+    println!();
+    println!("[full] Pre-deploying worker on all 4 nodes...");
+    let bootstrap_nodes: Vec<crate::cluster::ClusterNode> = crate::cluster::CLUSTER_NODES
+        .iter()
+        .map(|(ip, hostname)| crate::cluster::ClusterNode {
+            ip: ip.to_string(),
+            expected_hostname: hostname.to_string(),
+            discovered: crate::cluster::NodeState {
+                reachable: true,
+                ..Default::default()
+            },
+        })
+        .collect();
+    let deploys = cluster::deploy_worker_all(&bootstrap_nodes)
+        .context("worker deploy")?;
+    for (host, r) in &deploys {
+        match r {
+            Ok(()) => println!("  {host} : worker deployed"),
+            Err(e) => return Err(anyhow::anyhow!("worker deploy failed on {host}: {e:#}")),
+        }
+    }
+
+    println!();
+    println!("[full] Discovering cluster topology...");
+    let nodes = cluster::discover_cluster().context("cluster discovery")?;
+    let table = cluster::render_cluster_table(&nodes);
+    print!("{table}");
+
+    if !skip_vm_bootstrap {
+        bootstrap::bootstrap_all_data(&nodes).context("Phase 2 bootstrap failed")?;
+
+        println!();
+        println!("[full] Re-discovering topology post-bootstrap...");
+        let nodes2 = cluster::discover_cluster().context("cluster re-discovery")?;
+        let table2 = cluster::render_cluster_table(&nodes2);
+        print!("{table2}");
+    } else {
+        println!("[full] Phase 2 skipped (--skip-vm-bootstrap)");
+    }
+
+    println!();
+    println!("[full] Phase 3-7: handing off to analyse --scope=full");
+    let cfg = analyse::AnalyseConfig {
+        scope: forensics::Scope::Full,
+        auto_confirm,
+        dry_run: false,
+        make_tarball: !no_tarball,
+        vm_name: multifs::DEFAULT_VM_NAME.to_string(),
+    };
+    let analyse_rc = analyse::run(&cfg).context("analyse phase failed")?;
+
+    if shutdown {
+        println!();
+        lifecycle::bring_cluster_down().context("shutdown phase failed")?;
+    }
+
+    println!();
+    println!("================================================================");
+    println!(" beamfs-bench full complete - exit code {analyse_rc}");
+    println!("================================================================");
+    Ok(analyse_rc)
 }
 
 fn main() {
@@ -187,7 +284,15 @@ fn main() {
             }
         }
 
-        Command::Bench => cmd_not_yet_implemented("bench"),
+        Command::Full { auto_confirm, no_tarball, shutdown, skip_vm_bootstrap } => {
+            match cmd_full(auto_confirm, no_tarball, shutdown, skip_vm_bootstrap) {
+                Ok(rc) => rc,
+                Err(e) => {
+                    eprintln!("beamfs-bench: full failed: {e:#}");
+                    1
+                }
+            }
+        }
         Command::Metadata => cmd_not_yet_implemented("metadata"),
         Command::Crash => cmd_not_yet_implemented("crash"),
         Command::Bitrot => cmd_not_yet_implemented("bitrot"),
