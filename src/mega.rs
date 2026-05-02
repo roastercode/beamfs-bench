@@ -317,6 +317,7 @@ pub fn run() -> Result<i32> {
         scope: Scope::Full,
         auto_confirm: true, dry_run: false, make_tarball: false,
         vm_name: multifs::DEFAULT_VM_NAME.to_string(),
+        bpftrace_host: false,
     };
     let rc = match analyse::run(&cfg) {
         Ok(r) => r,

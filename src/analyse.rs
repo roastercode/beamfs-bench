@@ -29,6 +29,7 @@ use std::process::Command;
 use crate::cluster;
 use crate::devices;
 use crate::forensics::{self, Scope};
+use crate::forensics_host;
 use crate::multifs::{self, MultifsConfig, DEFAULT_FS_LIST, DEFAULT_VM_NAME};
 
 /// Configuration for an analyse run.
@@ -39,6 +40,9 @@ pub struct AnalyseConfig {
     pub dry_run: bool,
     pub make_tarball: bool,
     pub vm_name: String,
+    /// Enable host-side bpftrace probes during the run.
+    /// Requires NOPASSWD sudo on bpftrace ; otherwise skipped gracefully.
+    pub bpftrace_host: bool,
 }
 
 impl Default for AnalyseConfig {
@@ -48,6 +52,7 @@ impl Default for AnalyseConfig {
             auto_confirm: false,
             dry_run: false,
             make_tarball: true,
+            bpftrace_host: false,
             vm_name: DEFAULT_VM_NAME.to_string(),
         }
     }
@@ -168,6 +173,12 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
             Ok(()) => println!("  {host} : ok"),
             Err(e) => println!("  {host} : pre-capture warning: {e:#}"),
         }
+    }
+
+    // Host-side capture (companion to forensics::pre_capture_all).
+    // Best-effort : failures here log a warning but do not abort the run.
+    if let Err(e) = forensics_host::pre_capture_host(&run_dir, cfg.scope, cfg.bpftrace_host) {
+        eprintln!("  host pre-capture warning: {e:#}");
     }
 
     if cfg.scope == Scope::Full {
@@ -327,6 +338,11 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
             Ok(p) => println!("  {host} : {} ", p.display()),
             Err(e) => println!("  {host} : FAILED ({e:#})"),
         }
+    }
+
+    // Host-side post-capture (companion to forensics::post_capture_all).
+    if let Err(e) = forensics_host::post_capture_host(&run_dir, cfg.scope, cfg.bpftrace_host) {
+        eprintln!("  host post-capture warning: {e:#}");
     }
 
     // ----------------------------------------------------------------

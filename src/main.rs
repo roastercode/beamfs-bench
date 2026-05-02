@@ -47,6 +47,7 @@ mod cluster;
 mod crash;
 mod devices;
 mod forensics;
+mod forensics_host;
 mod fsck;
 mod lifecycle;
 mod mega;
@@ -109,6 +110,10 @@ enum Command {
         /// Skip the final tar.gz archive generation.
         #[arg(long)]
         no_tarball: bool,
+
+        /// Enable host-side bpftrace probes (requires NOPASSWD sudo on bpftrace).
+        #[arg(long)]
+        bpftrace: bool,
     },
 
     /// Full bench: VM lifecycle + cluster /data bootstrap + analyse --scope=full.
@@ -121,6 +126,9 @@ enum Command {
         /// Skip the final tar.gz archive generation.
         #[arg(long)]
         no_tarball: bool,
+        /// Enable host-side bpftrace probes (requires NOPASSWD sudo on bpftrace).
+        #[arg(long)]
+        bpftrace: bool,
         /// Destroy VMs after bench (default: leave running).
         #[arg(long)]
         shutdown: bool,
@@ -186,7 +194,7 @@ fn cmd_version() -> i32 {
 
 /// Full bench pipeline: lifecycle (VM up) + bootstrap (/data) + analyse scope=full.
 /// R0/R19: exit 0 only when all phases complete cleanly.
-fn cmd_full(auto_confirm: bool, no_tarball: bool, shutdown: bool, skip_vm_bootstrap: bool, skip_bitbake: bool) -> anyhow::Result<i32> {
+fn cmd_full(auto_confirm: bool, no_tarball: bool, shutdown: bool, skip_vm_bootstrap: bool, skip_bitbake: bool, bpftrace: bool) -> anyhow::Result<i32> {
     use anyhow::Context;
 
     println!("================================================================");
@@ -299,6 +307,7 @@ fn cmd_full(auto_confirm: bool, no_tarball: bool, shutdown: bool, skip_vm_bootst
         dry_run: false,
         make_tarball: !no_tarball,
         vm_name: multifs::DEFAULT_VM_NAME.to_string(),
+        bpftrace_host: bpftrace,
     };
     let analyse_rc = analyse::run(&cfg).context("analyse phase failed")?;
 
@@ -340,13 +349,14 @@ fn main() {
             }
         }
 
-        Command::Analyse { scope, auto_confirm, dry_run, no_tarball } => {
+        Command::Analyse { scope, auto_confirm, dry_run, no_tarball, bpftrace } => {
             let cfg = analyse::AnalyseConfig {
                 scope: scope.to_scope(),
                 auto_confirm,
                 dry_run,
                 make_tarball: !no_tarball,
                 vm_name: multifs::DEFAULT_VM_NAME.to_string(),
+                bpftrace_host: bpftrace,
             };
             match analyse::run(&cfg) {
                 Ok(rc) => rc,
@@ -357,8 +367,8 @@ fn main() {
             }
         }
 
-        Command::Full { auto_confirm, no_tarball, shutdown, skip_vm_bootstrap, skip_bitbake } => {
-            match cmd_full(auto_confirm, no_tarball, shutdown, skip_vm_bootstrap, skip_bitbake) {
+        Command::Full { auto_confirm, no_tarball, shutdown, skip_vm_bootstrap, skip_bitbake, bpftrace } => {
+            match cmd_full(auto_confirm, no_tarball, shutdown, skip_vm_bootstrap, skip_bitbake, bpftrace) {
                 Ok(rc) => rc,
                 Err(e) => {
                     eprintln!("beamfs-bench: full failed: {e:#}");
