@@ -420,7 +420,7 @@ bootstrap_data)
         echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=ERROR|reason=/dev/vdb missing"
         exit 1
     fi
-    if ! sudo mkfs.beamfs /dev/vdb >/tmp/mkfs-bootstrap.log 2>&1; then
+    if ! sudo mkfs.beamfs -s inline /dev/vdb >/tmp/mkfs-bootstrap.log 2>&1; then
         TAIL=$(tail -3 /tmp/mkfs-bootstrap.log | tr '\n' ' ')
         echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=ERROR|reason=mkfs failed|details=$TAIL"
         exit 1
@@ -451,7 +451,7 @@ bitrot_setup)
             echo "BITROT|HOST=$(hostname)|SETUP=ERROR|reason=/dev/vdb missing"
             exit 1
         fi
-        if ! sudo mkfs.beamfs /dev/vdb >/tmp/bitrot-mkfs.log 2>&1; then
+        if ! sudo mkfs.beamfs -s inline /dev/vdb >/tmp/bitrot-mkfs.log 2>&1; then
             TAIL=$(tail -3 /tmp/bitrot-mkfs.log | tr '\n' ' ')
             echo "BITROT|HOST=$(hostname)|SETUP=ERROR|reason=auto_mkfs_failed|details=$TAIL"
             exit 1
@@ -621,7 +621,7 @@ metadata_setup)
         squashfs) sudo bash -c "mkdir -p /tmp/sq-$TS_TAG && head -c 1M /dev/urandom > /tmp/sq-$TS_TAG/data.bin && mksquashfs /tmp/sq-$TS_TAG $DEV -noappend -quiet" >/dev/null 2>&1 && rm -rf /tmp/sq-$TS_TAG ;;
         beamfs)
             ensure_modules
-            MKFS_LOG=$(sudo mkfs.beamfs "$DEV" 2>&1)
+            MKFS_LOG=$(sudo mkfs.beamfs -s inline "$DEV" 2>&1)
             MKFS_RC=$?
             if [ $MKFS_RC -ne 0 ]; then
                 echo "METADATA|HOST=$(hostname)|SETUP=ERROR|reason=mkfs_failed|fs=beamfs|dev=$DEV|mkfs_rc=$MKFS_RC|mkfs_log=$MKFS_LOG"
@@ -800,7 +800,7 @@ crash_setup)
             ;;
         beamfs)
             ensure_modules
-            MKFS_LOG=$(sudo mkfs.beamfs "$DEV" 2>&1)
+            MKFS_LOG=$(sudo mkfs.beamfs -s inline "$DEV" 2>&1)
             MKFS_RC=$?
             if [ $MKFS_RC -ne 0 ]; then
                 echo "CRASH|HOST=$(hostname)|SETUP=ERROR|reason=mkfs_failed|fs=beamfs|dev=$DEV|mkfs_rc=$MKFS_RC|mkfs_log=$MKFS_LOG"
