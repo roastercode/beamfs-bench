@@ -132,3 +132,30 @@ GPL-2.0-only - same as the beamfs kernel module.
 
 - Code   : roastercode/beamfs-bench (private)
 - Issues : track via beamfs-devel TODO.md (private)
+
+## TODO / Rationalization (2026-05-02)
+
+Two structural items identified during substep 9 review.
+Tracked in beamfs/Documentation/TODO.md under bench-2 and bench-3.
+
+### bench-2 : attack/verify semantic mismatch
+
+The `attack` action overwrites file-B2.bin with random bytes; the
+`verify` action then expects pre/post hashes to match for a RECOVERED
+verdict. By construction this can never be true on a working FS that
+persists writes. Historical RECOVERED 12/12 verdicts on beamfs were
+vacuous truths produced by an unrelated kernel bug
+(d_file_type=1 emitting DT_FIFO, breaking `find -type f`).
+
+Redesign required: inject RadFI on READ of pristine files, then verify
+the data returned to userspace is correct (RS-FEC corrected) or that
+the read fails with EIO (uncorrectable). Add a parsed dmesg counter
+of `beamfs/inline:.*symbol(s) corrected` lines between attack and
+verify timestamps.
+
+### bench-3 : multifs vs cluster duplication
+
+`setup`/`attack`/`verify` and `cluster_setup`/`cluster_attack`/
+`cluster_verify` share roughly 80% of their logic in worker.sh.
+Differences: $SUBDIR vs $MNT, verdict guard for empty POST_FILE,
+hard-coded vs argument device. Factorize into shared helpers.
