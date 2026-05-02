@@ -179,12 +179,10 @@ fn start_bpftrace_host() -> Result<()> {
     // Kept intentionally light : 2 probes, count-only, no per-PID detail,
     // so the overhead during the run is negligible.
     let probe_script = r#"
-BEGIN { printf("bpftrace: started %s
-", strftime("%Y-%m-%d %H:%M:%S", nsecs)); }
+BEGIN { printf("bpftrace: started %s\n", strftime("%Y-%m-%d %H:%M:%S", nsecs)); }
 tracepoint:block:block_rq_complete { @block_rq_complete = count(); }
 tracepoint:sched:sched_switch { @sched_switch = count(); }
-END { printf("bpftrace: ended %s
-", strftime("%Y-%m-%d %H:%M:%S", nsecs)); }
+END { printf("bpftrace: ended %s\n", strftime("%Y-%m-%d %H:%M:%S", nsecs)); }
 "#;
     // Persist probe script to a tmp file so the launching shell stays simple.
     let script_path = "/tmp/beamfs-bench-bpftrace.bt";
