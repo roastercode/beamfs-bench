@@ -17,6 +17,11 @@ fault injection. Replaces the legacy bash harness (`Tir-*.sh`,
 | `crash`    | DONE     | Test B : virsh destroy mid-write + remount observation   |
 | `fsck`     | DONE     | Test D : fsck recovery post-FS_PANIC                     |
 
+**bench-2 redesign** (substep 10, 2026-05-02) : `multifs` and cluster
+attack/verify actions reworked from random-overwrite (semantically broken)
+to pristine-read under live RadFI attack. Verdict derivation moved from
+`worker.sh` to `synthesis.rs`. See sections below.
+
 
 
 ## Architecture (R-isolation)
@@ -57,9 +62,18 @@ beamfs-bench full [--auto-confirm] [--no-tarball] [--shutdown] [--skip-vm-bootst
 Exit 0 only when:
 - 4 VMs running + SSH ready
 - 4 nodes /data mounted beamfs (BOOTSTRAP=OK x4)
-- multifs beamfs RECOVERED 3/3 (probs 1k, 100k, 1M)
-- cluster 12/12 RECOVERED DIFFS=0 (4 nodes x 3 probs)
+- multifs beamfs verdict in {RS_RECOVERED, RS_PASSTHROUGH} 3/3 (probs 1k, 100k, 1M)
+- cluster 12/12 hash-match DIFFS=0 (4 nodes x 3 probs)
 - 0 new BUG/Oops/WARN in dmesg
+
+Notes :
+- `RS_RECOVERED` means RS-FEC actively corrected at least one symbol (RS_CORRECTED > 0)
+  AND the file content matches its pre-attack hash. This is the strongest proof of
+  FEC functional correctness.
+- `RS_PASSTHROUGH` means the file content matches pre-attack but RS-FEC did not fire
+  (no flip hit a target file block during the attack window). Both are R19-passing
+  outcomes.
+- `CORRUPTED_DATA`, `RS_FAILED`, `FS_PANIC` are R19-failing.
 
 R19 forbids commit/push if any criterion fails.
 
@@ -159,3 +173,112 @@ verify timestamps.
 `cluster_verify` share roughly 80% of their logic in worker.sh.
 Differences: $SUBDIR vs $MNT, verdict guard for empty POST_FILE,
 hard-coded vs argument device. Factorize into shared helpers.
+
+## Observation record formats
+
+`beamfs-bench` is a measurement instrument, not a judgment engine
+(per the rigour standards documented in `bitrot.rs` and `metadata.rs`).
+`worker.sh` actions emit raw factual fields ; the verdict is derived
+in Rust (`synthesis.rs` for multifs, future-extensible to cluster).
+
+### multifs scope (`worker.sh attack` + `worker.sh verify`)
+
+```
+ATTACK|FS=<fs>|PROB=<p>|CALL_DELTA=<n>|FLIP_DELTA=<n>
+       |TARGET=dir-B/file-B2.bin
+       |HASH_PRE=<sha256|missing>
+       |HASH_POST=<sha256|cat_failed|missing>
+       |CAT_RC=<exit-code>
+       |RS_CORRECTED=<count>
+       |DMESG_UNCORRECTABLE=<count>
+       |DMESG_EIO=<count>
+
+VERIFY|fs=<fs>|prob=<p>
+       |VERDICT=<MOUNTED|FS_PANIC>
+       |DIFFS_PRE_POST=<n>
+       |DIFFS_PRE_REMOUNT=<n>
+       |N_FILES_CHANGED=<n>
+       |details=<free text>
+```
+
+The case-asymmetry (`ATTACK` UPPERCASE keys vs `VERIFY` lowercase keys)
+is preserved from the legacy `Tir-multifs.sh` parity contract documented
+at the top of `synthesis.rs`. Do not normalize it without updating both.
+
+### cluster scope (`worker.sh cluster_attack` + `worker.sh cluster_verify`)
+
+```
+CLUSTER|HOST=<vm>|PROB=<p>|CALL_DELTA=<n>|FLIP_DELTA=<n>
+        |TARGET=dir-B/file-B2.bin
+        |HASH_PRE=<sha256|missing>
+        |HASH_POST=<sha256|cat_failed|missing>
+        |CAT_RC=<exit-code>
+        |RS_CORRECTED=<count>
+        |DMESG_UNCORRECTABLE=<count>
+        |DMESG_EIO=<count>
+
+CLUSTER|HOST=<vm>|VERDICT=<VERIFIED>
+        |DIFFS=<n>|N_FILES_CHANGED=<n>|details=<free text>
+```
+
+Cluster verdict derivation is not yet wired (substep 10 keeps the
+multifs-only derivation in `synthesis.rs`). Cluster R19 criterion is
+still the factual `DIFFS=0` 12/12 ; promoting cluster to the same
+`RS_RECOVERED|RS_PASSTHROUGH` ladder is tracked as a follow-up.
+
+### Other scopes
+
+See `bitrot.rs`, `metadata.rs`, `crash.rs`, `fsck.rs` for their
+respective record formats. Each scope owns its own `write_synthesis`.
+
+## Verdict derivation (multifs)
+
+`synthesis.rs::extract_verdict` cross-references the `ATTACK|` record
+and the `VERIFY|` record for each (fs, prob) tuple, and returns one
+verdict per the tables below. The decision is also documented inline
+in the source.
+
+### FS = beamfs (RS-FEC protected)
+
+| mount_state | CAT_RC | hash_pre vs hash_post | RS_CORRECTED | verdict          |
+|-------------|--------|-----------------------|--------------|------------------|
+| FS_PANIC    | any    | any                   | any          | `FS_PANIC`       |
+| MOUNTED     | != 0   | any                   | any          | `RS_FAILED`      |
+| MOUNTED     | 0      | mismatch              | any          | `CORRUPTED_DATA` |
+| MOUNTED     | 0      | match                 | > 0          | `RS_RECOVERED`   |
+| MOUNTED     | 0      | match                 | 0            | `RS_PASSTHROUGH` |
+
+`RS_RECOVERED` is the desired outcome under attack : RS-FEC fired
+(at least one symbol corrected, observable in dmesg) AND the file
+content was preserved.
+
+`RS_PASSTHROUGH` is also a passing outcome : the attack window did
+not produce a flip on the target file blocks, hash matches by
+happenstance. Distinguishing it from `RS_RECOVERED` is essential
+because `RS_PASSTHROUGH` does not prove FEC correctness ; only the
+`RS_RECOVERED` count over multiple runs proves the FEC path is
+functional.
+
+### FS != beamfs (no FEC)
+
+| mount_state | CAT_RC | hash_pre vs hash_post | verdict          |
+|-------------|--------|-----------------------|------------------|
+| FS_PANIC    | any    | any                   | `FS_PANIC`       |
+| MOUNTED     | != 0   | any                   | `FS_PANIC`       |
+| MOUNTED     | 0      | mismatch              | `CORRUPTED_DATA` |
+| MOUNTED     | 0      | match                 | `RECOVERED`      |
+
+Legacy filesystems do not have an RS-FEC distinction ; either the
+kernel returned the bytes (RECOVERED if hash matches), returned EIO
+or panicked (FS_PANIC), or returned wrong bytes silently
+(CORRUPTED_DATA, the bad case for non-FEC filesystems under EM
+attack).
+
+## Tests
+
+```
+cd ~/git/beamfs-bench && cargo test --release
+```
+
+9 unit tests in `synthesis.rs` cover the verdict derivation matrix
+(5 beamfs cases + 3 legacy cases + 1 field-extractor unit test).

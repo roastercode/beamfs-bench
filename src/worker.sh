@@ -204,20 +204,36 @@ attack)
     echo 1        | sudo tee /sys/kernel/debug/radfi/hook_blk     >/dev/null
     echo 1        | sudo tee /sys/kernel/debug/radfi/enabled      >/dev/null
 
+    # bench-2 redesign (substep 10) : pristine-read under RadFI live attack.
+    # Previous implementation overwrote dir-B/file-B2.bin with random bytes
+    # before the cat, which guaranteed a hash mismatch by construction and
+    # made RS-FEC functional proof impossible. We now capture the pristine
+    # hash from HASHES.sha256 (generated at setup), arm RadFI, drop_caches,
+    # cat the target file under attack, capture cat exit code + RS-FEC dmesg
+    # markers + post-attack hash. Verdict derivation lives in synthesis.rs.
+    TARGET_REL="dir-B/file-B2.bin"
+    TARGET_FILE="$MNT/$TARGET_REL"
+    HASHES_FILE="$MNT/dir-B/HASHES.sha256"
+    HASH_PRE=$(sudo awk '$2 == "file-B2.bin" {print $1}' "$HASHES_FILE" 2>/dev/null)
+    [ -z "$HASH_PRE" ] && HASH_PRE=missing
+    DMESG_MARK="bench2-attack-$FS-$PROB-$$-$(date +%s%N)"
+    sudo bash -c "echo \"$DMESG_MARK\" > /dev/kmsg" 2>/dev/null || true
+
     if [ "$FS" = "squashfs" ]; then
         sudo umount $MNT 2>/dev/null
         echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
         sudo mount -t squashfs -o ro $DEV $MNT 2>/dev/null || true
-        sudo cat $MNT/dir-B/file-B2.bin > /dev/null 2>&1
+        sudo cat "$TARGET_FILE" > /tmp/post-cat-$FS.bin 2>/tmp/cat-err-$FS.log
+        CAT_RC=$?
         sudo cat $MNT/dir-A/file-A1.bin > /dev/null 2>&1
         sudo cat $MNT/dir-C/file-C3.bin > /dev/null 2>&1
     else
-        sudo bash -c "head -c 3072 /dev/urandom > $MNT/dir-B/file-B2.bin"
         sudo sync
         echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
-        sudo cat $MNT/dir-B/file-B2.bin > /dev/null
-        sudo cat $MNT/dir-A/file-A1.bin > /dev/null
-        sudo cat $MNT/dir-C/file-C3.bin > /dev/null
+        sudo cat "$TARGET_FILE" > /tmp/post-cat-$FS.bin 2>/tmp/cat-err-$FS.log
+        CAT_RC=$?
+        sudo cat $MNT/dir-A/file-A1.bin > /dev/null 2>&1
+        sudo cat $MNT/dir-C/file-C3.bin > /dev/null 2>&1
     fi
 
     CALL_A=$(sudo cat /sys/kernel/debug/radfi/call_count)
@@ -229,7 +245,24 @@ attack)
     CALL_DELTA=$((CALL_A - CALL_B))
     FLIP_DELTA=$((FLIP_A - FLIP_B))
 
-    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA"
+    if [ $CAT_RC -eq 0 ] && [ -s /tmp/post-cat-$FS.bin ]; then
+        HASH_POST=$(sha256sum /tmp/post-cat-$FS.bin 2>/dev/null | awk '{print $1}')
+    else
+        HASH_POST=cat_failed
+    fi
+    [ -z "$HASH_POST" ] && HASH_POST=missing
+
+    DMESG_SLICE=$(sudo dmesg 2>/dev/null | awk -v m="$DMESG_MARK" '$0 ~ m {found=1; next} found')
+    RS_CORRECTED=$(echo "$DMESG_SLICE" | grep -cE 'beamfs(/inline)?:.*symbol\(s\) corrected' | tr -d '\n')
+    DMESG_UNCORR=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*uncorrectable|beamfs.*RS decode failed' | tr -d '\n')
+    DMESG_EIO=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*-EIO|beamfs.*Input/output error' | tr -d '\n')
+    [ -z "$RS_CORRECTED" ] && RS_CORRECTED=0
+    [ -z "$DMESG_UNCORR" ] && DMESG_UNCORR=0
+    [ -z "$DMESG_EIO" ] && DMESG_EIO=0
+
+    sudo rm -f /tmp/post-cat-$FS.bin /tmp/cat-err-$FS.log 2>/dev/null || true
+
+    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO"
     ;;
 
 verify)
@@ -271,21 +304,19 @@ verify)
     sudo find $MNT -type f -exec sha256sum {} \; 2>/dev/null | sort > $REMOUNT_FILE
     DIFFS_REMOUNT=$(diff $PRE_FILE $REMOUNT_FILE 2>/dev/null | grep -c '^[<>]')
     DIFFS_REMOUNT=${DIFFS_REMOUNT:-0}
+    N_FILES_CHANGED=$((DIFFS_REMOUNT / 2))
 
-    if [ $DIFFS_REMOUNT -eq 0 ]; then
-        VERDICT="RECOVERED"
-        DETAILS="all 12 files match pre-attack after umount/remount"
-    elif [ $DIFFS_REMOUNT -lt 6 ]; then
-        N_FILES_CHANGED=$((DIFFS_REMOUNT / 2))
-        VERDICT="CORRUPTED_DATA"
-        DETAILS="$N_FILES_CHANGED file(s) changed hash post-attack"
-    else
-        N_FILES_CHANGED=$((DIFFS_REMOUNT / 2))
-        VERDICT="CORRUPTED_HEAVY"
-        DETAILS="$N_FILES_CHANGED file(s) changed (heavy corruption)"
-    fi
+    # bench-2 redesign (substep 10) : factual mount-state observation only.
+    # The previous code picked between RECOVERED / CORRUPTED_DATA /
+    # CORRUPTED_HEAVY based on DIFFS_REMOUNT, which is a derived judgment
+    # that belongs in synthesis.rs (alongside HASH_PRE/HASH_POST/RS_CORRECTED
+    # captured in the attack record). Verify now only signals whether the
+    # FS came back up cleanly after umount/remount; per-file hash deltas
+    # are emitted as raw counts.
+    VERDICT="MOUNTED"
+    DETAILS="remount ok ; $N_FILES_CHANGED of 12 file(s) hash-changed vs pre-attack"
 
-    echo "FS=$FS|VERDICT=$VERDICT|DIFFS_PRE_POST=$DIFFS|DIFFS_PRE_REMOUNT=$DIFFS_REMOUNT|details=$DETAILS"
+    echo "FS=$FS|VERDICT=$VERDICT|DIFFS_PRE_POST=$DIFFS|DIFFS_PRE_REMOUNT=$DIFFS_REMOUNT|N_FILES_CHANGED=$N_FILES_CHANGED|details=$DETAILS"
     ;;
 
 # ============================================================
@@ -351,10 +382,21 @@ cluster_attack)
     echo 1          | sudo tee /sys/kernel/debug/radfi/hook_blk     >/dev/null
     echo 1          | sudo tee /sys/kernel/debug/radfi/enabled      >/dev/null
 
-    sudo bash -c "head -c 3072 /dev/urandom > $SUBDIR/dir-B/file-B2.bin" 2>/dev/null
+    # bench-2 redesign (substep 10) : pristine-read under RadFI live attack
+    # on the cluster /data/beamfs-bench-<TS> subdir. Same semantics as the
+    # multifs attack) action ; namespace CLUSTER|, dev /dev/vdb fixed.
+    TARGET_REL="dir-B/file-B2.bin"
+    TARGET_FILE="$SUBDIR/$TARGET_REL"
+    HASHES_FILE="$SUBDIR/dir-B/HASHES.sha256"
+    HASH_PRE=$(sudo awk '$2 == "file-B2.bin" {print $1}' "$HASHES_FILE" 2>/dev/null)
+    [ -z "$HASH_PRE" ] && HASH_PRE=missing
+    DMESG_MARK="bench2-cluster-$(hostname)-$PROB_VAL-$$-$(date +%s%N)"
+    sudo bash -c "echo \"$DMESG_MARK\" > /dev/kmsg" 2>/dev/null || true
+
     sudo sync
     echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
-    sudo cat $SUBDIR/dir-B/file-B2.bin > /dev/null 2>&1
+    sudo cat "$TARGET_FILE" > /tmp/post-cat-cluster-$$.bin 2>/tmp/cat-err-cluster-$$.log
+    CAT_RC=$?
     sudo cat $SUBDIR/dir-A/file-A1.bin > /dev/null 2>&1
     sudo cat $SUBDIR/dir-C/file-C3.bin > /dev/null 2>&1
 
@@ -367,7 +409,24 @@ cluster_attack)
     CALL_DELTA=$((CALL_A - CALL_B))
     FLIP_DELTA=$((FLIP_A - FLIP_B))
 
-    echo "CLUSTER|HOST=$(hostname)|PROB=$PROB_VAL|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA"
+    if [ $CAT_RC -eq 0 ] && [ -s /tmp/post-cat-cluster-$$.bin ]; then
+        HASH_POST=$(sha256sum /tmp/post-cat-cluster-$$.bin 2>/dev/null | awk '{print $1}')
+    else
+        HASH_POST=cat_failed
+    fi
+    [ -z "$HASH_POST" ] && HASH_POST=missing
+
+    DMESG_SLICE=$(sudo dmesg 2>/dev/null | awk -v m="$DMESG_MARK" '$0 ~ m {found=1; next} found')
+    RS_CORRECTED=$(echo "$DMESG_SLICE" | grep -cE 'beamfs(/inline)?:.*symbol\(s\) corrected' | tr -d '\n')
+    DMESG_UNCORR=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*uncorrectable|beamfs.*RS decode failed' | tr -d '\n')
+    DMESG_EIO=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*-EIO|beamfs.*Input/output error' | tr -d '\n')
+    [ -z "$RS_CORRECTED" ] && RS_CORRECTED=0
+    [ -z "$DMESG_UNCORR" ] && DMESG_UNCORR=0
+    [ -z "$DMESG_EIO" ] && DMESG_EIO=0
+
+    sudo rm -f /tmp/post-cat-cluster-$$.bin /tmp/cat-err-cluster-$$.log 2>/dev/null || true
+
+    echo "CLUSTER|HOST=$(hostname)|PROB=$PROB_VAL|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO"
     ;;
 
 cluster_verify)
@@ -384,23 +443,19 @@ cluster_verify)
     DIFFS=$(diff "$PRE_FILE" "$POST_FILE" 2>/dev/null | grep -c '^[<>]')
     DIFFS=${DIFFS:-0}
 
-    if [ $DIFFS -eq 0 ]; then
-        VERDICT="RECOVERED"
-        DETAILS="all 12 files match pre-attack on /data"
-    elif [ $DIFFS -lt 6 ]; then
-        N=$((DIFFS / 2))
-        VERDICT="CORRUPTED_DATA"
-        DETAILS="$N file(s) changed hash"
-    else
-        N=$((DIFFS / 2))
-        VERDICT="CORRUPTED_HEAVY"
-        DETAILS="$N file(s) changed (heavy corruption)"
-    fi
+    N=$((DIFFS / 2))
+
+    # bench-2 redesign (substep 10) : factual observation only ; verdict
+    # derivation lives in synthesis.rs. cluster_verify reports raw diff
+    # count + count of changed files. RECOVERED/CORRUPTED interpretation
+    # is computed from this and the cluster_attack record.
+    VERDICT="VERIFIED"
+    DETAILS="diff counted ; $N of 12 file(s) hash-changed on /data"
 
     sudo rm -rf "$SUBDIR" 2>/dev/null || true
     sudo rm -f "$PRE_FILE" "$POST_FILE" 2>/dev/null || true
 
-    echo "CLUSTER|HOST=$(hostname)|VERDICT=$VERDICT|DIFFS=$DIFFS|details=$DETAILS"
+    echo "CLUSTER|HOST=$(hostname)|VERDICT=$VERDICT|DIFFS=$DIFFS|N_FILES_CHANGED=$N|details=$DETAILS"
     ;;
 
 bootstrap_data)
