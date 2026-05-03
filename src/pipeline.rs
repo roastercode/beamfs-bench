@@ -248,6 +248,20 @@ pub fn redeploy_4_vms() -> Result<()> {
     crate::lifecycle::destroy_all_vms()
         .context("destroy all VMs before redeploy")?;
 
+    // R31 step 4: ensure libvirt/QEMU has fully released file descriptors
+    // on .ext2 rootfs files before we overwrite them. virsh destroy is
+    // SIGKILL-level but QEMU buffer flush is best-effort; sync forces the
+    // host page cache + dirty pages to disk so subsequent cp lands on a
+    // quiesced filesystem state.
+    let _ = Command::new("sync").status();
+
+    // Reference sha256 of the canonical .ext2 -- computed once, used to
+    // verify each cp byte-for-byte. Establishes the R31 invariant that
+    // every VM rootfs is byte-identical to canonical at start time.
+    let canonical_sha = sha256_file(Path::new(CANONICAL_EXT2))
+        .context("hash canonical .ext2")?;
+    println!("  canonical .ext2 sha256: {canonical_sha}");
+
     for vm in VM_NAMES {
         let dst = format!("{LIBVIRT_DIR}/{vm}.ext2");
         let st = Command::new("sudo")
@@ -258,7 +272,20 @@ pub fn redeploy_4_vms() -> Result<()> {
             .args(["chown", "qemu:qemu", &dst]).status()
             .with_context(|| format!("chown {dst}"))?;
         if !st.success() { bail!("chown failed for {dst}"); }
-        println!("  {vm}.ext2 redeployed");
+
+        // R31 step 4: flush page cache + verify byte-identity vs canonical
+        // BEFORE start. This catches the case where a stale FD from a
+        // pre-existing VM (out-of-pipeline launch, crashed bench leftover,
+        // libvirt resource leak) caused cp to land on a non-quiesced file.
+        let _ = Command::new("sync").status();
+        let dst_sha = sha256_file(Path::new(&dst))
+            .with_context(|| format!("hash {dst}"))?;
+        if dst_sha != canonical_sha {
+            bail!(
+                "redeploy verify FAIL for {dst}: deployed sha256={dst_sha} != canonical={canonical_sha} (R31: a stale VM held a FD on this file, or cp was interrupted; ensure no out-of-pipeline VM is running and rerun)"
+            );
+        }
+        println!("  {vm}.ext2 redeployed (sha256 verified)");
     }
 
     crate::lifecycle::start_network()
