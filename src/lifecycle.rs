@@ -182,7 +182,7 @@ pub fn wait_ssh_ready_parallel() -> Result<()> {
                         return Ok(());
                     } else {
                         // Verbose every 5 attempts to avoid noise but show liveness (R3)
-                        if attempt == 1 || attempt % 5 == 0 {
+                        if attempt == 1 || attempt.is_multiple_of(5) {
                             println!("  [{vm}] retry {attempt} ({}s elapsed)", elapsed.as_secs());
                         }
                     }

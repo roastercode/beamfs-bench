@@ -27,7 +27,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -175,7 +175,7 @@ fn run_scenario(fs: &str, vd: &str) -> Result<CrashObservation> {
     })
 }
 
-fn write_synthesis(run_dir: &PathBuf, observations: &[CrashObservation]) -> Result<()> {
+fn write_synthesis(run_dir: &Path, observations: &[CrashObservation]) -> Result<()> {
     let synth_path = run_dir.join("synthesis.md");
     let mut s = String::new();
     s.push_str("# beamfs-bench crash synthesis\n\n");

@@ -26,7 +26,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::bitrot::ssh_target;
@@ -74,7 +74,7 @@ fn run_scenario(fs: &str, vd: &str) -> Result<FsckObservation> {
     })
 }
 
-fn write_synthesis(run_dir: &PathBuf, observations: &[FsckObservation]) -> Result<()> {
+fn write_synthesis(run_dir: &Path, observations: &[FsckObservation]) -> Result<()> {
     let synth_path = run_dir.join("synthesis.md");
     let mut s = String::new();
     s.push_str("# beamfs-bench fsck synthesis\n\n");

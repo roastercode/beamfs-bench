@@ -266,12 +266,12 @@ pub fn render_validation_table(
     out.push_str(" beamfs-bench: device validation required\n");
     out.push_str("================================================================\n");
     out.push_str(&format!(" VM: {vm_name} (libvirt qemu:///system)\n"));
-    out.push_str("\n");
+    out.push('\n');
     out.push_str(" The following devices on the HOST will be used as multifs targets.\n");
     out.push_str(" Each line shows the GUEST device (vdX) and its HOST identity\n");
     out.push_str(" (by-id path -> kernel device -> size). All filesystems will be\n");
     out.push_str(" REFORMATTED. ALL EXISTING DATA ON THESE DEVICES WILL BE DESTROYED.\n");
-    out.push_str("\n");
+    out.push('\n');
     out.push_str(" FS slot  | Guest | Host kernel dev | Size  | Physical identity\n");
     out.push_str(" ---------+-------+-----------------+-------+----------------------------\n");
     for m in matched {
@@ -285,7 +285,7 @@ pub fn render_validation_table(
         ));
     }
     if !extras.is_empty() {
-        out.push_str("\n");
+        out.push('\n');
         out.push_str(" Disks present on the VM but NOT in the default FS slot list:\n");
         for e in extras {
             let resolved = e.host_resolved.as_ref()
@@ -299,7 +299,7 @@ pub fn render_validation_table(
         }
         out.push_str(" These disks will NOT be touched.\n");
     }
-    out.push_str("\n");
+    out.push('\n');
     out.push_str(" By-id paths (full, copy-pasteable for `ls -la`):\n");
     for m in matched {
         out.push_str(&format!("   {} -> {}\n", m.disk.guest_dev, m.disk.host_byid_path));

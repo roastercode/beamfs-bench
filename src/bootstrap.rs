@@ -7,7 +7,7 @@
 //!   1. SSH to the node
 //!   2. Invoke `worker.sh bootstrap_data` action
 //!      (which insmods reed_solomon + beamfs, umounts /data if mounted,
-//!       mkfs.beamfs /dev/vdb, mount -t beamfs /dev/vdb /data)
+//!      mkfs.beamfs /dev/vdb, mount -t beamfs /dev/vdb /data)
 //!   3. Parse the response line `CLUSTER|HOST=<host>|BOOTSTRAP=OK|...`
 //!      or `CLUSTER|HOST=<host>|BOOTSTRAP=ERROR|reason=...`
 //!

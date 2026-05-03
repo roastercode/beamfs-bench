@@ -121,9 +121,10 @@ impl MultifsConfig {
     /// inline) but kept as a documented public API for external callers / tests.
     #[allow(dead_code)]
     pub fn quick() -> Self {
-        let mut cfg = Self::default();
-        cfg.probs = vec![1_000_000];
-        cfg
+        Self {
+            probs: vec![1_000_000],
+            ..Self::default()
+        }
     }
 }
 
@@ -142,9 +143,11 @@ pub struct MultifsResult {
 
 /// Convenience entry for `Cli::Multifs`. Uses default config.
 pub fn run(auto_confirm: bool, dry_run: bool) -> Result<i32> {
-    let mut cfg = MultifsConfig::default();
-    cfg.auto_confirm = auto_confirm;
-    cfg.dry_run = dry_run;
+    let cfg = MultifsConfig {
+        auto_confirm,
+        dry_run,
+        ..MultifsConfig::default()
+    };
     let _result = run_with_config(&cfg)?;
     Ok(0)
 }

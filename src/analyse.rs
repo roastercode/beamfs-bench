@@ -3,14 +3,14 @@
 //! ## Scopes
 //!
 //! - `quick`    : multifs(probs=[1000000]) + post-capture master only
-//!                (dmesg + RadFI + lsmod). No ftrace, no perf, no cluster.
+//!   (dmesg + RadFI + lsmod). No ftrace, no perf, no cluster.
 //! - `standard` : multifs(probs=default) + post-capture all 4 nodes
-//!                (dmesg + RadFI + lsmod) + RS journal SB on master.
-//!                No ftrace, no perf, no cluster_*.
+//!   (dmesg + RadFI + lsmod) + RS journal SB on master.
+//!   No ftrace, no perf, no cluster_*.
 //! - `full`     : multifs(probs=default) + cluster_setup/attack/verify
-//!                on master + 3 computes + ftrace function_graph on all
-//!                nodes + perf record on master + RS journal SB on master
-//!                + crash-report if any verdict failed.
+//!   on master + 3 computes + ftrace function_graph on all
+//!   nodes + perf record on master + RS journal SB on master
+//!   + crash-report if any verdict failed.
 //!
 //! All scopes write into `<repo>/Documentation/runs/Tir-analyse-multifs-<TS>/`
 //! and produce a tarball `<run_dir>.tar.gz` at the end (unless --no-tarball).
@@ -73,7 +73,7 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     // ----------------------------------------------------------------
     // Step 1: Device validation (single prompt for the whole analyse run)
     // ----------------------------------------------------------------
-    let fs_list_refs: Vec<(&str, &str)> = DEFAULT_FS_LIST.iter().copied().collect();
+    let fs_list_refs: Vec<(&str, &str)> = DEFAULT_FS_LIST.to_vec();
     let validated = devices::discover_and_validate(
         &cfg.vm_name,
         &fs_list_refs,
@@ -193,12 +193,14 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     // ----------------------------------------------------------------
     println!();
     println!("[run]    Wrapped multifs...");
-    let mut multifs_cfg = MultifsConfig::default();
-    multifs_cfg.run_dir_prefix = "beamfs-bench-multifs".to_string();
-    multifs_cfg.skip_worker_deploy = true;  // we already deployed
-    multifs_cfg.suppress_synthesis_print = true;
-    multifs_cfg.pre_validated_mappings = Some(validated.clone());
-    multifs_cfg.auto_confirm = true;  // already validated
+    let mut multifs_cfg = MultifsConfig {
+        run_dir_prefix: "beamfs-bench-multifs".to_string(),
+        skip_worker_deploy: true,  // we already deployed
+        suppress_synthesis_print: true,
+        pre_validated_mappings: Some(validated.clone()),
+        auto_confirm: true,  // already validated
+        ..MultifsConfig::default()
+    };
     if cfg.scope == Scope::Quick {
         multifs_cfg.probs = vec![1_000_000];
     }

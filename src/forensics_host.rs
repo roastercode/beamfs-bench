@@ -20,7 +20,7 @@
 //! ## What is captured (opt-in, --bpftrace flag)
 //!
 //!   - bpftrace.log           : passive bpftrace probes during the run
-//!                              (block_rq_complete + sched_switch counts)
+//!     (block_rq_complete + sched_switch counts)
 //!
 //! ## Why a separate module
 //!

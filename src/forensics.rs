@@ -181,7 +181,6 @@ pub fn post_capture_all(
         let hostname = n.discovered.hostname.clone()
             .unwrap_or_else(|| n.expected_hostname.clone());
         let run_dir = Arc::clone(&run_dir_arc);
-        let scope = scope;
         let h = thread::spawn(move || -> (String, Result<PathBuf>) {
             let r = capture_one_node(&ip, &hostname, &run_dir, scope);
             (hostname, r)
@@ -294,7 +293,7 @@ fn capture_one_node(
 
         // Pull the raw perf.data via scp (binary, not base64)
         let local_perf = node_dir.join("perf.data");
-        let _ = ssh.exec_lenient(&format!("sudo chmod 644 /tmp/beamfs-bench-perf.data 2>/dev/null"));
+        let _ = ssh.exec_lenient("sudo chmod 644 /tmp/beamfs-bench-perf.data 2>/dev/null");
         // scp_from is not yet in ssh.rs; fall back to base64 dump for now.
         // (TODO: add scp_from in ssh.rs in a follow-up.)
         let perf_b64 = ssh.exec_lenient("sudo cat /tmp/beamfs-bench-perf.data 2>/dev/null | base64")

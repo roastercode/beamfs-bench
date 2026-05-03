@@ -1,10 +1,13 @@
 //! mega.rs - Test E: consolidated single-tarball mega run.
 //!
-//! Pipeline phases 0.0..0.7 (with build log capture)
-//! + analyse Full + bitrot + metadata + crash + fsck
-//! + extended forensics (Yocto build logs, kernel config, modinfo, git HEADs)
-//! consolidated under one run dir, then a single tarball
-//!   /tmp/beamfs-bench-mega-YYYYMMDD-HHMMSS.tar.gz
+//! Pipeline phases 0.0..0.7 (with build log capture), analyse Full,
+//! bitrot, metadata, crash, fsck, plus extended forensics (Yocto build
+//! logs, kernel config, modinfo, git HEADs) all consolidated under one
+//! run dir, then a single tarball:
+//!
+//! ```text
+//! /tmp/beamfs-bench-mega-YYYYMMDD-HHMMSS.tar.gz
+//! ```
 //!
 //! All sub-scope run dirs are detected post-creation and moved into the
 //! mega run dir (sub-scopes are unmodified, they keep their own logic).

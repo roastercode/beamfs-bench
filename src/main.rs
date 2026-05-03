@@ -7,13 +7,13 @@
 //!
 //! - `version`  : print version + build info
 //! - `multifs`  : multi-FS head-to-head bench (5 FS x 3 probs by default)
-//!                with mandatory device validation prompt before mkfs.
+//!   with mandatory device validation prompt before mkfs.
 //! - `analyse`  : multifs + forensic capture (3 scopes: quick/standard/full).
-//!                Full scope = ftrace + perf + cluster-wide attack on the
-//!                4 nodes (master + 3 computes).
+//!   Full scope = ftrace + perf + cluster-wide attack on the
+//!   4 nodes (master + 3 computes).
 //! - `full`     : VM lifecycle + cluster bootstrap + analyse scope=full.
-//!                One-command autonomous bench. Required to pass before
-//!                any commit/push (R0/R19 of context-recadrage).
+//!   One-command autonomous bench. Required to pass before
+//!   any commit/push (R0/R19 of context-recadrage).
 //! - `metadata` : NOT YET IMPLEMENTED (Test A: superblock/inode/journal attack)
 //! - `crash`    : NOT YET IMPLEMENTED (Test B: virsh destroy mid-write)
 //! - `bitrot`   : NOT YET IMPLEMENTED (Test C: dd random on offline partition)
@@ -44,6 +44,7 @@ mod analyse;
 mod bitrot;
 mod bootstrap;
 mod cluster;
+mod code_analysis;
 mod crash;
 mod devices;
 mod forensics;
@@ -54,6 +55,7 @@ mod mega;
 mod metadata;
 mod multifs;
 mod pipeline;
+mod regression_check;
 mod ssh;
 mod synthesis;
 
@@ -140,6 +142,12 @@ enum Command {
         /// Use when iterating on the pipeline itself; never skip in R19 production.
         #[arg(long)]
         skip_bitbake: bool,
+        /// Run Tier 3 code analysis (Frama-C, scan-build, lcov). Heavy.
+        #[arg(long)]
+        full_code_analysis: bool,
+        /// Bypass regression check with explicit reason. Empty rejected.
+        #[arg(long)]
+        accept_regression: Option<String>,
     },
 
     /// Test A - metadata-targeted attack (superblock, inode bitmap, journal).
@@ -192,10 +200,28 @@ fn cmd_version() -> i32 {
     0
 }
 
+/// Configuration for cmd_full. Aggregates the 8 flags exposed by
+/// `Command::Full` so the pipeline orchestrator does not run into
+/// clippy::too_many_arguments and reads naturally for future flags.
+struct FullConfig {
+    auto_confirm: bool,
+    no_tarball: bool,
+    shutdown: bool,
+    skip_vm_bootstrap: bool,
+    skip_bitbake: bool,
+    bpftrace: bool,
+    full_code_analysis: bool,
+    accept_regression: Option<String>,
+}
+
 /// Full bench pipeline: lifecycle (VM up) + bootstrap (/data) + analyse scope=full.
 /// R0/R19: exit 0 only when all phases complete cleanly.
-fn cmd_full(auto_confirm: bool, no_tarball: bool, shutdown: bool, skip_vm_bootstrap: bool, skip_bitbake: bool, bpftrace: bool) -> anyhow::Result<i32> {
+fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     use anyhow::Context;
+    let FullConfig {
+        auto_confirm, no_tarball, shutdown, skip_vm_bootstrap,
+        skip_bitbake, bpftrace, full_code_analysis, accept_regression,
+    } = cfg;
 
     println!("================================================================");
     println!(" beamfs-bench full - MIL no-NAK validation pipeline");
@@ -209,6 +235,23 @@ fn cmd_full(auto_confirm: bool, no_tarball: bool, shutdown: bool, skip_vm_bootst
         return Err(pipeline::fail(&mut manifest, "0.0_isolation_r21", &e));
     }
     pipeline::record(&mut manifest, "0.0_isolation_r21", 0);
+
+    // Phase 0.0bis -- MIL/kernel.org code analysis gate
+    let code_analysis_mode = if full_code_analysis {
+        code_analysis::AnalysisMode::Full
+    } else {
+        code_analysis::AnalysisMode::Incremental
+    };
+    let analysis_run_dir = std::path::PathBuf::from("/tmp/beamfs-bench-current-run");
+    if let Err(e) = std::fs::create_dir_all(&analysis_run_dir)
+        .map_err(|err| anyhow::anyhow!("create analysis dir: {err}"))
+    {
+        return Err(pipeline::fail(&mut manifest, "0.0bis_code_analysis", &e));
+    }
+    if let Err(e) = code_analysis::run(code_analysis_mode, &analysis_run_dir) {
+        return Err(pipeline::fail(&mut manifest, "0.0bis_code_analysis", &e));
+    }
+    pipeline::record(&mut manifest, "0.0bis_code_analysis", 0);
 
     // Phase 0.1
     if let Err(e) = pipeline::verify_clean_working_trees() {
@@ -327,6 +370,18 @@ fn cmd_full(auto_confirm: bool, no_tarball: bool, shutdown: bool, skip_vm_bootst
     manifest.finished_at = pipeline::now_iso();
     let _ = pipeline::emit_manifest(&manifest);
 
+    // Phase 8.3 -- regression check vs baseline (R7 canonical pre-push)
+    // Skipped if bench was not functionally OK; pointless to compare a
+    // crashed run.
+    if analyse_rc == 0 {
+        let regression_dir = std::path::PathBuf::from("/tmp/beamfs-bench-current-run");
+        if let Err(e) = regression_check::run(&regression_dir, accept_regression.clone()) {
+            return Err(pipeline::fail(&mut manifest, "8.3_regression_check", &e));
+        }
+        pipeline::record(&mut manifest, "8.3_regression_check", 0);
+        let _ = pipeline::emit_manifest(&manifest);
+    }
+
     println!();
     println!("================================================================");
     println!(" beamfs-bench full complete - exit code {analyse_rc}");
@@ -367,8 +422,12 @@ fn main() {
             }
         }
 
-        Command::Full { auto_confirm, no_tarball, shutdown, skip_vm_bootstrap, skip_bitbake, bpftrace } => {
-            match cmd_full(auto_confirm, no_tarball, shutdown, skip_vm_bootstrap, skip_bitbake, bpftrace) {
+        Command::Full { auto_confirm, no_tarball, shutdown, skip_vm_bootstrap, skip_bitbake, bpftrace, full_code_analysis, accept_regression } => {
+            let cfg = FullConfig {
+                auto_confirm, no_tarball, shutdown, skip_vm_bootstrap,
+                skip_bitbake, bpftrace, full_code_analysis, accept_regression,
+            };
+            match cmd_full(cfg) {
                 Ok(rc) => rc,
                 Err(e) => {
                     eprintln!("beamfs-bench: full failed: {e:#}");

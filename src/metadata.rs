@@ -51,7 +51,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::bitrot::ssh_target;
@@ -141,7 +141,7 @@ fn run_scenario(fs: &str, vd: &str, scenario: &str, block: u32, prob: u32) -> Re
     })
 }
 
-fn write_synthesis(run_dir: &PathBuf, observations: &[MetadataObservation]) -> Result<()> {
+fn write_synthesis(run_dir: &Path, observations: &[MetadataObservation]) -> Result<()> {
     let synth_path = run_dir.join("synthesis.md");
     let mut s = String::new();
 
@@ -164,7 +164,7 @@ fn write_synthesis(run_dir: &PathBuf, observations: &[MetadataObservation]) -> R
             o.fs, o.vd, o.scenario, o.target_block, o.probability, phase, verify_short
         ));
     }
-    s.push_str("\n");
+    s.push('\n');
 
     s.push_str("## Notes for analysis\n\n");
     s.push_str("- Verdict interpretation (recovered/corrupted/panicked) is the\n");

@@ -149,7 +149,7 @@ pub fn render_cluster_table(nodes: &[ClusterNode]) -> String {
     out.push_str("================================================================\n");
     out.push_str(" beamfs-bench cluster topology (auto-discovered)\n");
     out.push_str("================================================================\n");
-    out.push_str("\n");
+    out.push('\n');
     out.push_str(" Node              | IP            | Kernel | beamfs | radfi | radfi.ko | perf | /data\n");
     out.push_str(" ------------------+---------------+--------+--------+-------+----------+------+-----------\n");
     for n in nodes {
@@ -172,7 +172,7 @@ pub fn render_cluster_table(nodes: &[ClusterNode]) -> String {
             ));
         }
     }
-    out.push_str("\n");
+    out.push('\n');
     out.push_str(" Legend:\n");
     out.push_str("   beamfs   = beamfs.ko currently loaded\n");
     out.push_str("   radfi    = radfi.ko currently loaded (will be insmod'ed by attack action if missing)\n");
