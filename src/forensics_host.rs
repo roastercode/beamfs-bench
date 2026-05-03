@@ -126,6 +126,15 @@ fi
         start_bpftrace_host()?;
     }
 
+    // ---- 0.1 enrichments (R31 audit trail) ----
+    capture_git_provenance(&host_dir);
+    capture_bitbake_provenance(&host_dir);
+    capture_vm_rootfs_format(&host_dir);
+    capture_identity_per_node(&host_dir);
+    capture_vm_runtime_state(&host_dir);
+    capture_vm_modinfo(&host_dir);
+    // -------------------------------------------
+
     Ok(())
 }
 
@@ -289,4 +298,176 @@ fn stop_bpftrace_host(host_dir: &Path) {
         .arg(BPFTRACE_LOG_FILE)
         .arg("/tmp/beamfs-bench-bpftrace.bt")
         .status();
+}
+
+
+// =====================================================================
+// 0.1 enrichments -- forensic capture extensions for R31 audit trail.
+// =====================================================================
+//
+// Each helper is best-effort: failures are logged but do not abort the
+// pre_capture_host flow. The contract matches `capture_to`: write
+// whatever stdout we got, even on partial failure.
+// =====================================================================
+
+const REPOS: &[(&str, &str)] = &[
+    ("beamfs",       "/home/aurelien/git/beamfs"),
+    ("yocto-beamfs", "/home/aurelien/git/yocto-beamfs"),
+    ("beamfs-bench", "/home/aurelien/git/beamfs-bench"),
+    ("radfi",        "/home/aurelien/git/radfi"),
+];
+
+const VM_IPS: &[(&str, &str)] = &[
+    ("beamfs-master",    "192.168.56.10"),
+    ("beamfs-compute01", "192.168.56.11"),
+    ("beamfs-compute02", "192.168.56.12"),
+    ("beamfs-compute03", "192.168.56.13"),
+];
+
+const SSH_KEY: &str = "/home/aurelien/.ssh/hpclab_admin";
+const SSH_USER: &str = "hpcadmin";
+
+fn ssh_capture(ip: &str, remote_cmd: &str) -> String {
+    let cmd = format!(
+        "ssh -i {SSH_KEY} -o StrictHostKeyChecking=no -o BatchMode=yes          -o ConnectTimeout=5 -o LogLevel=ERROR          {SSH_USER}@{ip} {remote_cmd:?} 2>&1"
+    );
+    run_host(&cmd).unwrap_or_else(|e| format!("ssh capture failed: {e:#}"))
+}
+
+/// Capture per-repo HEAD signature, status, branch, and remote URLs.
+/// One file per repo: `git-{label}.txt`.
+fn capture_git_provenance(host_dir: &Path) {
+    println!("[pre]    Host capture: git provenance (4 repos)");
+    for (label, path) in REPOS {
+        let cmd = format!(
+            r#"
+echo "=== git rev-parse HEAD ==="
+git --no-pager -C {path} rev-parse HEAD 2>&1
+echo
+echo "=== git log -1 --show-signature ==="
+git --no-pager -C {path} log -1 --show-signature 2>&1
+echo
+echo "=== git status --short ==="
+git --no-pager -C {path} status --short 2>&1
+echo
+echo "=== git branch --show-current ==="
+git --no-pager -C {path} branch --show-current 2>&1
+echo
+echo "=== git remote -v ==="
+git --no-pager -C {path} remote -v 2>&1
+"#
+        );
+        capture_to(host_dir, &format!("git-{label}.txt"), &cmd);
+    }
+}
+
+/// Capture bitbake recipe provenance for beamfs-module: SRC_URI, SRCREV,
+/// FILESPATH, S=. Confirms which source tree produced the .ko.
+fn capture_bitbake_provenance(host_dir: &Path) {
+    println!("[pre]    Host capture: bitbake provenance");
+    let cmd = r#"
+cd ~/yocto/poky 2>/dev/null &&   source oe-init-build-env build-qemu-arm64 >/dev/null 2>&1 &&   bitbake -e beamfs-module 2>/dev/null |     grep -E '^(SRC_URI|SRCREV|FILESPATH|S|WORKDIR)=' | head -20
+echo
+echo "=== bitbake-layers show-recipes beamfs-module ==="
+cd ~/yocto/poky 2>/dev/null &&   source oe-init-build-env build-qemu-arm64 >/dev/null 2>&1 &&   bitbake-layers show-recipes beamfs-module 2>&1 | head -20
+"#;
+    capture_to(host_dir, "bitbake-provenance.log", cmd);
+}
+
+/// Capture qemu-img info + sha256 for each VM rootfs .ext2.
+/// Proves R31 step 4 (redeploy completeness) was respected.
+fn capture_vm_rootfs_format(host_dir: &Path) {
+    println!("[pre]    Host capture: VM rootfs format + sha256");
+    let cmd = r#"
+CANONICAL=~/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.ext2
+echo "=== canonical ==="
+sudo qemu-img info "$(readlink -f "$CANONICAL")" 2>&1
+echo "canonical sha256: $(sudo sha256sum "$(readlink -f "$CANONICAL")" 2>&1 | awk '{print $1}')"
+echo
+for vm in beamfs-master beamfs-compute01 beamfs-compute02 beamfs-compute03; do
+    f=/var/lib/libvirt/images/hpc-arm64/$vm.ext2
+    echo "=== $vm.ext2 ==="
+    sudo qemu-img info "$f" 2>&1 | head -5
+    echo "sha256: $(sudo sha256sum "$f" 2>&1 | awk '{print $1}')"
+    echo
+done
+"#;
+    capture_to(host_dir, "vm-rootfs-format.log", cmd);
+}
+
+/// Capture per-node identity check artefacts: in-VM beamfs.ko sha256 +
+/// host-side reference (lsmod, modinfo head).
+fn capture_identity_per_node(host_dir: &Path) {
+    println!("[pre]    Host capture: identity per node (4 SSH probes)");
+    for (vm, ip) in VM_IPS {
+        let remote = r#"
+echo "=== uname -r ==="
+uname -r
+echo
+echo "=== beamfs.ko sha256 in /lib/modules ==="
+sudo find /lib/modules -name 'beamfs.ko*' -type f 2>/dev/null | xargs -r sudo sha256sum 2>&1
+echo
+echo "=== lsmod | grep beamfs ==="
+lsmod | grep -E 'beamfs|reed_solomon|radfi'
+"#;
+        let out = ssh_capture(ip, remote);
+        let path = host_dir.join(format!("identity-{vm}.txt"));
+        if let Err(e) = fs::write(&path, out) {
+            eprintln!("  identity-{vm}.txt write failed: {e:#}");
+        }
+    }
+}
+
+/// Capture VM-side runtime state pre-attack: df, mount, lsblk, ip, cmdline.
+/// Reproducibility baseline.
+fn capture_vm_runtime_state(host_dir: &Path) {
+    println!("[pre]    Host capture: VM runtime state (4 SSH probes)");
+    for (vm, ip) in VM_IPS {
+        let remote = r#"
+echo "=== df -h ==="
+df -h 2>&1
+echo
+echo "=== mount ==="
+mount 2>&1
+echo
+echo "=== lsblk ==="
+lsblk 2>&1
+echo
+echo "=== ip a ==="
+ip a 2>&1
+echo
+echo "=== ip route ==="
+ip route 2>&1
+echo
+echo "=== /proc/cmdline ==="
+cat /proc/cmdline 2>&1
+echo
+echo "=== /etc/os-release ==="
+cat /etc/os-release 2>&1
+"#;
+        let out = ssh_capture(ip, remote);
+        let path = host_dir.join(format!("vm-state-{vm}.log"));
+        if let Err(e) = fs::write(&path, out) {
+            eprintln!("  vm-state-{vm}.log write failed: {e:#}");
+        }
+    }
+}
+
+/// Capture full modinfo for beamfs, reed_solomon, radfi on each node.
+fn capture_vm_modinfo(host_dir: &Path) {
+    println!("[pre]    Host capture: modinfo per node (4 SSH probes)");
+    for (vm, ip) in VM_IPS {
+        let remote = r#"
+for mod in beamfs reed_solomon radfi; do
+    echo "=== modinfo $mod ==="
+    sudo modinfo "$mod" 2>&1
+    echo
+done
+"#;
+        let out = ssh_capture(ip, remote);
+        let path = host_dir.join(format!("modinfo-{vm}.log"));
+        if let Err(e) = fs::write(&path, out) {
+            eprintln!("  modinfo-{vm}.log write failed: {e:#}");
+        }
+    }
 }

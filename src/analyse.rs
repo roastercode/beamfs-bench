@@ -400,6 +400,52 @@ pub fn make_tarball(run_dir: &Path) -> Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("run_dir has no basename"))?
         .to_string_lossy()
         .to_string();
+
+    // 0.1 enrichment: copy the most recent manifest .json + .json.asc
+    // alongside the run_dir/host/ before tar. Establishes the run <-> tarball
+    // link (manifest path was previously only on disk under Documentation/runs/).
+    {
+        let host_dir = run_dir.join("host");
+        let manifest_dir = std::path::Path::new(
+            "/home/aurelien/git/yocto-beamfs/Documentation/runs"
+        );
+        if let Ok(entries) = std::fs::read_dir(manifest_dir) {
+            let mut manifests: Vec<_> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("manifest-")
+                })
+                .collect();
+            manifests.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
+            if let Some(latest) = manifests.last() {
+                let stem = latest.path();
+                let stem_str = stem.to_string_lossy().to_string();
+                // Copy .json and .json.asc if both exist
+                let dst_json = host_dir.join(latest.file_name());
+                let _ = std::fs::copy(&stem, &dst_json);
+                let asc_src = format!("{stem_str}.asc");
+                if std::path::Path::new(&asc_src).exists() {
+                    let asc_name = format!("{}.asc", latest.file_name().to_string_lossy());
+                    let _ = std::fs::copy(&asc_src, host_dir.join(asc_name));
+                }
+            }
+        }
+    }
+
+    // 0.1 enrichment: write MANIFEST.sha256 at run_dir root listing every
+    // file's sha256. Allows post-extraction integrity check by users.
+    {
+        let manifest_path = run_dir.join("MANIFEST.sha256");
+        let cmd = format!(
+            "cd {} && find . -type f ! -name MANIFEST.sha256 -print0 | sort -z | xargs -0 sha256sum > {}",
+            run_dir.display(),
+            manifest_path.display(),
+        );
+        let _ = Command::new("bash").arg("-c").arg(&cmd).status();
+    }
+
     // Tarball lives under /tmp/ (not next to run_dir under Documentation/runs/),
     // aligning analyse/full behavior with mega (cf. src/mega.rs). Keeps
     // run_dir as the canonical source of truth on disk; the tarball is a
