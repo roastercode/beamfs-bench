@@ -410,21 +410,24 @@ pub fn make_tarball(run_dir: &Path) -> Result<PathBuf> {
             "/home/aurelien/git/yocto-beamfs/Documentation/runs"
         );
         if let Ok(entries) = std::fs::read_dir(manifest_dir) {
+            // Bug C fix: filter STRICTLY on names ending in `.json` (not
+            // `.json.asc`), so sort_by_key + last() picks the most recent
+            // manifest .json, and the .asc lookup builds the correct path.
             let mut manifests: Vec<_> = entries
                 .filter_map(|e| e.ok())
                 .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("manifest-")
+                    let n = e.file_name().to_string_lossy().to_string();
+                    n.starts_with("manifest-") && n.ends_with(".json")
                 })
                 .collect();
             manifests.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
             if let Some(latest) = manifests.last() {
                 let stem = latest.path();
                 let stem_str = stem.to_string_lossy().to_string();
-                // Copy .json and .json.asc if both exist
+                // Copy .json (always)
                 let dst_json = host_dir.join(latest.file_name());
                 let _ = std::fs::copy(&stem, &dst_json);
+                // Copy .json.asc if it exists alongside
                 let asc_src = format!("{stem_str}.asc");
                 if std::path::Path::new(&asc_src).exists() {
                     let asc_name = format!("{}.asc", latest.file_name().to_string_lossy());

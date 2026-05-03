@@ -328,8 +328,38 @@ const SSH_KEY: &str = "/home/aurelien/.ssh/hpclab_admin";
 const SSH_USER: &str = "hpcadmin";
 
 fn ssh_capture(ip: &str, remote_cmd: &str) -> String {
+    // Bug A fix: drop stale host key entry (R13: known_hosts desynchronisation
+    // after VM rebuild is a known recurring failure mode).
+    let _ = Command::new("ssh-keygen")
+        .args(["-R", ip])
+        .output();
+
+    // Bug B fix: encode the remote command in base64 so we never have to
+    // quote-escape multi-line shell scripts through Rust's Debug format.
+    // The remote side decodes and pipes to bash -s.
+    use std::io::Write;
+    let b64: String = {
+        match Command::new("base64")
+            .arg("-w0")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(mut c) => {
+                if let Some(mut stdin) = c.stdin.take() {
+                    let _ = stdin.write_all(remote_cmd.as_bytes());
+                }
+                match c.wait_with_output() {
+                    Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+                    Err(_) => return String::from("ssh capture failed: base64 wait error"),
+                }
+            }
+            Err(e) => return format!("ssh capture failed: base64 spawn: {e:#}"),
+        }
+    };
+
     let cmd = format!(
-        "ssh -i {SSH_KEY} -o StrictHostKeyChecking=no -o BatchMode=yes          -o ConnectTimeout=5 -o LogLevel=ERROR          {SSH_USER}@{ip} {remote_cmd:?} 2>&1"
+        "ssh -i {SSH_KEY} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/home/aurelien/.ssh/known_hosts -o BatchMode=yes -o ConnectTimeout=5 -o LogLevel=ERROR {SSH_USER}@{ip} 'echo {b64} | base64 -d | bash -s' 2>&1"
     );
     run_host(&cmd).unwrap_or_else(|e| format!("ssh capture failed: {e:#}"))
 }
