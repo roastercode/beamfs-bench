@@ -148,6 +148,12 @@ enum Command {
         /// Bypass regression check with explicit reason. Empty rejected.
         #[arg(long)]
         accept_regression: Option<String>,
+        /// Format cluster /data with mkfs.beamfs -O per_inode_rs (v5
+        /// PER_INODE_RS feature flag, bit 8 of s_feat_incompat).
+        /// Func-12 sub-3/sub-4: empirical activation of the decoupled
+        /// per-inode RS protection on scheme=2 UNIVERSAL_INLINE volume.
+        #[arg(long)]
+        per_inode_rs: bool,
     },
 
     /// Test A - metadata-targeted attack (superblock, inode bitmap, journal).
@@ -212,6 +218,7 @@ struct FullConfig {
     bpftrace: bool,
     full_code_analysis: bool,
     accept_regression: Option<String>,
+    per_inode_rs: bool,
 }
 
 /// Full bench pipeline: lifecycle (VM up) + bootstrap (/data) + analyse scope=full.
@@ -221,6 +228,7 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     let FullConfig {
         auto_confirm, no_tarball, shutdown, skip_vm_bootstrap,
         skip_bitbake, bpftrace, full_code_analysis, accept_regression,
+        per_inode_rs,
     } = cfg;
 
     println!("================================================================");
@@ -331,7 +339,7 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     print!("{table}");
 
     if !skip_vm_bootstrap {
-        bootstrap::bootstrap_all_data(&nodes).context("Phase 2 bootstrap failed")?;
+        bootstrap::bootstrap_all_data(&nodes, per_inode_rs).context("Phase 2 bootstrap failed")?;
 
         println!();
         println!("[full] Re-discovering topology post-bootstrap...");
@@ -422,10 +430,11 @@ fn main() {
             }
         }
 
-        Command::Full { auto_confirm, no_tarball, shutdown, skip_vm_bootstrap, skip_bitbake, bpftrace, full_code_analysis, accept_regression } => {
+        Command::Full { auto_confirm, no_tarball, shutdown, skip_vm_bootstrap, skip_bitbake, bpftrace, full_code_analysis, accept_regression, per_inode_rs } => {
             let cfg = FullConfig {
                 auto_confirm, no_tarball, shutdown, skip_vm_bootstrap,
                 skip_bitbake, bpftrace, full_code_analysis, accept_regression,
+                per_inode_rs,
             };
             match cmd_full(cfg) {
                 Ok(rc) => rc,

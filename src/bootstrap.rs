@@ -44,7 +44,7 @@ fn ssh_for(ip: &str) -> Result<SshTarget> {
 
 /// Run `bootstrap_data` on every reachable node in parallel.
 /// Returns Err if ANY node failed (R3 fail-fast).
-pub fn bootstrap_all_data(nodes: &[ClusterNode]) -> Result<Vec<BootstrapResult>> {
+pub fn bootstrap_all_data(nodes: &[ClusterNode], per_inode_rs: bool) -> Result<Vec<BootstrapResult>> {
     println!("================================================================");
     println!(" beamfs-bench bootstrap - Phase 2: prepare /data on 4 nodes");
     println!("================================================================");
@@ -73,7 +73,11 @@ pub fn bootstrap_all_data(nodes: &[ClusterNode]) -> Result<Vec<BootstrapResult>>
                 },
             };
 
-            let cmd = format!("{REMOTE_WORKER_PATH} bootstrap_data");
+            let cmd = if per_inode_rs {
+                format!("{REMOTE_WORKER_PATH} bootstrap_data per_inode_rs")
+            } else {
+                format!("{REMOTE_WORKER_PATH} bootstrap_data")
+            };
             let raw = match ssh.exec_lenient(&cmd) {
                 Ok(s) => s,
                 Err(e) => return BootstrapResult {

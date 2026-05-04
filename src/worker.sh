@@ -475,7 +475,14 @@ bootstrap_data)
         echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=ERROR|reason=/dev/vdb missing"
         exit 1
     fi
-    if ! sudo mkfs.beamfs -s inline /dev/vdb >/tmp/mkfs-bootstrap.log 2>&1; then
+    # Optional opt-in feature: when ARG2 == per_inode_rs, format the
+    # volume with -O per_inode_rs (v5 PER_INODE_RS, bit 8 s_feat_incompat).
+    # Activates the decoupled per-inode RS decoder on scheme=2 volumes.
+    MKFS_FEAT=""
+    if [ "${ARG2:-}" = "per_inode_rs" ]; then
+        MKFS_FEAT="-O per_inode_rs"
+    fi
+    if ! sudo mkfs.beamfs -s inline $MKFS_FEAT /dev/vdb >/tmp/mkfs-bootstrap.log 2>&1; then
         TAIL=$(tail -3 /tmp/mkfs-bootstrap.log | tr '\n' ' ')
         echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=ERROR|reason=mkfs failed|details=$TAIL"
         exit 1
