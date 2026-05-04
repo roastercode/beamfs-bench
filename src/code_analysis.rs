@@ -312,12 +312,6 @@ fn run_checkpatch_strict(files: &[PathBuf], out: &Path) -> ToolReport {
         if !(f_str.ends_with(".c") || f_str.ends_with(".h")) { continue; }
         if !f_str.contains("/git/beamfs/") { continue; }
         if f_str.contains("/recipes-kernel/") { continue; }
-        // TODO(R19-cleanup) : TEMPORARY exclusion. beamfs.h has 2 legacy
-        // ERROR: code indent should use tabs where possible (lines 174
-        // and 216 as of 2026-05-04). Real fix is to convert spaces to
-        // tabs on those lines in a dedicated beamfs commit ; once done,
-        // this exclusion can be removed.
-        if f_str.ends_with("/beamfs.h") { continue; }
         let res = match Command::new(&checkpatch)
             .args(["--strict", "--no-tree", "--terse", "--file", &f_str])
             .output()
@@ -1010,21 +1004,16 @@ fn run_naming_r17_check(out: &Path) -> ToolReport {
                 // name what it forbids), self-detection would be a circular
                 // false positive.
                 if p.ends_with("/src/code_analysis.rs") { return false; }
-                // TEMPORARY exclusion : Documentation/TODO.md is the project
-                // changelog/journal and currently quotes 5 historical naming
-                // references as bug-tracking citations (lines 1184, 1187,
-                // 1258, 1324, 1336 as of 2026-05-04). To be removed after
-                // those references are cleaned up to backquoted code spans
-                // or struck out. Tracked in TODO.md under R17 follow-up.
-                if p.ends_with("/Documentation/TODO.md") { return false; }
-                // TODO(R19-cleanup) : TEMPORARY exclusions for R19 unblock.
-                // /context/ holds session notes (context-recadrage.md and
-                // similar) which document historical naming for traceability.
-                // /Documentation/archive/ holds session archives. Both are
-                // internal documentation, not source nor user-facing prose.
-                // Re-include after a dedicated cleanup commit transforms
-                // historical references to backquoted code spans.
+                // Permanent exclusion : /context/ holds session notes
+                // (context-recadrage.md and similar) which document
+                // historical naming for traceability. By design these
+                // files contain forbidden patterns AS DOCUMENTATION of
+                // what is forbidden ; flagging them would be circular.
                 if p.contains("/context/") { return false; }
+                // Permanent exclusion : /Documentation/archive/ holds
+                // session archives that are frozen by construction.
+                // Re-naming history is preserved verbatim ; flagging
+                // archived prose is not actionable.
                 if p.contains("/Documentation/archive/") { return false; }
                 !(p.contains("/.git/") || p.contains("/target/")
                   || p.contains("/context/archive/") || p.contains("/papers/"))
@@ -1078,18 +1067,13 @@ fn run_emdash_r16_check(out: &Path) -> ToolReport {
         let walker = walkdir::WalkDir::new(repo).into_iter()
             .filter_entry(|e| {
                 let p = e.path().to_string_lossy().to_string();
-                // TODO(R19-cleanup) : TEMPORARY exclusions matching
-                // naming_r17 scope. Documentation/TODO.md, context/, and
-                // Documentation/archive/ all contain prose with em-dashes
-                // that pre-date R16 enforcement. Source .rs files in
-                // beamfs-bench (cluster.rs, devices.rs, ssh.rs, analyse.rs)
-                // contain em-dashes in module-doc comments by my own
-                // historical writing -- to be sed-cleaned in a dedicated
-                // commit, then this exclusion can be removed.
-                if p.ends_with("/Documentation/TODO.md") { return false; }
+                // Permanent exclusion : /context/ holds session notes that
+                // document forbidden patterns AS DOCUMENTATION (mirrors the
+                // naming_r17 rationale).
                 if p.contains("/context/") { return false; }
+                // Permanent exclusion : /Documentation/archive/ holds
+                // session archives that are frozen by construction.
                 if p.contains("/Documentation/archive/") { return false; }
-                if p.ends_with(".rs") { return false; }
                 !(p.contains("/.git/") || p.contains("/target/")
                   || p.contains("/context/archive/") || p.contains("/papers/"))
             });
