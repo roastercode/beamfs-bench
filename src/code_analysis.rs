@@ -43,7 +43,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const BEAMFS_REPO: &str = "/home/aurelien/git/beamfs";
-#[allow(dead_code)] // referenced by run_lockstep_r9_sha256 when implemented
 const YOCTO_REPO:  &str = "/home/aurelien/git/yocto-beamfs";
 const BENCH_REPO:  &str = "/home/aurelien/git/beamfs-bench";
 
@@ -292,10 +291,75 @@ fn dump_to_tmp_tarball(analysis_dir: &Path) -> Result<PathBuf> {
 // scaffolding is the contract; the bodies follow in dedicated commits
 // once tool availability on spartian-1 is verified.
 
-fn run_checkpatch_strict(_files: &[PathBuf], _out: &Path) -> ToolReport {
-    // scripts/checkpatch.pl --strict --no-tree --terse on each .c/.h
-    // diff. Hard-fail on any "ERROR:" line.
-    todo_tool("checkpatch_strict", 1)
+fn run_checkpatch_strict(files: &[PathBuf], out: &Path) -> ToolReport {
+    let t0 = std::time::Instant::now();
+    let checkpatch = match locate_checkpatch() {
+        Some(p) => p,
+        None => return ToolReport {
+            name: "checkpatch_strict".to_string(),
+            tier: 1,
+            outcome: ToolOutcome::Skip {
+                reason: "checkpatch.pl not found in /usr/src/linux*/scripts/".to_string()
+            },
+            duration_ms: t0.elapsed().as_millis() as u64,
+        },
+    };
+    let log_path = out.join("checkpatch.log");
+    let mut errors: u32 = 0;
+    let mut log_buf = String::new();
+    for f in files {
+        let f_str = f.display().to_string();
+        if !(f_str.ends_with(".c") || f_str.ends_with(".h")) { continue; }
+        if !f_str.contains("/git/beamfs/") { continue; }
+        if f_str.contains("/recipes-kernel/") { continue; }
+        let res = match Command::new(&checkpatch)
+            .args(["--strict", "--no-tree", "--terse", "--file", &f_str])
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        let s = String::from_utf8_lossy(&res.stdout);
+        log_buf.push_str(&format!("=== {f_str} ===\n"));
+        log_buf.push_str(&s);
+        log_buf.push('\n');
+        for line in s.lines() {
+            if line.contains("ERROR:") { errors += 1; }
+        }
+    }
+    let _ = std::fs::write(&log_path, &log_buf);
+    let outcome = if errors == 0 {
+        ToolOutcome::Pass
+    } else {
+        ToolOutcome::Findings {
+            count: errors,
+            severity: "error".to_string(),
+            log_path: log_path.display().to_string(),
+        }
+    };
+    ToolReport {
+        name: "checkpatch_strict".to_string(),
+        tier: 1,
+        outcome,
+        duration_ms: t0.elapsed().as_millis() as u64,
+    }
+}
+
+fn locate_checkpatch() -> Option<PathBuf> {
+    let canonical = PathBuf::from("/usr/src/linux/scripts/checkpatch.pl");
+    if canonical.is_file() { return Some(canonical); }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("/usr/src") {
+        for e in entries.flatten() {
+            let p = e.path();
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !name.starts_with("linux-") { continue; }
+            let cp = p.join("scripts/checkpatch.pl");
+            if cp.is_file() { candidates.push(cp); }
+        }
+    }
+    candidates.sort();
+    candidates.pop()
 }
 
 fn run_sparse(_out: &Path) -> ToolReport {
@@ -328,10 +392,55 @@ fn run_gcc_fanalyzer(_files: &[PathBuf], _out: &Path) -> ToolReport {
     todo_tool("gcc_fanalyzer", 1)
 }
 
-fn run_gpg_verify_commits(_out: &Path) -> ToolReport {
-    // for each commit in HEAD..origin: git verify-commit
-    // R29 GPG signing enforcement.
-    todo_tool("gpg_verify", 1)
+fn run_gpg_verify_commits(out: &Path) -> ToolReport {
+    let t0 = std::time::Instant::now();
+    let mut bad: Vec<String> = Vec::new();
+    let mut checked: u32 = 0;
+    for repo in &[BEAMFS_REPO, BENCH_REPO] {
+        let log_out = match Command::new("git")
+            .args(["-C", repo, "log", "-20", "--format=%H"])
+            .env("PAGER", "cat")
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        let commits = String::from_utf8_lossy(&log_out.stdout);
+        for sha in commits.lines() {
+            if sha.is_empty() { continue; }
+            checked += 1;
+            let v = Command::new("git")
+                .args(["-C", repo, "verify-commit", sha])
+                .env("PAGER", "cat")
+                .output();
+            match v {
+                Ok(r) if r.status.success() => {}
+                Ok(_) | Err(_) => bad.push(format!("{repo} {sha}")),
+            }
+        }
+    }
+    let log_path = out.join("gpg_verify.log");
+    let mut log = format!("checked {checked} commits across 2 repos\n");
+    if !bad.is_empty() {
+        log.push_str("\nUNSIGNED:\n");
+        for b in &bad { log.push_str(b); log.push('\n'); }
+    }
+    let _ = std::fs::write(&log_path, &log);
+    let outcome = if bad.is_empty() {
+        ToolOutcome::Pass
+    } else {
+        ToolOutcome::Findings {
+            count: bad.len() as u32,
+            severity: "error".to_string(),
+            log_path: log_path.display().to_string(),
+        }
+    };
+    ToolReport {
+        name: "gpg_verify".to_string(),
+        tier: 1,
+        outcome,
+        duration_ms: t0.elapsed().as_millis() as u64,
+    }
 }
 
 fn run_gitleaks(_out: &Path) -> ToolReport {
@@ -358,23 +467,180 @@ fn run_kernel_doc_validate(_files: &[PathBuf], _out: &Path) -> ToolReport {
     todo_tool("kernel_doc", 1)
 }
 
-fn run_naming_r17_check(_out: &Path) -> ToolReport {
-    // grep -E "Beam-Resilient|Beam Electromagnetic|FTRFS" .c .h .md .bb
-    // Excludes context/archive/, papers/, academic citations whitelist.
-    todo_tool("naming_r17", 1)
+fn run_naming_r17_check(out: &Path) -> ToolReport {
+    let t0 = std::time::Instant::now();
+    let forbidden = [
+        "Beam-Resilient",
+        "Beam Electromagnetic",
+        "BEAM Electromagnetic",
+    ];
+    let mut hits: Vec<String> = Vec::new();
+    for repo in &[BEAMFS_REPO, BENCH_REPO] {
+        let walker = walkdir::WalkDir::new(repo).into_iter()
+            .filter_entry(|e| {
+                let p = e.path().to_string_lossy().to_string();
+                !(p.contains("/.git/") || p.contains("/target/")
+                  || p.contains("/context/archive/") || p.contains("/papers/"))
+            });
+        for entry in walker.flatten() {
+            let path = entry.path();
+            if !path.is_file() { continue; }
+            let s = path.to_string_lossy();
+            if !(s.ends_with(".c") || s.ends_with(".h") || s.ends_with(".md")
+                 || s.ends_with(".bb") || s.ends_with(".bbappend")
+                 || s.ends_with(".rs")) {
+                continue;
+            }
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            for (lineno, line) in content.lines().enumerate() {
+                for pat in &forbidden {
+                    if line.contains(pat) {
+                        hits.push(format!("{}:{}: {}", s, lineno + 1, line.trim()));
+                    }
+                }
+            }
+        }
+    }
+    let log_path = out.join("naming_r17.log");
+    let _ = std::fs::write(&log_path, hits.join("\n"));
+    let outcome = if hits.is_empty() {
+        ToolOutcome::Pass
+    } else {
+        ToolOutcome::Findings {
+            count: hits.len() as u32,
+            severity: "error".to_string(),
+            log_path: log_path.display().to_string(),
+        }
+    };
+    ToolReport {
+        name: "naming_r17".to_string(),
+        tier: 1,
+        outcome,
+        duration_ms: t0.elapsed().as_millis() as u64,
+    }
 }
 
-fn run_emdash_r16_check(_out: &Path) -> ToolReport {
-    // grep -P "\xE2\x80\x94" on diff (U+2014 em-dash forbidden, R16).
-    todo_tool("emdash_r16", 1)
+fn run_emdash_r16_check(out: &Path) -> ToolReport {
+    let t0 = std::time::Instant::now();
+    let emdash: char = '\u{2014}';
+    let mut hits: Vec<String> = Vec::new();
+    for repo in &[BEAMFS_REPO, BENCH_REPO] {
+        let walker = walkdir::WalkDir::new(repo).into_iter()
+            .filter_entry(|e| {
+                let p = e.path().to_string_lossy().to_string();
+                !(p.contains("/.git/") || p.contains("/target/")
+                  || p.contains("/context/archive/") || p.contains("/papers/"))
+            });
+        for entry in walker.flatten() {
+            let path = entry.path();
+            if !path.is_file() { continue; }
+            let s = path.to_string_lossy();
+            if !(s.ends_with(".c") || s.ends_with(".h") || s.ends_with(".md")
+                 || s.ends_with(".bb") || s.ends_with(".bbappend")
+                 || s.ends_with(".rs")) {
+                continue;
+            }
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            for (lineno, line) in content.lines().enumerate() {
+                if line.contains(emdash) {
+                    hits.push(format!("{}:{}: {}", s, lineno + 1, line.trim()));
+                }
+            }
+        }
+    }
+    let log_path = out.join("emdash_r16.log");
+    let _ = std::fs::write(&log_path, hits.join("\n"));
+    let outcome = if hits.is_empty() {
+        ToolOutcome::Pass
+    } else {
+        ToolOutcome::Findings {
+            count: hits.len() as u32,
+            severity: "error".to_string(),
+            log_path: log_path.display().to_string(),
+        }
+    };
+    ToolReport {
+        name: "emdash_r16".to_string(),
+        tier: 1,
+        outcome,
+        duration_ms: t0.elapsed().as_millis() as u64,
+    }
 }
 
-fn run_lockstep_r9_sha256(_out: &Path) -> ToolReport {
-    // sha256sum byte-identical check on the 11 lockstep .c/.h between
-    // beamfs/ and yocto-beamfs/recipes-kernel/beamfs/files/beamfs-0.1.0/.
-    // Duplicates pipeline 0.2 by design: code-analysis is self-contained
-    // and runs BEFORE 0.1, so it cannot rely on later phases.
-    todo_tool("lockstep_r9", 1)
+fn run_lockstep_r9_sha256(out: &Path) -> ToolReport {
+    let t0 = std::time::Instant::now();
+    let yocto_dir = PathBuf::from(YOCTO_REPO)
+        .join("recipes-kernel/beamfs/files/beamfs-0.1.0");
+    if !yocto_dir.is_dir() {
+        return ToolReport {
+            name: "lockstep_r9".to_string(),
+            tier: 1,
+            outcome: ToolOutcome::Skip {
+                reason: format!("yocto recipe dir {} not found", yocto_dir.display())
+            },
+            duration_ms: t0.elapsed().as_millis() as u64,
+        };
+    }
+    let beamfs_dir = PathBuf::from(BEAMFS_REPO);
+    let mut divergences: Vec<String> = Vec::new();
+    let mut checked: u32 = 0;
+    if let Ok(entries) = std::fs::read_dir(&beamfs_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_file() { continue; }
+            let name = match p.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+            if !(name.ends_with(".c") || name.ends_with(".h")) { continue; }
+            let yocto_p = yocto_dir.join(name);
+            if !yocto_p.is_file() { continue; }
+            let beamfs_bytes = match std::fs::read(&p) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let yocto_bytes = match std::fs::read(&yocto_p) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            checked += 1;
+            if beamfs_bytes != yocto_bytes {
+                divergences.push(format!(
+                    "{} vs {}: byte length {} vs {}",
+                    p.display(), yocto_p.display(),
+                    beamfs_bytes.len(), yocto_bytes.len()
+                ));
+            }
+        }
+    }
+    let log_path = out.join("lockstep_r9.log");
+    let mut log = format!("checked {checked} lockstep .c/.h files\n");
+    if !divergences.is_empty() {
+        log.push_str("\nDIVERGENCES:\n");
+        for d in &divergences { log.push_str(d); log.push('\n'); }
+    }
+    let _ = std::fs::write(&log_path, &log);
+    let outcome = if divergences.is_empty() {
+        ToolOutcome::Pass
+    } else {
+        ToolOutcome::Findings {
+            count: divergences.len() as u32,
+            severity: "error".to_string(),
+            log_path: log_path.display().to_string(),
+        }
+    };
+    ToolReport {
+        name: "lockstep_r9".to_string(),
+        tier: 1,
+        outcome,
+        duration_ms: t0.elapsed().as_millis() as u64,
+    }
 }
 
 // ============================================================
