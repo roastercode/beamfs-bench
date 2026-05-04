@@ -220,6 +220,16 @@ attack)
     DMESG_MARK="bench2-attack-$FS-$PROB-$$-$(date +%s%N)"
     sudo bash -c "echo \"$DMESG_MARK\" > /dev/kmsg" 2>/dev/null || true
 
+    # B.3 (M1 C4) : save pristine copy of TARGET_FILE BEFORE umount cycle.
+    # RadFI is temporarily disarmed during this read so pre.bin is guaranteed
+    # to contain pristine bytes (uncontaminated by the active attack). This
+    # is critical for cmp -l accuracy : if pre.bin already had flipped bits
+    # from RadFI, BITS_DIFF would underestimate the post-attack corruption.
+    echo 0 | sudo tee /sys/kernel/debug/radfi/enabled >/dev/null
+    sudo cat "$TARGET_FILE" > /tmp/pre-cat-$FS.bin 2>/dev/null
+    PRE_SIZE=$(stat -c '%s' /tmp/pre-cat-$FS.bin 2>/dev/null || echo 0)
+    echo 1 | sudo tee /sys/kernel/debug/radfi/enabled >/dev/null
+
     if [ "$FS" = "squashfs" ]; then
         sudo umount $MNT 2>/dev/null
         echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
@@ -272,6 +282,39 @@ attack)
         [ -z "$HASH_POST" ] && HASH_POST=missing
     fi
 
+    # B.3 (M1 C4) : bit-level corruption metrics via popcount XOR on the
+    # byte-by-byte diff between pre and post. Produces 3 plottable fields :
+    #   BITS_DIFF      : total bits flipped between pre and post (0 if pre == post)
+    #   FRAC_CORRUPT   : fraction in basis points (1/10000) for integer math
+    #                    in downstream synthesis ; 100 = 1%, 10000 = 100%.
+    #   HAMM_BLOCKS    : number of 4 KB blocks with at least 1 bit flipped
+    # Defensive : emit zeros if either file is missing.
+    BITS_DIFF=0
+    FRAC_CORRUPT=0
+    HAMM_BLOCKS=0
+    if [ -s /tmp/pre-cat-$FS.bin ] && [ -s /tmp/post-cat-$FS.bin ]; then
+        METRICS=$(sudo python3 -c "
+pre = open('/tmp/pre-cat-$FS.bin', 'rb').read()
+post = open('/tmp/post-cat-$FS.bin', 'rb').read()
+n = min(len(pre), len(post))
+bits = 0
+blocks = set()
+for i in range(n):
+    x = pre[i] ^ post[i]
+    if x:
+        bits += bin(x).count('1')
+        blocks.add(i // 4096)
+total_bits = max(n * 8, 1)
+frac_bp = (bits * 10000) // total_bits
+print(f'{bits} {frac_bp} {len(blocks)}')
+" 2>/dev/null)
+        if [ -n "$METRICS" ]; then
+            BITS_DIFF=$(echo "$METRICS" | awk '{print $1}')
+            FRAC_CORRUPT=$(echo "$METRICS" | awk '{print $2}')
+            HAMM_BLOCKS=$(echo "$METRICS" | awk '{print $3}')
+        fi
+    fi
+
     DMESG_SLICE=$(sudo dmesg 2>/dev/null | awk -v m="$DMESG_MARK" '$0 ~ m {found=1; next} found')
     RS_CORRECTED=$(echo "$DMESG_SLICE" | grep -cE 'beamfs(/inline)?:.*symbol\(s\) corrected' | tr -d '\n')
     DMESG_UNCORR=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*uncorrectable|beamfs.*RS decode failed' | tr -d '\n')
@@ -280,9 +323,9 @@ attack)
     [ -z "$DMESG_UNCORR" ] && DMESG_UNCORR=0
     [ -z "$DMESG_EIO" ] && DMESG_EIO=0
 
-    sudo rm -f /tmp/post-cat-$FS.bin /tmp/cat-err-$FS.log 2>/dev/null || true
+    sudo rm -f /tmp/pre-cat-$FS.bin /tmp/post-cat-$FS.bin /tmp/cat-err-$FS.log 2>/dev/null || true
 
-    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO"
+    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE"
     ;;
 
 verify)
@@ -414,6 +457,13 @@ cluster_attack)
     DMESG_MARK="bench2-cluster-$(hostname)-$PROB_VAL-$$-$(date +%s%N)"
     sudo bash -c "echo \"$DMESG_MARK\" > /dev/kmsg" 2>/dev/null || true
 
+    # B.3 (M1 C4) : save pristine copy of TARGET_FILE BEFORE umount cycle.
+    # RadFI temporarily disarmed (see multifs branch comment).
+    echo 0 | sudo tee /sys/kernel/debug/radfi/enabled >/dev/null
+    sudo cat "$TARGET_FILE" > /tmp/pre-cat-cluster-$$.bin 2>/dev/null
+    PRE_SIZE=$(stat -c '%s' /tmp/pre-cat-cluster-$$.bin 2>/dev/null || echo 0)
+    echo 1 | sudo tee /sys/kernel/debug/radfi/enabled >/dev/null
+
     # B.2 (M1 C1) : umount + drop_caches + mount cycle for /data (beamfs).
     # Same rationale as multifs B.1 : without this, sync + drop_caches alone
     # leaves the icache populated and pagecache pages get repopulated from
@@ -455,6 +505,33 @@ cluster_attack)
         [ -z "$HASH_POST" ] && HASH_POST=missing
     fi
 
+    # B.3 (M1 C4) : same bit-level metrics as multifs scope.
+    BITS_DIFF=0
+    FRAC_CORRUPT=0
+    HAMM_BLOCKS=0
+    if [ -s /tmp/pre-cat-cluster-$$.bin ] && [ -s /tmp/post-cat-cluster-$$.bin ]; then
+        METRICS=$(sudo python3 -c "
+pre = open('/tmp/pre-cat-cluster-$$.bin', 'rb').read()
+post = open('/tmp/post-cat-cluster-$$.bin', 'rb').read()
+n = min(len(pre), len(post))
+bits = 0
+blocks = set()
+for i in range(n):
+    x = pre[i] ^ post[i]
+    if x:
+        bits += bin(x).count('1')
+        blocks.add(i // 4096)
+total_bits = max(n * 8, 1)
+frac_bp = (bits * 10000) // total_bits
+print(f'{bits} {frac_bp} {len(blocks)}')
+" 2>/dev/null)
+        if [ -n "$METRICS" ]; then
+            BITS_DIFF=$(echo "$METRICS" | awk '{print $1}')
+            FRAC_CORRUPT=$(echo "$METRICS" | awk '{print $2}')
+            HAMM_BLOCKS=$(echo "$METRICS" | awk '{print $3}')
+        fi
+    fi
+
     DMESG_SLICE=$(sudo dmesg 2>/dev/null | awk -v m="$DMESG_MARK" '$0 ~ m {found=1; next} found')
     RS_CORRECTED=$(echo "$DMESG_SLICE" | grep -cE 'beamfs(/inline)?:.*symbol\(s\) corrected' | tr -d '\n')
     DMESG_UNCORR=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*uncorrectable|beamfs.*RS decode failed' | tr -d '\n')
@@ -463,9 +540,9 @@ cluster_attack)
     [ -z "$DMESG_UNCORR" ] && DMESG_UNCORR=0
     [ -z "$DMESG_EIO" ] && DMESG_EIO=0
 
-    sudo rm -f /tmp/post-cat-cluster-$$.bin /tmp/cat-err-cluster-$$.log 2>/dev/null || true
+    sudo rm -f /tmp/pre-cat-cluster-$$.bin /tmp/post-cat-cluster-$$.bin /tmp/cat-err-cluster-$$.log 2>/dev/null || true
 
-    echo "CLUSTER|HOST=$(hostname)|PROB=$PROB_VAL|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO"
+    echo "CLUSTER|HOST=$(hostname)|PROB=$PROB_VAL|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE"
     ;;
 
 cluster_verify)
