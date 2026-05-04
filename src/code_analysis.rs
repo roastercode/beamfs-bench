@@ -987,6 +987,50 @@ fn run_gpg_verify_commits(out: &Path) -> ToolReport {
 
 
 
+/// Determine if a substring at `pat_start..pat_end` in `line` is enclosed
+/// in a backtick code-span (`...`) or in a double-quoted string ("...").
+///
+/// Used by run_naming_r17_check on .md files to skip matches that appear
+/// as citations rather than authoritative naming. On non-.md files
+/// (source code), this filter is NOT applied -- forbidden names in code
+/// comments or string literals must still be flagged.
+///
+/// If a span opens but does not close before the end of line, the line's
+/// end is treated as a soft close (covers multi-line markdown citations
+/// where the closing quote is on the next line).
+fn is_in_backtick_or_quote_span(line: &str, pat_start: usize, pat_end: usize) -> bool {
+    let mut in_backtick = false;
+    let mut in_dquote = false;
+    let mut span_start: Option<usize> = None;
+    for (idx, ch) in line.char_indices() {
+        if !in_backtick && !in_dquote {
+            if ch == '`' {
+                in_backtick = true;
+                span_start = Some(idx + ch.len_utf8());
+            } else if ch == '"' {
+                in_dquote = true;
+                span_start = Some(idx + ch.len_utf8());
+            }
+        } else if in_backtick && ch == '`' {
+            let s = span_start.unwrap();
+            if s <= pat_start && pat_end <= idx { return true; }
+            in_backtick = false;
+            span_start = None;
+        } else if in_dquote && ch == '"' {
+            let s = span_start.unwrap();
+            if s <= pat_start && pat_end <= idx { return true; }
+            in_dquote = false;
+            span_start = None;
+        }
+    }
+    if in_backtick || in_dquote {
+        if let Some(s) = span_start {
+            if s <= pat_start && pat_end <= line.len() { return true; }
+        }
+    }
+    false
+}
+
 fn run_naming_r17_check(out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
     let forbidden = [
@@ -1031,9 +1075,17 @@ fn run_naming_r17_check(out: &Path) -> ToolReport {
                 Ok(c) => c,
                 Err(_) => continue,
             };
+            let is_md = s.ends_with(".md");
             for (lineno, line) in content.lines().enumerate() {
                 for pat in &forbidden {
-                    if line.contains(pat) {
+                    if let Some(start) = line.find(pat) {
+                        let end = start + pat.len();
+                        // On .md files, skip matches that are citations
+                        // (inside backticks or double-quotes). Non-.md
+                        // (source code) files are checked strictly.
+                        if is_md && is_in_backtick_or_quote_span(line, start, end) {
+                            continue;
+                        }
                         hits.push(format!("{}:{}: {}", s, lineno + 1, line.trim()));
                     }
                 }
