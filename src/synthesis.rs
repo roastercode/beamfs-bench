@@ -339,6 +339,93 @@ fn derive_verdict_legacy(
     }
 }
 
+/// Bench-2 cluster scope : extract a field from an ATTACK record matching
+/// (host, prob). Cluster format differs from multifs : prefix is "ATTACK|prob=N|"
+/// not "ATTACK|FS=...|PROB=...|", and host is HOST=<name> not FS=<name>.
+fn extract_cluster_attack_field(
+    records: &str,
+    host: &str,
+    prob: u32,
+    field: &str,
+) -> Option<String> {
+    let needle_prefix = format!("ATTACK|prob={prob}|CLUSTER|");
+    let needle_host = format!("HOST={host}");
+    let needle_prob_inline = format!("PROB={prob}");
+    let needle_field = format!("{field}=");
+    for line in records.lines() {
+        if line.starts_with(&needle_prefix)
+            && line.contains(&needle_host)
+            && line.contains(&needle_prob_inline)
+            && line.contains(&needle_field)
+        {
+            if let Some(idx) = line.find(&needle_field) {
+                let rest = &line[idx + needle_field.len()..];
+                let value: String = rest
+                    .chars()
+                    .take_while(|c| *c != '|')
+                    .collect();
+                if !value.is_empty() {
+                    return Some(value);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Bench-2 cluster scope : extract VERDICT (mount-state sentinel) from a
+/// VERIFY record matching (host, prob). cluster_verify currently emits only
+/// VERDICT=VERIFIED ; FS_PANIC is not yet emitted by the worker but the
+/// extractor handles both cases for forward compatibility.
+fn extract_cluster_verify_state(records: &str, host: &str, prob: u32) -> Option<String> {
+    let needle_prefix = format!("VERIFY|prob={prob}|CLUSTER|");
+    let needle_host = format!("HOST={host}");
+    for line in records.lines() {
+        if line.starts_with(&needle_prefix)
+            && line.contains(&needle_host)
+            && line.contains("VERDICT=")
+        {
+            if let Some(idx) = line.find("VERDICT=") {
+                let rest = &line[idx + "VERDICT=".len()..];
+                let v: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_uppercase() || *c == '_')
+                    .collect();
+                if !v.is_empty() {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Derive a 5-class verdict for a single (host, prob) cluster observation.
+/// Cluster /data is always beamfs (Reed-Solomon FEC inline), so always
+/// uses derive_verdict_beamfs ; legacy FS variant is multifs-only.
+///
+/// Returns one of : "RS_RECOVERED", "RS_PASSTHROUGH", "RS_FAILED",
+/// "FS_PANIC", "CORRUPTED_DATA", "?" (insufficient data).
+pub fn extract_cluster_verdict(records: &str, host: &str, prob: u32) -> Option<String> {
+    let mount_state = extract_cluster_verify_state(records, host, prob)
+        .unwrap_or_else(|| "MOUNTED".to_string());
+    // cluster_verify emits VERIFIED on success ; remap to MOUNTED for the
+    // shared derive_verdict_beamfs() call which expects the multifs sentinel.
+    let mount_state = if mount_state == "VERIFIED" { "MOUNTED".to_string() } else { mount_state };
+    let cat_rc: i32 = extract_cluster_attack_field(records, host, prob, "CAT_RC")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(-1);
+    let hash_pre = extract_cluster_attack_field(records, host, prob, "HASH_PRE")
+        .unwrap_or_else(|| "missing".to_string());
+    let hash_post = extract_cluster_attack_field(records, host, prob, "HASH_POST")
+        .unwrap_or_else(|| "missing".to_string());
+    let rs_corrected: u32 = extract_cluster_attack_field(records, host, prob, "RS_CORRECTED")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    Some(derive_verdict_beamfs(&mount_state, cat_rc, &hash_pre, &hash_post, rs_corrected).to_string())
+}
+
 fn extract_verdict(records: &str, fs_name: &str, prob: u32) -> Option<String> {
     let mount_state = extract_verify_state(records, fs_name, prob)?;
     let cat_rc: i32 = extract_attack_field(records, fs_name, prob, "CAT_RC")
@@ -459,5 +546,56 @@ mod tests {
         assert_eq!(extract_attack_field(r, "beamfs", 1000, "HASH_PRE").as_deref(), Some("abc123"));
         assert_eq!(extract_attack_field(r, "beamfs", 1000, "RS_CORRECTED").as_deref(), Some("2"));
         assert_eq!(extract_attack_field(r, "beamfs", 1000, "MISSING_FIELD"), None);
+    }
+
+    // ============================================================
+    // B.4 (M1 C3) : cluster verdict extraction tests
+    // ============================================================
+
+    #[test]
+    fn cluster_attack_field_extraction() {
+        let r = "ATTACK|prob=1000000|CLUSTER|HOST=beamfs-master|PROB=1000000|CALL_DELTA=28|FLIP_DELTA=28|TARGET=dir-B/file-B2.bin|HASH_PRE=abc123|HASH_POST=abc123|CAT_RC=0|RS_CORRECTED=2|DMESG_UNCORRECTABLE=0|DMESG_EIO=0|BITS_DIFF=0|FRAC_CORRUPT=0|HAMM_BLOCKS=0|FILE_SIZE=3072\n";
+        assert_eq!(extract_cluster_attack_field(r, "beamfs-master", 1_000_000, "CAT_RC").as_deref(), Some("0"));
+        assert_eq!(extract_cluster_attack_field(r, "beamfs-master", 1_000_000, "HASH_PRE").as_deref(), Some("abc123"));
+        assert_eq!(extract_cluster_attack_field(r, "beamfs-master", 1_000_000, "RS_CORRECTED").as_deref(), Some("2"));
+        assert_eq!(extract_cluster_attack_field(r, "beamfs-master", 1_000_000, "BITS_DIFF").as_deref(), Some("0"));
+        assert_eq!(extract_cluster_attack_field(r, "beamfs-compute01", 1_000_000, "CAT_RC"), None);
+        assert_eq!(extract_cluster_attack_field(r, "beamfs-master", 1000, "CAT_RC"), None);
+    }
+
+    #[test]
+    fn cluster_verdict_recovered() {
+        let r = [
+            "ATTACK|prob=1000000|CLUSTER|HOST=beamfs-master|PROB=1000000|CALL_DELTA=28|FLIP_DELTA=28|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=4|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
+            "VERIFY|prob=1000000|CLUSTER|HOST=beamfs-master|VERDICT=VERIFIED|DIFFS=0|N_FILES_CHANGED=0|details=ok",
+        ].join("\n");
+        assert_eq!(extract_cluster_verdict(&r, "beamfs-master", 1_000_000).as_deref(), Some("RS_RECOVERED"));
+    }
+
+    #[test]
+    fn cluster_verdict_passthrough() {
+        let r = [
+            "ATTACK|prob=1000|CLUSTER|HOST=beamfs-master|PROB=1000|CALL_DELTA=28|FLIP_DELTA=0|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
+            "VERIFY|prob=1000|CLUSTER|HOST=beamfs-master|VERDICT=VERIFIED|DIFFS=0|N_FILES_CHANGED=0|details=ok",
+        ].join("\n");
+        assert_eq!(extract_cluster_verdict(&r, "beamfs-master", 1000).as_deref(), Some("RS_PASSTHROUGH"));
+    }
+
+    #[test]
+    fn cluster_verdict_corrupted() {
+        let r = [
+            "ATTACK|prob=1000000|CLUSTER|HOST=beamfs-master|PROB=1000000|CALL_DELTA=28|FLIP_DELTA=28|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=def|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
+            "VERIFY|prob=1000000|CLUSTER|HOST=beamfs-master|VERDICT=VERIFIED|DIFFS=2|N_FILES_CHANGED=1|details=ok",
+        ].join("\n");
+        assert_eq!(extract_cluster_verdict(&r, "beamfs-master", 1_000_000).as_deref(), Some("CORRUPTED_DATA"));
+    }
+
+    #[test]
+    fn cluster_verdict_failed() {
+        let r = [
+            "ATTACK|prob=1000000|CLUSTER|HOST=beamfs-master|PROB=1000000|CALL_DELTA=28|FLIP_DELTA=28|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=cat_failed|CAT_RC=1|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
+            "VERIFY|prob=1000000|CLUSTER|HOST=beamfs-master|VERDICT=VERIFIED|DIFFS=0|N_FILES_CHANGED=0|details=ok",
+        ].join("\n");
+        assert_eq!(extract_cluster_verdict(&r, "beamfs-master", 1_000_000).as_deref(), Some("RS_FAILED"));
     }
 }

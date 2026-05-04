@@ -284,6 +284,24 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
                 writeln!(cf, "VERIFY|prob={prob}|{}", r.raw_output)?;
             }
 
+            // B.4 (M1 C3) : derive 5-class verdict per (host, prob) and
+            // write DERIVED| lines to cluster-records.txt. The verdict is
+            // computed in synthesis::extract_cluster_verdict from the
+            // ATTACK + VERIFY records of this same prob iteration. The
+            // records were just written above so we re-read the file.
+            //
+            // Note : we re-read the entire cluster_log here. For the
+            // current 4-node x 3-prob layout this is 24 lines max ;
+            // optimisation deferred until/if it becomes a hot path.
+            cf.flush().context("flush cluster_log before derived verdict")?;
+            let buf = std::fs::read_to_string(&cluster_log)
+                .context("re-read cluster_log for verdict derivation")?;
+            for r in &atk {
+                if let Some(v) = crate::synthesis::extract_cluster_verdict(&buf, &r.host, prob) {
+                    writeln!(cf, "DERIVED|prob={prob}|host={}|verdict={}", r.host, v)?;
+                }
+            }
+
             // Re-create the test layout for the next probability iteration
             // (cluster_verify removes the subdir at the end).
             //
