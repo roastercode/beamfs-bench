@@ -410,15 +410,30 @@ cluster_attack)
     HASHES_FILE="$SUBDIR/dir-B/HASHES.sha256"
     HASH_PRE=$(sudo awk '$2 == "file-B2.bin" {print $1}' "$HASHES_FILE" 2>/dev/null)
     [ -z "$HASH_PRE" ] && HASH_PRE=missing
+    HASH_POST=""  # B.2 : explicit init so umount/mount failure can pre-set
     DMESG_MARK="bench2-cluster-$(hostname)-$PROB_VAL-$$-$(date +%s%N)"
     sudo bash -c "echo \"$DMESG_MARK\" > /dev/kmsg" 2>/dev/null || true
 
+    # B.2 (M1 C1) : umount + drop_caches + mount cycle for /data (beamfs).
+    # Same rationale as multifs B.1 : without this, sync + drop_caches alone
+    # leaves the icache populated and pagecache pages get repopulated from
+    # disk bypassing the RadFI hook on first read. The cycle forces VFS to
+    # reread SB, root inode, target inode, and data blocks via submit_bio.
     sudo sync
+    sudo umount /data 2>/tmp/umount-err-cluster-$$.log
+    UMOUNT_RC=$?
     echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
-    sudo cat "$TARGET_FILE" > /tmp/post-cat-cluster-$$.bin 2>/tmp/cat-err-cluster-$$.log
-    CAT_RC=$?
-    sudo cat $SUBDIR/dir-A/file-A1.bin > /dev/null 2>&1
-    sudo cat $SUBDIR/dir-C/file-C3.bin > /dev/null 2>&1
+    sudo mount -t beamfs /dev/vdb /data 2>/tmp/mount-err-cluster-$$.log
+    MOUNT_RC=$?
+    if [ $MOUNT_RC -ne 0 ]; then
+        CAT_RC=255
+        HASH_POST=mount_failed
+    else
+        sudo cat "$TARGET_FILE" > /tmp/post-cat-cluster-$$.bin 2>/tmp/cat-err-cluster-$$.log
+        CAT_RC=$?
+        sudo cat $SUBDIR/dir-A/file-A1.bin > /dev/null 2>&1
+        sudo cat $SUBDIR/dir-C/file-C3.bin > /dev/null 2>&1
+    fi
 
     CALL_A=$(sudo cat /sys/kernel/debug/radfi/call_count)
     FLIP_A=$(sudo cat /sys/kernel/debug/radfi/flip_count)
@@ -429,12 +444,16 @@ cluster_attack)
     CALL_DELTA=$((CALL_A - CALL_B))
     FLIP_DELTA=$((FLIP_A - FLIP_B))
 
-    if [ $CAT_RC -eq 0 ] && [ -s /tmp/post-cat-cluster-$$.bin ]; then
-        HASH_POST=$(sha256sum /tmp/post-cat-cluster-$$.bin 2>/dev/null | awk '{print $1}')
-    else
-        HASH_POST=cat_failed
+    # B.2 : do not overwrite HASH_POST if it was already set (e.g.
+    # mount_failed), only compute from /tmp/post-cat-cluster-$$.bin if untouched.
+    if [ -z "$HASH_POST" ]; then
+        if [ $CAT_RC -eq 0 ] && [ -s /tmp/post-cat-cluster-$$.bin ]; then
+            HASH_POST=$(sha256sum /tmp/post-cat-cluster-$$.bin 2>/dev/null | awk '{print $1}')
+        else
+            HASH_POST=cat_failed
+        fi
+        [ -z "$HASH_POST" ] && HASH_POST=missing
     fi
-    [ -z "$HASH_POST" ] && HASH_POST=missing
 
     DMESG_SLICE=$(sudo dmesg 2>/dev/null | awk -v m="$DMESG_MARK" '$0 ~ m {found=1; next} found')
     RS_CORRECTED=$(echo "$DMESG_SLICE" | grep -cE 'beamfs(/inline)?:.*symbol\(s\) corrected' | tr -d '\n')
