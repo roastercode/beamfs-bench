@@ -1,4 +1,4 @@
-//! cluster.rs — multi-node orchestration for analyse --scope=full.
+//! cluster.rs  -  multi-node orchestration for analyse --scope=full.
 //!
 //! ## Topology (per recadrage R13)
 //!

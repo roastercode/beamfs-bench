@@ -1,4 +1,4 @@
-//! analyse.rs — forensic-instrumented multifs run.
+//! analyse.rs  -  forensic-instrumented multifs run.
 //!
 //! ## Scopes
 //!
@@ -16,7 +16,7 @@
 //! and produce a tarball `<run_dir>.tar.gz` at the end (unless --no-tarball).
 //!
 //! The wrapped multifs run uses `pre_validated_mappings` so the user is
-//! prompted exactly ONCE for the device validation table — at the start of
+//! prompted exactly ONCE for the device validation table  -  at the start of
 //! analyse, not again inside multifs.
 
 use anyhow::{Context, Result};
@@ -131,7 +131,7 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
 
     let any_unreachable = nodes.iter().any(|n| !n.discovered.reachable);
     if any_unreachable && cfg.scope != Scope::Quick {
-        eprintln!("beamfs-bench: WARNING — at least one cluster node is unreachable.");
+        eprintln!("beamfs-bench: WARNING  -  at least one cluster node is unreachable.");
         eprintln!("beamfs-bench: forensic capture will skip those nodes.");
     }
 
@@ -184,7 +184,7 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     if cfg.scope == Scope::Full {
         println!("[pre]    Start perf record on master...");
         if let Err(e) = forensics::start_perf_master() {
-            eprintln!("beamfs-bench: perf record failed to start: {e:#} — continuing without perf.");
+            eprintln!("beamfs-bench: perf record failed to start: {e:#}  -  continuing without perf.");
         }
     }
 

@@ -1,4 +1,4 @@
-//! devices.rs — authoritative device discovery via `virsh dumpxml`.
+//! devices.rs  -  authoritative device discovery via `virsh dumpxml`.
 //!
 //! ## Why this module exists (anti-NAK / R12 of context-recadrage)
 //!
@@ -340,7 +340,7 @@ pub fn discover_and_validate(
 
     if matched.len() != fs_list.len() {
         eprintln!(
-            "beamfs-bench: WARNING — {} FS slot(s) declared but only {} disk(s) matched.",
+            "beamfs-bench: WARNING  -  {} FS slot(s) declared but only {} disk(s) matched.",
             fs_list.len(),
             matched.len()
         );

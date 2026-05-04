@@ -1,4 +1,4 @@
-//! ssh.rs — SSH/SCP wrapper using std::process::Command.
+//! ssh.rs  -  SSH/SCP wrapper using std::process::Command.
 //!
 //! Mirrors exactly what Tir-multifs.sh does:
 //!   ssh $SSH_OPTS user@host "cmd"
