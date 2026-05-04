@@ -101,16 +101,29 @@ pub fn run(mode: AnalysisMode, run_dir: &Path) -> Result<CodeAnalysisReport> {
 
     let started_at = chrono::Utc::now().to_rfc3339();
     let diff_base = git_diff_base()?;
-    let files = files_in_scope(mode, &diff_base)?;
+    let mut files = files_in_scope(mode, &diff_base)?;
+    let mut effective_mode = mode;
 
-    println!("  mode: {mode:?}");
+    // M1.Y : if Incremental returns no files (HEAD == upstream tip), fall
+    // back to Full so the Tier 1 gate actually runs. Without this, every
+    // R19 from a clean tree skips all 14 tools and emits a misleading
+    // "all SKIP" report. Surface the fallback explicitly so the operator
+    // knows the analysis ran on the full tree.
+    if matches!(mode, AnalysisMode::Incremental) && files.is_empty() {
+        eprintln!("[code-analysis] Incremental scope is empty (HEAD == upstream),");
+        eprintln!("[code-analysis] falling back to Full mode for Tier 1 gate.");
+        effective_mode = AnalysisMode::Full;
+        files = files_in_scope(effective_mode, &diff_base)?;
+    }
+
+    println!("  mode: {effective_mode:?}");
     println!("  diff base: {diff_base}");
     println!("  files in scope: {}", files.len());
 
     let mut report = CodeAnalysisReport {
         started_at,
         finished_at: String::new(),
-        mode,
+        mode: effective_mode,
         diff_base,
         files_analysed: files.iter().map(|p| p.display().to_string()).collect(),
         tier1: Vec::new(),
@@ -161,7 +174,7 @@ pub fn run(mode: AnalysisMode, run_dir: &Path) -> Result<CodeAnalysisReport> {
     }
 
     // ============== TIER 3 (REPORT, full mode only) ==============
-    if mode == AnalysisMode::Full {
+    if effective_mode == AnalysisMode::Full {
         println!("\n  [tier 3 - REPORT]");
         report.tier3.push(run_frama_c(&files, &analysis_dir));
         report.tier3.push(run_scan_build(&analysis_dir));

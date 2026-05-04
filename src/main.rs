@@ -56,6 +56,7 @@ mod metadata;
 mod multifs;
 mod pipeline;
 mod regression_check;
+mod host_auth;
 mod ssh;
 mod synthesis;
 
@@ -399,6 +400,17 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
 
 fn main() {
     let cli = Cli::parse();
+
+    // Session priming : sudo + GPG + ssh-agent caches populated once,
+    // refreshed by keep-alive thread for the lifetime of the process.
+    // Skipped for Version subcommand which performs no privileged I/O.
+    if !matches!(cli.command, Command::Version) {
+        if let Err(e) = host_auth::prime_session() {
+            eprintln!("beamfs-bench: session priming failed: {e:#}");
+            std::process::exit(1);
+        }
+    }
+
     let rc = match cli.command {
         Command::Version => cmd_version(),
 
