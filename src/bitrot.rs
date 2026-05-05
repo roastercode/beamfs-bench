@@ -29,7 +29,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use crate::cluster::REMOTE_WORKER_PATH;
 use crate::ssh::SshTarget;
 
 #[derive(Debug, Clone)]
@@ -60,12 +59,12 @@ fn ts_tag() -> String {
     format!("c{now}")
 }
 
-fn run_scenario(scenario: &str, bytes: u32) -> Result<BitrotObservation> {
+fn run_scenario(scenario: &str, bytes: u32, injector: &str) -> Result<BitrotObservation> {
     let ssh = ssh_target()?;
     let tag = ts_tag();
 
     // Phase 1: setup (worker auto-detects target block by scanning disk)
-    let setup_cmd = format!("{REMOTE_WORKER_PATH} bitrot_setup {tag}");
+    let setup_cmd = crate::cluster::worker_cmd(injector, &format!("bitrot_setup {tag}"));
     let raw_setup = ssh.exec_lenient(&setup_cmd)
         .with_context(|| format!("bitrot_setup ({scenario})"))?;
     if !raw_setup.contains("SETUP=OK") {
@@ -73,7 +72,7 @@ fn run_scenario(scenario: &str, bytes: u32) -> Result<BitrotObservation> {
     }
 
     // Phase 2: inject
-    let inject_cmd = format!("{REMOTE_WORKER_PATH} bitrot_inject {tag} {bytes}");
+    let inject_cmd = crate::cluster::worker_cmd(injector, &format!("bitrot_inject {tag} {bytes}"));
     let raw_inject = ssh.exec_lenient(&inject_cmd)
         .with_context(|| format!("bitrot_inject ({scenario})"))?;
     if !raw_inject.contains("INJECT=OK") {
@@ -81,7 +80,7 @@ fn run_scenario(scenario: &str, bytes: u32) -> Result<BitrotObservation> {
     }
 
     // Phase 3: verify (emits observation record)
-    let verify_cmd = format!("{REMOTE_WORKER_PATH} bitrot_verify {tag}");
+    let verify_cmd = crate::cluster::worker_cmd(injector, &format!("bitrot_verify {tag}"));
     let raw_verify = ssh.exec_lenient(&verify_cmd)
         .with_context(|| format!("bitrot_verify ({scenario})"))?;
     let phase_ok = raw_verify.contains("BITROT|") && raw_verify.contains("SCHEME=");
@@ -96,7 +95,7 @@ fn run_scenario(scenario: &str, bytes: u32) -> Result<BitrotObservation> {
     })
 }
 
-pub fn run() -> Result<i32> {
+pub fn run(injector: &str) -> Result<i32> {
     println!("================================================================");
     println!(" beamfs-bench bitrot - Test C (offline injection)");
     println!(" Mode: measurement instrument (records observations)");
@@ -142,7 +141,7 @@ pub fn run() -> Result<i32> {
     for (name, bytes) in &scenarios {
         println!();
         println!("[bitrot] {name} : injecting {bytes} byte(s)");
-        match run_scenario(name, *bytes) {
+        match run_scenario(name, *bytes, injector) {
             Ok(o) => {
                 println!("  setup    : {}", o.raw_setup.trim());
                 println!("  inject   : {}", o.raw_inject.trim());

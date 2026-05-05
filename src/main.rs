@@ -93,6 +93,12 @@ enum Command {
         /// Useful to verify the mapping before a real run.
         #[arg(long)]
         dry_run: bool,
+
+        /// Fault injector to use: "radfi" (legacy SEU baseline) or
+        /// "emufi" (MBU-capable successor, ref Zenodo DOI
+        /// 10.5281/zenodo.20041762). Default: radfi (R19 baseline).
+        #[arg(long, default_value = "radfi")]
+        injector: String,
     },
 
     /// multifs + forensic capture (dmesg + RadFI + ftrace + perf + cluster).
@@ -109,6 +115,10 @@ enum Command {
         /// Render the validation table and EXIT WITHOUT prompting.
         #[arg(long)]
         dry_run: bool,
+
+        /// Fault injector to use: "radfi" or "emufi".
+        #[arg(long, default_value = "radfi")]
+        injector: String,
 
         /// Skip the final tar.gz archive generation.
         #[arg(long)]
@@ -132,6 +142,9 @@ enum Command {
         /// Enable host-side bpftrace probes (requires NOPASSWD sudo on bpftrace).
         #[arg(long)]
         bpftrace: bool,
+        /// Fault injector to use: "radfi" or "emufi".
+        #[arg(long, default_value = "radfi")]
+        injector: String,
         /// Destroy VMs after bench (default: leave running).
         #[arg(long)]
         shutdown: bool,
@@ -159,25 +172,45 @@ enum Command {
 
     /// Test A - metadata-targeted attack (superblock, inode bitmap, journal).
     /// New scope, not in legacy harness.
-    Metadata,
+    Metadata {
+        /// Fault injector to use: "radfi" or "emufi".
+        #[arg(long, default_value = "radfi")]
+        injector: String,
+    },
 
     /// Test B - crash consistency (virsh destroy mid-write + remount).
     /// New scope, not in legacy harness.
-    Crash,
+    Crash {
+        /// Fault injector to use: "radfi" or "emufi".
+        #[arg(long, default_value = "radfi")]
+        injector: String,
+    },
 
     /// Test C - bit-rot offline (dd random on offline partition, then read).
     /// New scope, not in legacy harness.
-    Bitrot,
+    Bitrot {
+        /// Fault injector to use: "radfi" or "emufi".
+        #[arg(long, default_value = "radfi")]
+        injector: String,
+    },
 
     /// Test D - fsck recovery post-FS_PANIC.
     /// New scope, not in legacy harness.
-    Fsck,
+    Fsck {
+        /// Fault injector to use: "radfi" or "emufi".
+        #[arg(long, default_value = "radfi")]
+        injector: String,
+    },
 
     /// Test E - mega: pipeline + analyse Full + bitrot + metadata + crash + fsck.
     /// Consolidates everything into ONE tarball under /tmp/ for investigation.
     /// Captures Yocto build logs, kernel config, modinfo, git HEADs, and
     /// post-attack forensics (dmesg, radfi-counters, lsmod, ftrace, rs-journal SB).
-    Mega,
+    Mega {
+        /// Fault injector to use: "radfi" or "emufi".
+        #[arg(long, default_value = "radfi")]
+        injector: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -220,6 +253,7 @@ struct FullConfig {
     full_code_analysis: bool,
     accept_regression: Option<String>,
     per_inode_rs: bool,
+    injector: String,
 }
 
 /// Full bench pipeline: lifecycle (VM up) + bootstrap (/data) + analyse scope=full.
@@ -229,7 +263,7 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     let FullConfig {
         auto_confirm, no_tarball, shutdown, skip_vm_bootstrap,
         skip_bitbake, bpftrace, full_code_analysis, accept_regression,
-        per_inode_rs,
+        per_inode_rs, injector,
     } = cfg;
 
     println!("================================================================");
@@ -340,7 +374,7 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     print!("{table}");
 
     if !skip_vm_bootstrap {
-        bootstrap::bootstrap_all_data(&nodes, per_inode_rs).context("Phase 2 bootstrap failed")?;
+        bootstrap::bootstrap_all_data(&nodes, per_inode_rs, &injector).context("Phase 2 bootstrap failed")?;
 
         println!();
         println!("[full] Re-discovering topology post-bootstrap...");
@@ -360,6 +394,7 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
         make_tarball: !no_tarball,
         vm_name: multifs::DEFAULT_VM_NAME.to_string(),
         bpftrace_host: bpftrace,
+        injector: injector.clone(),
     };
     let analyse_rc = analyse::run(&cfg).context("analyse phase failed")?;
 
@@ -414,8 +449,8 @@ fn main() {
     let rc = match cli.command {
         Command::Version => cmd_version(),
 
-        Command::Multifs { auto_confirm, dry_run } => {
-            match multifs::run(auto_confirm, dry_run) {
+        Command::Multifs { auto_confirm, dry_run, injector } => {
+            match multifs::run(auto_confirm, dry_run, &injector) {
                 Ok(rc) => rc,
                 Err(e) => {
                     eprintln!("beamfs-bench: multifs failed: {e:#}");
@@ -424,10 +459,11 @@ fn main() {
             }
         }
 
-        Command::Analyse { scope, auto_confirm, dry_run, no_tarball, bpftrace } => {
+        Command::Analyse { scope, auto_confirm, dry_run, no_tarball, bpftrace, injector } => {
             let cfg = analyse::AnalyseConfig {
                 scope: scope.to_scope(),
                 auto_confirm,
+                injector,
                 dry_run,
                 make_tarball: !no_tarball,
                 vm_name: multifs::DEFAULT_VM_NAME.to_string(),
@@ -442,11 +478,11 @@ fn main() {
             }
         }
 
-        Command::Full { auto_confirm, no_tarball, shutdown, skip_vm_bootstrap, skip_bitbake, bpftrace, full_code_analysis, accept_regression, per_inode_rs } => {
+        Command::Full { auto_confirm, no_tarball, shutdown, skip_vm_bootstrap, skip_bitbake, bpftrace, full_code_analysis, accept_regression, per_inode_rs, injector } => {
             let cfg = FullConfig {
                 auto_confirm, no_tarball, shutdown, skip_vm_bootstrap,
                 skip_bitbake, bpftrace, full_code_analysis, accept_regression,
-                per_inode_rs,
+                per_inode_rs, injector,
             };
             match cmd_full(cfg) {
                 Ok(rc) => rc,
@@ -456,8 +492,8 @@ fn main() {
                 }
             }
         }
-        Command::Metadata => {
-            match metadata::run() {
+        Command::Metadata { injector } => {
+            match metadata::run(&injector) {
                 Ok(rc) => rc,
                 Err(e) => {
                     eprintln!("beamfs-bench: metadata failed: {e:#}");
@@ -465,8 +501,8 @@ fn main() {
                 }
             }
         }
-        Command::Crash => {
-            match crash::run() {
+        Command::Crash { injector } => {
+            match crash::run(&injector) {
                 Ok(rc) => rc,
                 Err(e) => {
                     eprintln!("beamfs-bench: crash failed: {e:#}");
@@ -474,8 +510,8 @@ fn main() {
                 }
             }
         }
-        Command::Bitrot => {
-            match bitrot::run() {
+        Command::Bitrot { injector } => {
+            match bitrot::run(&injector) {
                 Ok(rc) => rc,
                 Err(e) => {
                     eprintln!("beamfs-bench: bitrot failed: {e:#}");
@@ -483,8 +519,8 @@ fn main() {
                 }
             }
         }
-        Command::Fsck => {
-            match fsck::run() {
+        Command::Fsck { injector } => {
+            match fsck::run(&injector) {
                 Ok(rc) => rc,
                 Err(e) => {
                     eprintln!("beamfs-bench: fsck failed: {e:#}");
@@ -492,8 +528,8 @@ fn main() {
                 }
             }
         }
-        Command::Mega => {
-            match mega::run() {
+        Command::Mega { injector } => {
+            match mega::run(&injector) {
                 Ok(rc) => rc,
                 Err(e) => {
                     eprintln!("beamfs-bench: mega failed: {e:#}");

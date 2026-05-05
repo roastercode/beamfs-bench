@@ -89,6 +89,10 @@ pub struct MultifsConfig {
     /// If Some, skip the discover/validate prompt entirely and use these
     /// pre-validated mappings (used by analyse.rs which validates once).
     pub pre_validated_mappings: Option<Vec<ProposedMapping>>,
+    /// Fault injector to use: "radfi" (legacy SEU baseline) or "emufi"
+    /// (MBU-capable successor). Propagated to worker.sh via INJECTOR env.
+    /// Default: "radfi".
+    pub injector: String,
 }
 
 impl Default for MultifsConfig {
@@ -102,6 +106,7 @@ impl Default for MultifsConfig {
                 .map(|(f, v)| (f.to_string(), v.to_string()))
                 .collect(),
             probs: DEFAULT_PROBS.to_vec(),
+            injector: "radfi".to_string(),
             run_dir_prefix: "beamfs-bench-multifs".to_string(),
             ssh_user: SSH_USER.to_string(),
             master_ip: MULTIFS_TARGET_IP.to_string(),
@@ -142,10 +147,11 @@ pub struct MultifsResult {
 }
 
 /// Convenience entry for `Cli::Multifs`. Uses default config.
-pub fn run(auto_confirm: bool, dry_run: bool) -> Result<i32> {
+pub fn run(auto_confirm: bool, dry_run: bool, injector: &str) -> Result<i32> {
     let cfg = MultifsConfig {
         auto_confirm,
         dry_run,
+        injector: injector.to_string(),
         ..MultifsConfig::default()
     };
     let _result = run_with_config(&cfg)?;
@@ -221,7 +227,7 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
     // ----------------------------------------------------------------
     blue("[2/5] Format + populate 5 partitions with 3 dirs x 3 files (3KB each)");
     for m in &validated {
-        let cmd = format!("{REMOTE_WORKER_PATH} setup {} {}", m.fs_name, m.disk.guest_dev);
+        let cmd = crate::cluster::worker_cmd(&cfg.injector, &format!("setup {} {}", m.fs_name, m.disk.guest_dev));
         let out = ssh.exec_lenient(&cmd)
             .with_context(|| format!("setup {} on {}", m.fs_name, m.disk.guest_dev))?;
         println!("  {} ({}): {out}", m.fs_name, m.disk.guest_dev);
@@ -254,13 +260,13 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
             .with_context(|| format!("create {:?}", verifies_path))?;
 
         for &prob in &cfg.probs {
-            let attack_cmd = format!("{REMOTE_WORKER_PATH} attack {} {} {prob}",
-                                     m.fs_name, m.disk.guest_dev);
+            let attack_cmd = crate::cluster::worker_cmd(&cfg.injector,
+                &format!("attack {} {} {prob}", m.fs_name, m.disk.guest_dev));
             let attack_out = ssh.exec_lenient(&attack_cmd)
                 .with_context(|| format!("attack {} prob={prob}", m.fs_name))?;
 
-            let verify_cmd = format!("{REMOTE_WORKER_PATH} verify {} {}",
-                                     m.fs_name, m.disk.guest_dev);
+            let verify_cmd = crate::cluster::worker_cmd(&cfg.injector,
+                &format!("verify {} {}", m.fs_name, m.disk.guest_dev));
             let verify_out = ssh.exec_lenient(&verify_cmd)
                 .with_context(|| format!("verify {} prob={prob}", m.fs_name))?;
 

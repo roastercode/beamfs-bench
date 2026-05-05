@@ -32,7 +32,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::bitrot::ssh_target;
-use crate::cluster::{ClusterNode, NodeState, REMOTE_WORKER_PATH};
+use crate::cluster::{ClusterNode, NodeState};
 use crate::lifecycle::{ssh_probe, virsh_sudo_lenient};
 
 #[derive(Debug, Clone)]
@@ -99,13 +99,13 @@ fn wait_ssh_compute01(timeout_secs: u64) -> Result<()> {
     }
 }
 
-fn run_scenario(fs: &str, vd: &str) -> Result<CrashObservation> {
+fn run_scenario(fs: &str, vd: &str, injector: &str) -> Result<CrashObservation> {
     let tag = ts_tag();
     let ssh = ssh_target()?;
 
     // Phase 1: setup
     println!("  [phase 1/4] setup");
-    let setup_cmd = format!("{REMOTE_WORKER_PATH} crash_setup {tag} {fs} {vd}");
+    let setup_cmd = crate::cluster::worker_cmd(injector, &format!("crash_setup {tag} {fs} {vd}"));
     let raw_setup = ssh.exec_lenient(&setup_cmd)
         .with_context(|| format!("crash_setup ({fs})"))?;
     if raw_setup.contains("SETUP=SKIP") {
@@ -125,7 +125,7 @@ fn run_scenario(fs: &str, vd: &str) -> Result<CrashObservation> {
 
     // Phase 2: start background writer
     println!("  [phase 2/4] start writer (background dd)");
-    let writer_cmd = format!("{REMOTE_WORKER_PATH} crash_start_writer {tag} {fs} {vd}");
+    let writer_cmd = crate::cluster::worker_cmd(injector, &format!("crash_start_writer {tag} {fs} {vd}"));
     let raw_writer = ssh.exec_lenient(&writer_cmd)
         .with_context(|| format!("crash_start_writer ({fs})"))?;
     if !raw_writer.contains("WRITER=STARTED") {
@@ -160,7 +160,7 @@ fn run_scenario(fs: &str, vd: &str) -> Result<CrashObservation> {
     // Phase 4: verify
     println!("  [phase 4/4] verify (mount + read + dmesg parse)");
     let ssh = ssh_target()?;
-    let verify_cmd = format!("{REMOTE_WORKER_PATH} crash_verify {tag} {fs} {vd}");
+    let verify_cmd = crate::cluster::worker_cmd(injector, &format!("crash_verify {tag} {fs} {vd}"));
     let raw_verify = ssh.exec_lenient(&verify_cmd)
         .with_context(|| format!("crash_verify ({fs})"))?;
     let phase_ok = raw_verify.contains("VERIFY=OK") || raw_verify.contains("VERIFY=SKIP");
@@ -216,7 +216,7 @@ fn write_synthesis(run_dir: &Path, observations: &[CrashObservation]) -> Result<
     Ok(())
 }
 
-pub fn run() -> Result<i32> {
+pub fn run(injector: &str) -> Result<i32> {
     println!("================================================================");
     println!(" beamfs-bench crash - Test B (power-loss mid-write recovery)");
     println!(" Mode: measurement instrument (factual observations only)");
@@ -242,7 +242,7 @@ pub fn run() -> Result<i32> {
     for (fs_name, vd) in FS_TARGETS {
         println!();
         println!("=== FS: {fs_name} on /dev/{vd} ===");
-        match run_scenario(fs_name, vd) {
+        match run_scenario(fs_name, vd, injector) {
             Ok(o) => {
                 let mark = if o.phase_ok { "OK" } else { "FAIL" };
                 println!("  [phase {mark}] verify: {}", o.raw_verify.trim());

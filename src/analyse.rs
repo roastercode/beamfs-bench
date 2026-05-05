@@ -43,6 +43,9 @@ pub struct AnalyseConfig {
     /// Enable host-side bpftrace probes during the run.
     /// Requires NOPASSWD sudo on bpftrace ; otherwise skipped gracefully.
     pub bpftrace_host: bool,
+    /// Fault injector to use: "radfi" or "emufi". Propagated to multifs
+    /// + cluster scopes. Default: "radfi".
+    pub injector: String,
 }
 
 impl Default for AnalyseConfig {
@@ -54,6 +57,7 @@ impl Default for AnalyseConfig {
             make_tarball: true,
             bpftrace_host: false,
             vm_name: DEFAULT_VM_NAME.to_string(),
+            injector: "radfi".to_string(),
         }
     }
 }
@@ -199,6 +203,7 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
         suppress_synthesis_print: true,
         pre_validated_mappings: Some(validated.clone()),
         auto_confirm: true,  // already validated
+        injector: cfg.injector.clone(),
         ..MultifsConfig::default()
     };
     if cfg.scope == Scope::Quick {
@@ -227,7 +232,7 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     if cfg.scope == Scope::Full {
         println!();
         println!("[cluster] cluster_setup on all reachable nodes...");
-        let setup = cluster::cluster_setup_all(&nodes, &ts_compact)
+        let setup = cluster::cluster_setup_all(&nodes, &ts_compact, &cfg.injector)
             .context("cluster_setup_all failed")?;
         for r in &setup {
             println!("  {} : {}", r.host, r.raw_output);
@@ -249,10 +254,10 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
                 }
             }
             // Best-effort bootstrap; if /data was lost, this re-mounts it
-            let _ = cluster::bootstrap_data_all(&nodes);
+            let _ = cluster::bootstrap_data_all(&nodes, &cfg.injector);
             // Then retry setup one more time
             println!("[cluster] cluster_setup final retry after bootstrap...");
-            let setup_final = cluster::cluster_setup_all(&nodes, &ts_compact)
+            let setup_final = cluster::cluster_setup_all(&nodes, &ts_compact, &cfg.injector)
                 .context("cluster_setup_all initial retry failed")?;
             for r in &setup_final {
                 println!("    {} : {}", r.host, r.raw_output);
@@ -269,7 +274,7 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
         for &prob in &probs {
             println!();
             println!("[cluster] cluster_attack prob={prob} on all reachable nodes...");
-            let atk = cluster::cluster_attack_all(&nodes, &ts_compact, prob)
+            let atk = cluster::cluster_attack_all(&nodes, &ts_compact, prob, &cfg.injector)
                 .context("cluster_attack_all failed")?;
             for r in &atk {
                 println!("  {} : {}", r.host, r.raw_output);
@@ -277,7 +282,7 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
             }
 
             println!("[cluster] cluster_verify after prob={prob}...");
-            let verif = cluster::cluster_verify_all(&nodes, &ts_compact)
+            let verif = cluster::cluster_verify_all(&nodes, &ts_compact, &cfg.injector)
                 .context("cluster_verify_all failed")?;
             for r in &verif {
                 println!("  {} : {}", r.host, r.raw_output);
@@ -314,7 +319,7 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
             // if any node reports SETUP=ERROR.
             if probs.last() != Some(&prob) {
                 println!("[cluster] cluster_setup again for next prob...");
-                let setup_again = cluster::cluster_setup_all(&nodes, &ts_compact)
+                let setup_again = cluster::cluster_setup_all(&nodes, &ts_compact, &cfg.injector)
                     .context("cluster_setup_all retry failed")?;
                 let any_error = setup_again.iter()
                     .any(|r| r.raw_output.contains("ERROR"));
@@ -326,10 +331,10 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
                         }
                     }
                     // Best-effort bootstrap; if /data was lost, this re-mounts it
-                    let _ = cluster::bootstrap_data_all(&nodes);
+                    let _ = cluster::bootstrap_data_all(&nodes, &cfg.injector);
                     // Then retry setup one more time
                     println!("[cluster] cluster_setup final retry after bootstrap...");
-                    let setup_final = cluster::cluster_setup_all(&nodes, &ts_compact)
+                    let setup_final = cluster::cluster_setup_all(&nodes, &ts_compact, &cfg.injector)
                         .context("cluster_setup_all final retry failed")?;
                     for r in &setup_final {
                         println!("    {} : {}", r.host, r.raw_output);

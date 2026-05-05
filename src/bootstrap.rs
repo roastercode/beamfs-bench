@@ -23,7 +23,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::sync::Arc;
 use std::thread;
 
-use crate::cluster::{ClusterNode, REMOTE_WORKER_PATH};
+use crate::cluster::ClusterNode;
 use crate::ssh::SshTarget;
 
 /// Result of a per-node bootstrap.
@@ -44,7 +44,7 @@ fn ssh_for(ip: &str) -> Result<SshTarget> {
 
 /// Run `bootstrap_data` on every reachable node in parallel.
 /// Returns Err if ANY node failed (R3 fail-fast).
-pub fn bootstrap_all_data(nodes: &[ClusterNode], per_inode_rs: bool) -> Result<Vec<BootstrapResult>> {
+pub fn bootstrap_all_data(nodes: &[ClusterNode], per_inode_rs: bool, injector: &str) -> Result<Vec<BootstrapResult>> {
     println!("================================================================");
     println!(" beamfs-bench bootstrap - Phase 2: prepare /data on 4 nodes");
     println!("================================================================");
@@ -59,6 +59,7 @@ pub fn bootstrap_all_data(nodes: &[ClusterNode], per_inode_rs: bool) -> Result<V
             continue;
         }
         let nodes = Arc::clone(&nodes_arc);
+        let injector_local = injector.to_string();
         let h = thread::spawn(move || -> BootstrapResult {
             let n = &nodes[idx];
             let host = n.expected_hostname.clone();
@@ -74,9 +75,9 @@ pub fn bootstrap_all_data(nodes: &[ClusterNode], per_inode_rs: bool) -> Result<V
             };
 
             let cmd = if per_inode_rs {
-                format!("{REMOTE_WORKER_PATH} bootstrap_data per_inode_rs")
+                crate::cluster::worker_cmd(&injector_local, "bootstrap_data per_inode_rs")
             } else {
-                format!("{REMOTE_WORKER_PATH} bootstrap_data")
+                crate::cluster::worker_cmd(&injector_local, "bootstrap_data")
             };
             let raw = match ssh.exec_lenient(&cmd) {
                 Ok(s) => s,

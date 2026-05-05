@@ -222,7 +222,7 @@ fn make_mega_tarball(mega_dir: &Path) -> Result<PathBuf> {
     Ok(archive)
 }
 
-pub fn run() -> Result<i32> {
+pub fn run(injector: &str) -> Result<i32> {
     println!("================================================================");
     println!(" beamfs-bench mega - consolidated investigation run");
     println!(" Mode: full pipeline + 4 sub-scopes + extended forensics");
@@ -321,6 +321,7 @@ pub fn run() -> Result<i32> {
         auto_confirm: true, dry_run: false, make_tarball: false,
         vm_name: multifs::DEFAULT_VM_NAME.to_string(),
         bpftrace_host: false,
+        injector: injector.to_string(),
     };
     let rc = match analyse::run(&cfg) {
         Ok(r) => r,
@@ -338,7 +339,7 @@ pub fn run() -> Result<i32> {
     let _t0 = Instant::now();
     println!();
     println!("[mega] === Phase 03: bitrot ===");
-    let rc = match bitrot::run() {
+    let rc = match bitrot::run(injector) {
         Ok(r) => r,
         Err(e) => { eprintln!("[mega] bitrot: {e:#}"); 1 }
     };
@@ -354,7 +355,7 @@ pub fn run() -> Result<i32> {
     let _t0 = Instant::now();
     println!();
     println!("[mega] === Phase 04: metadata ===");
-    let rc = match metadata::run() {
+    let rc = match metadata::run(injector) {
         Ok(r) => r,
         Err(e) => { eprintln!("[mega] metadata: {e:#}"); 1 }
     };
@@ -370,7 +371,7 @@ pub fn run() -> Result<i32> {
     let _t0 = Instant::now();
     println!();
     println!("[mega] === Phase 05: crash ===");
-    let rc = match crash::run() {
+    let rc = match crash::run(injector) {
         Ok(r) => r,
         Err(e) => { eprintln!("[mega] crash: {e:#}"); 1 }
     };
@@ -386,7 +387,7 @@ pub fn run() -> Result<i32> {
     let _t0 = Instant::now();
     println!();
     println!("[mega] === Phase 06: fsck ===");
-    let rc = match fsck::run() {
+    let rc = match fsck::run(injector) {
         Ok(r) => r,
         Err(e) => { eprintln!("[mega] fsck: {e:#}"); 1 }
     };

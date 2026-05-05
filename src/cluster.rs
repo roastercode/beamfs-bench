@@ -36,6 +36,22 @@ pub const CLUSTER_NODES: &[(&str, &str)] = &[
 
 pub const REMOTE_WORKER_PATH: &str = "/tmp/beamfs-bench-worker.sh";
 
+/// Build a worker.sh remote command with INJECTOR env var prefixed.
+///
+/// The `injector` argument is propagated to worker.sh via the SSH
+/// remote_cmd environment, where it dispatches between radfi (legacy
+/// SEU) and emufi (MBU-capable successor, ref Zenodo DOI
+/// 10.5281/zenodo.20041762).
+///
+/// Pass "radfi" for the historical R19 baseline behavior; pass "emufi"
+/// to exercise the MBU-capable injector with stratified counters and
+/// Weibull width sampling. The default at the worker.sh level is
+/// "radfi" if INJECTOR is unset, so calling this helper without
+/// thinking still yields zero regression.
+pub fn worker_cmd(injector: &str, action_args: &str) -> String {
+    format!("INJECTOR={injector} {REMOTE_WORKER_PATH} {action_args}")
+}
+
 /// One cluster node with its runtime-discovered state.
 #[derive(Debug, Clone)]
 pub struct ClusterNode {
@@ -53,6 +69,15 @@ pub struct NodeState {
     pub radfi_loaded: bool,
     pub beamfs_loaded: bool,
     pub radfi_ko_present: bool,
+    /// Active injector name (radfi or emufi) as reported by worker.sh
+    /// discover_cluster output (key: INJECTOR_NAME). Defaults to empty
+    /// string if absent (legacy worker.sh).
+    pub injector_name: String,
+    /// EMUFI module currently loaded? (key: EMUFI_LOADED)
+    pub emufi_loaded: bool,
+    /// EMUFI .ko file present in /lib/modules/<kver>/updates/?
+    /// (key: EMUFI_KO_PRESENT)
+    pub emufi_ko_present: bool,
     pub perf_available: bool,
     pub ftrace_debugfs: bool,
     pub reachable: bool,
@@ -119,6 +144,9 @@ pub fn discover_cluster() -> Result<Vec<ClusterNode>> {
                         "RADFI_LOADED" => state.radfi_loaded = v == "yes",
                         "BEAMFS_LOADED" => state.beamfs_loaded = v == "yes",
                         "RADFI_KO_PRESENT" => state.radfi_ko_present = v == "yes",
+                        "INJECTOR_NAME" => state.injector_name = v.to_string(),
+                        "EMUFI_LOADED" => state.emufi_loaded = v == "yes",
+                        "EMUFI_KO_PRESENT" => state.emufi_ko_present = v == "yes",
                         "PERF_AVAILABLE" => state.perf_available = v == "yes",
                         "FTRACE_DEBUGFS" => state.ftrace_debugfs = v == "yes",
                         _ => {}
@@ -150,14 +178,31 @@ pub fn render_cluster_table(nodes: &[ClusterNode]) -> String {
     out.push_str(" beamfs-bench cluster topology (auto-discovered)\n");
     out.push_str("================================================================\n");
     out.push('\n');
-    out.push_str(" Node              | IP            | Kernel | beamfs | radfi | radfi.ko | perf | /data\n");
+    out.push_str(" Node              | IP            | Kernel | beamfs | injector | inj.ko | perf | /data\n");
     out.push_str(" ------------------+---------------+--------+--------+-------+----------+------+-----------\n");
     for n in nodes {
         let host = n.discovered.hostname.as_deref().unwrap_or(&n.expected_hostname);
         let kernel = n.discovered.kernel.as_deref().unwrap_or("?");
         let beamfs = if n.discovered.beamfs_loaded { "yes" } else { "no " };
-        let radfi = if n.discovered.radfi_loaded { "yes" } else { "no " };
-        let radfi_ko = if n.discovered.radfi_ko_present { "yes" } else { "no " };
+        // Show injector_name (from discover_cluster INJECTOR_NAME key) if
+        // available; fall back to "radfi" for legacy worker.sh that doesn't
+        // emit the new key. The inj_loaded/inj_ko_present booleans reflect
+        // whichever injector is actually active.
+        let inj_name = if n.discovered.injector_name.is_empty() {
+            "radfi".to_string()
+        } else {
+            n.discovered.injector_name.clone()
+        };
+        let inj_loaded = match inj_name.as_str() {
+            "emufi" => n.discovered.emufi_loaded,
+            _      => n.discovered.radfi_loaded,
+        };
+        let inj_ko_present = match inj_name.as_str() {
+            "emufi" => n.discovered.emufi_ko_present,
+            _      => n.discovered.radfi_ko_present,
+        };
+        let radfi = if inj_loaded { "yes" } else { "no " };
+        let radfi_ko = if inj_ko_present { "yes" } else { "no " };
         let perf = if n.discovered.perf_available { "yes" } else { "no " };
         let data = n.discovered.data_used.as_deref().unwrap_or("?");
         if !n.discovered.reachable {
@@ -175,8 +220,8 @@ pub fn render_cluster_table(nodes: &[ClusterNode]) -> String {
     out.push('\n');
     out.push_str(" Legend:\n");
     out.push_str("   beamfs   = beamfs.ko currently loaded\n");
-    out.push_str("   radfi    = radfi.ko currently loaded (will be insmod'ed by attack action if missing)\n");
-    out.push_str("   radfi.ko = /lib/modules/$(uname -r)/updates/radfi.ko present on disk\n");
+    out.push_str("   injector = active fault injector module loaded (radfi or emufi); will be insmod'ed by attack action if missing\n");
+    out.push_str("   inj.ko   = /lib/modules/$(uname -r)/updates/<injector>.ko present on disk\n");
     out.push_str("   perf     = /usr/bin/perf available (required for --scope=full perf record)\n");
     out.push_str("   /data    = used / total on the beamfs-on-vdb mount\n");
     out.push_str("================================================================\n");
@@ -228,28 +273,28 @@ pub struct ClusterActionResult {
 }
 
 /// Run `cluster_setup <ts_tag>` on all reachable nodes in parallel.
-pub fn cluster_setup_all(nodes: &[ClusterNode], ts_tag: &str) -> Result<Vec<ClusterActionResult>> {
-    run_cluster_action(nodes, &format!("cluster_setup {ts_tag}"))
+pub fn cluster_setup_all(nodes: &[ClusterNode], ts_tag: &str, injector: &str) -> Result<Vec<ClusterActionResult>> {
+    run_cluster_action(nodes, &format!("cluster_setup {ts_tag}"), injector)
 }
 
 /// Run `cluster_attack <ts_tag> <prob>` on all reachable nodes in parallel.
-pub fn cluster_attack_all(nodes: &[ClusterNode], ts_tag: &str, prob: u32) -> Result<Vec<ClusterActionResult>> {
-    run_cluster_action(nodes, &format!("cluster_attack {ts_tag} {prob}"))
+pub fn cluster_attack_all(nodes: &[ClusterNode], ts_tag: &str, prob: u32, injector: &str) -> Result<Vec<ClusterActionResult>> {
+    run_cluster_action(nodes, &format!("cluster_attack {ts_tag} {prob}"), injector)
 }
 
 /// Run `cluster_verify <ts_tag>` on all reachable nodes in parallel.
-pub fn cluster_verify_all(nodes: &[ClusterNode], ts_tag: &str) -> Result<Vec<ClusterActionResult>> {
-    run_cluster_action(nodes, &format!("cluster_verify {ts_tag}"))
+pub fn cluster_verify_all(nodes: &[ClusterNode], ts_tag: &str, injector: &str) -> Result<Vec<ClusterActionResult>> {
+    run_cluster_action(nodes, &format!("cluster_verify {ts_tag}"), injector)
 }
 
 /// Run `bootstrap_data` on all reachable nodes in parallel. Used as a
 /// recovery action when cluster_setup fails (e.g. /data was umounted
 /// collaterally by RadFI attack on vdb between probability iterations).
-pub fn bootstrap_data_all(nodes: &[ClusterNode]) -> Result<Vec<ClusterActionResult>> {
-    run_cluster_action(nodes, "bootstrap_data")
+pub fn bootstrap_data_all(nodes: &[ClusterNode], injector: &str) -> Result<Vec<ClusterActionResult>> {
+    run_cluster_action(nodes, "bootstrap_data", injector)
 }
 
-fn run_cluster_action(nodes: &[ClusterNode], action_args: &str) -> Result<Vec<ClusterActionResult>> {
+fn run_cluster_action(nodes: &[ClusterNode], action_args: &str, injector: &str) -> Result<Vec<ClusterActionResult>> {
     let mut handles = Vec::with_capacity(nodes.len());
     for n in nodes {
         if !n.discovered.reachable {
@@ -257,7 +302,7 @@ fn run_cluster_action(nodes: &[ClusterNode], action_args: &str) -> Result<Vec<Cl
         }
         let ip = n.ip.clone();
         let hostname = n.expected_hostname.clone();
-        let cmd = format!("{REMOTE_WORKER_PATH} {action_args}");
+        let cmd = worker_cmd(injector, action_args);
         let h = thread::spawn(move || -> ClusterActionResult {
             let raw = match ssh_for(&ip).and_then(|ssh| ssh.exec_lenient(&cmd)) {
                 Ok(s) => s,

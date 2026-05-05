@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::bitrot::ssh_target;
-use crate::cluster::{ClusterNode, NodeState, REMOTE_WORKER_PATH};
+use crate::cluster::{ClusterNode, NodeState};
 
 #[derive(Debug, Clone)]
 pub struct FsckObservation {
@@ -56,10 +56,10 @@ fn ts_tag() -> String {
     format!("fsck{now}")
 }
 
-fn run_scenario(fs: &str, vd: &str) -> Result<FsckObservation> {
+fn run_scenario(fs: &str, vd: &str, injector: &str) -> Result<FsckObservation> {
     let tag = ts_tag();
     let ssh = ssh_target()?;
-    let cmd = format!("{REMOTE_WORKER_PATH} fsck_check {tag} {fs} {vd}");
+    let cmd = crate::cluster::worker_cmd(injector, &format!("fsck_check {tag} {fs} {vd}"));
     let raw_check = ssh.exec_lenient(&cmd)
         .with_context(|| format!("fsck_check ({fs})"))?;
     let phase_ok = raw_check.contains("CHECK=OK")
@@ -110,7 +110,7 @@ fn write_synthesis(run_dir: &Path, observations: &[FsckObservation]) -> Result<(
     Ok(())
 }
 
-pub fn run() -> Result<i32> {
+pub fn run(injector: &str) -> Result<i32> {
     println!("================================================================");
     println!(" beamfs-bench fsck - Test D (offline FS check)");
     println!(" Mode: measurement instrument (factual observations only)");
@@ -150,7 +150,7 @@ pub fn run() -> Result<i32> {
     for (fs_name, vd) in FS_TARGETS {
         println!();
         println!("=== FS: {fs_name} on /dev/{vd} ===");
-        match run_scenario(fs_name, vd) {
+        match run_scenario(fs_name, vd, injector) {
             Ok(o) => {
                 let mark = if o.phase_ok { "OK" } else { "FAIL" };
                 println!("  [phase {mark}] check: {}", o.raw_check.trim());

@@ -55,7 +55,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::bitrot::ssh_target;
-use crate::cluster::{ClusterNode, NodeState, REMOTE_WORKER_PATH};
+use crate::cluster::{ClusterNode, NodeState};
 
 #[derive(Debug, Clone)]
 pub struct MetadataObservation {
@@ -94,12 +94,12 @@ fn ts_tag() -> String {
     format!("m{now}")
 }
 
-fn run_scenario(fs: &str, vd: &str, scenario: &str, block: u32, prob: u32) -> Result<MetadataObservation> {
+fn run_scenario(fs: &str, vd: &str, scenario: &str, block: u32, prob: u32, injector: &str) -> Result<MetadataObservation> {
     let ssh = ssh_target()?;
     let tag = ts_tag();
 
     // Phase 1: setup
-    let setup_cmd = format!("{REMOTE_WORKER_PATH} metadata_setup {tag} {fs} {vd}");
+    let setup_cmd = crate::cluster::worker_cmd(injector, &format!("metadata_setup {tag} {fs} {vd}"));
     let raw_setup = ssh.exec_lenient(&setup_cmd)
         .with_context(|| format!("metadata_setup ({fs}, {scenario})"))?;
     if !raw_setup.contains("SETUP=OK") {
@@ -110,7 +110,7 @@ fn run_scenario(fs: &str, vd: &str, scenario: &str, block: u32, prob: u32) -> Re
     let n_iter = if scenario.starts_with("A4_saturation") { 3 } else { 1 };
     let mut raw_inject_all = String::new();
     for i in 0..n_iter {
-        let cmd = format!("{REMOTE_WORKER_PATH} metadata_inject {tag} {fs} {vd} {block} {prob}");
+        let cmd = crate::cluster::worker_cmd(injector, &format!("metadata_inject {tag} {fs} {vd} {block} {prob}"));
         let r = ssh.exec_lenient(&cmd)
             .with_context(|| format!("metadata_inject ({fs}, {scenario}, iter={})", i + 1))?;
         if !r.contains("INJECT=OK") && !r.contains("INJECT=SKIP") {
@@ -123,7 +123,7 @@ fn run_scenario(fs: &str, vd: &str, scenario: &str, block: u32, prob: u32) -> Re
     }
 
     // Phase 3: verify
-    let verify_cmd = format!("{REMOTE_WORKER_PATH} metadata_verify {tag} {fs} {vd}");
+    let verify_cmd = crate::cluster::worker_cmd(injector, &format!("metadata_verify {tag} {fs} {vd}"));
     let raw_verify = ssh.exec_lenient(&verify_cmd)
         .with_context(|| format!("metadata_verify ({fs}, {scenario})"))?;
     let phase_ok = raw_verify.contains("VERIFY=OK") && raw_verify.contains("scheme=");
@@ -191,7 +191,7 @@ fn write_synthesis(run_dir: &Path, observations: &[MetadataObservation]) -> Resu
     Ok(())
 }
 
-pub fn run() -> Result<i32> {
+pub fn run(injector: &str) -> Result<i32> {
     println!("================================================================");
     println!(" beamfs-bench metadata - Test A (RadFI deterministic on metadata)");
     println!(" Mode: measurement instrument (factual observations only)");
@@ -235,7 +235,7 @@ pub fn run() -> Result<i32> {
         for (scn_name, block, prob) in SCENARIOS {
             println!();
             println!("[metadata] {fs_name} / {scn_name} : target_block={block} prob={prob}");
-            match run_scenario(fs_name, vd, scn_name, *block, *prob) {
+            match run_scenario(fs_name, vd, scn_name, *block, *prob, injector) {
                 Ok(o) => {
                     let mark = if o.phase_ok { "OK" } else { "FAIL" };
                     println!("  [phase {mark}] verify: {}", o.raw_verify.trim());

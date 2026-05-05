@@ -227,13 +227,25 @@ fn capture_one_node(
             echo 'radfi.ko not loaded'
         fi
         echo
+        if sudo test -d /sys/kernel/debug/emufi; then
+            echo '--- /sys/kernel/debug/emufi/ ---'
+            for f in enabled hook_fs hook_blk inject_on_read multi_segment probability flip_width flip_locality flip_stride_bits width_mode chip_count multi_chip let_class target_dev target_inode target_block seed call_count skipped_disabled skipped_filter skipped_prob flip_count_seu flip_count_mbu_w2_4 flip_count_mbu_w8_plus flip_count_mbu_w9_plus flip_count_total; do
+                val=$(sudo cat /sys/kernel/debug/emufi/$f 2>/dev/null)
+                printf "%-26s = %s\n" "$f" "$val"
+            done
+        elif lsmod | grep -q '^emufi'; then
+            echo 'emufi.ko loaded but /sys/kernel/debug/emufi not accessible (debugfs mount or perms issue)'
+        else
+            echo 'emufi.ko not loaded'
+        fi
+        echo
         echo '--- lsmod (top 30) ---'
         lsmod | head -30
     "#;
     let radfi = ssh.exec_lenient(radfi_cmd)
-        .with_context(|| format!("radfi counters on {hostname}"))?;
-    fs::write(node_dir.join("radfi-counters.log"), radfi)
-        .with_context(|| format!("write radfi-counters.log for {hostname}"))?;
+        .with_context(|| format!("injector counters on {hostname}"))?;
+    fs::write(node_dir.join("injector-counters.log"), radfi)
+        .with_context(|| format!("write injector-counters.log for {hostname}"))?;
 
     // 3. lsmod full (separate file)
     let lsmod = ssh.exec_lenient("lsmod")
