@@ -6,22 +6,22 @@
 #
 # Actions (read-only, safe to call before any destructive op):
 #   discover_devices          : list /dev/vd[c-z] with size + mountpoint + fstype
-#   discover_cluster          : show /data state + radfi loaded? + kernel version
+#   discover_cluster          : show /data state + injector loaded? + kernel version
 #
 # Actions (multifs scope, master only, single-FS targeted):
 #   setup  <fs> <vd>          : format + populate one FS on /dev/<vd>
-#   attack <fs> <vd> <prob>   : arm RadFI on <vd> + trigger I/O on dir-B/file-B2.bin
+#   attack <fs> <vd> <prob>   : arm INJECTOR on <vd> + trigger I/O on dir-B/file-B2.bin
 #   verify <fs> <vd>          : recompute hashes + classify verdict
 #
 # Actions (cluster scope, master + all 3 computes, beamfs on /data):
 #   bootstrap_data            : insmod reed_solomon+beamfs, mkfs.beamfs /dev/vdb, mount /data
 #   cluster_setup  <ts>       : create /data/beamfs-bench-<ts>/ test layout
-#   cluster_attack <ts> <prob>: arm RadFI on /dev/vdb + I/O on /data/beamfs-bench-<ts>/
+#   cluster_attack <ts> <prob>: arm INJECTOR on /dev/vdb + I/O on /data/beamfs-bench-<ts>/
 #   cluster_verify <ts>       : check integrity + cleanup
 #
 # Actions (metadata scope, compute01 only, RadFI deterministic on metadata blocks):
 #   metadata_setup  <ts> <fs> <vd> : format <fs> on /dev/<vd>, populate, capture pre-state
-#   metadata_inject <ts> <fs> <vd> <block> <prob> : arm RadFI target_block=<block>, trigger I/O
+#   metadata_inject <ts> <fs> <vd> <block> <prob> : arm INJECTOR target_block=<block>, trigger I/O
 #   metadata_verify <ts> <fs> <vd> : remount + read + parse dmesg + emit observation
 #
 # Actions (crash scope, compute01 only, simulate power-loss mid-write):
@@ -44,6 +44,23 @@
 #   /mnt/test-Y", which is what discover_devices returns.
 
 set -u
+
+# ============================================================
+# Injector dispatch - radfi (legacy SEU) or emufi (MBU-capable)
+# ============================================================
+# beamfs-bench passes INJECTOR=radfi|emufi via the ssh remote_cmd
+# environment. Default is radfi to preserve the historical R19
+# baseline. The two injectors share 7 of 8 debugfs control entries
+# verbatim (enabled, hook_blk, inject_on_read, probability,
+# target_dev, target_block, call_count); only the flip-count key
+# differs (radfi=flip_count, emufi=flip_count_total).
+# Reference: EMUFI v1 paper Zenodo DOI 10.5281/zenodo.20041762
+INJECTOR="${INJECTOR:-radfi}"
+case "${INJECTOR}" in
+    radfi) INJECTOR_DBG="/sys/kernel/debug/radfi" ; INJECTOR_KO="radfi.ko" ; FLIP_COUNT_KEY="flip_count" ;;
+    emufi) INJECTOR_DBG="/sys/kernel/debug/emufi" ; INJECTOR_KO="emufi.ko" ; FLIP_COUNT_KEY="flip_count_total" ;;
+    *) echo "ERR|unknown INJECTOR=${INJECTOR} (expected: radfi|emufi)" >&2 ; exit 2 ;;
+esac
 
 ACTION="${1:-}"
 ARG2="${2:-}"
@@ -84,16 +101,21 @@ if [ "$ACTION" = "discover_cluster" ]; then
     echo "KERNEL=$(uname -r)"
     echo "DATA_MOUNT=$(mount | grep ' /data ' | head -1)"
     echo "DATA_USED=$(df -h /data 2>/dev/null | tail -1 | awk '{print $3"/"$2}')"
+    echo "INJECTOR_NAME=${INJECTOR}"
+    echo "INJECTOR_LOADED=$(lsmod | grep -q "^${INJECTOR}" && echo yes || echo no)"
+    echo "INJECTOR_KO_PRESENT=$([ -f /lib/modules/$(uname -r)/updates/${INJECTOR_KO} ] && echo yes || echo no)"
     echo "RADFI_LOADED=$(lsmod | grep -q '^radfi' && echo yes || echo no)"
     echo "BEAMFS_LOADED=$(lsmod | grep -q '^beamfs' && echo yes || echo no)"
     echo "RADFI_KO_PRESENT=$([ -f /lib/modules/$(uname -r)/updates/radfi.ko ] && echo yes || echo no)"
+    echo "EMUFI_LOADED=$(lsmod | grep -q '^emufi' && echo yes || echo no)"
+    echo "EMUFI_KO_PRESENT=$([ -f /lib/modules/$(uname -r)/updates/emufi.ko ] && echo yes || echo no)"
     echo "PERF_AVAILABLE=$(command -v perf >/dev/null 2>&1 && echo yes || echo no)"
     echo "FTRACE_DEBUGFS=$(sudo test -d /sys/kernel/debug/tracing && echo yes || echo no)"
     exit 0
 fi
 
 # ============================================================
-# Helper : ensure radfi.ko + beamfs.ko + (btrfs.ko if needed) loaded.
+# Helper : ensure ${INJECTOR_KO} + beamfs.ko + (btrfs.ko if needed) loaded.
 # ============================================================
 ensure_modules() {
     local fs="${1:-}"
@@ -107,8 +129,8 @@ ensure_modules() {
     if ! lsmod | grep -q '^beamfs'; then
         sudo /sbin/insmod /lib/modules/$(uname -r)/updates/beamfs.ko 2>/dev/null || true
     fi
-    if ! lsmod | grep -q '^radfi'; then
-        sudo /sbin/insmod /lib/modules/$(uname -r)/updates/radfi.ko 2>/dev/null || true
+    if ! lsmod | grep -q "^${INJECTOR}"; then
+        sudo /sbin/insmod /lib/modules/$(uname -r)/updates/${INJECTOR_KO} 2>/dev/null || true
     fi
 }
 
@@ -192,17 +214,17 @@ attack)
     DEV_MIN=$((0x$(stat -c '%T' $DEV)))
     DEV_NUM=$(( (DEV_MAJ << 20) | DEV_MIN ))
 
-    echo 0 | sudo tee /sys/kernel/debug/radfi/enabled  >/dev/null
-    echo 0 | sudo tee /sys/kernel/debug/radfi/hook_blk >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/enabled  >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/hook_blk >/dev/null
 
-    CALL_B=$(sudo cat /sys/kernel/debug/radfi/call_count)
-    FLIP_B=$(sudo cat /sys/kernel/debug/radfi/flip_count)
+    CALL_B=$(sudo cat ${INJECTOR_DBG}/call_count)
+    FLIP_B=$(sudo cat ${INJECTOR_DBG}/${FLIP_COUNT_KEY})
 
-    echo $DEV_NUM | sudo tee /sys/kernel/debug/radfi/target_dev   >/dev/null
-    echo 0        | sudo tee /sys/kernel/debug/radfi/target_block >/dev/null
-    echo $PROB    | sudo tee /sys/kernel/debug/radfi/probability  >/dev/null
-    echo 1        | sudo tee /sys/kernel/debug/radfi/hook_blk     >/dev/null
-    echo 1        | sudo tee /sys/kernel/debug/radfi/enabled      >/dev/null
+    echo $DEV_NUM | sudo tee ${INJECTOR_DBG}/target_dev   >/dev/null
+    echo 0        | sudo tee ${INJECTOR_DBG}/target_block >/dev/null
+    echo $PROB    | sudo tee ${INJECTOR_DBG}/probability  >/dev/null
+    echo 1        | sudo tee ${INJECTOR_DBG}/hook_blk     >/dev/null
+    echo 1        | sudo tee ${INJECTOR_DBG}/enabled      >/dev/null
 
     # bench-2 redesign (substep 10) : pristine-read under RadFI live attack.
     # Previous implementation overwrote dir-B/file-B2.bin with random bytes
@@ -225,10 +247,10 @@ attack)
     # to contain pristine bytes (uncontaminated by the active attack). This
     # is critical for cmp -l accuracy : if pre.bin already had flipped bits
     # from RadFI, BITS_DIFF would underestimate the post-attack corruption.
-    echo 0 | sudo tee /sys/kernel/debug/radfi/enabled >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/enabled >/dev/null
     sudo cat "$TARGET_FILE" > /tmp/pre-cat-$FS.bin 2>/dev/null
     PRE_SIZE=$(stat -c '%s' /tmp/pre-cat-$FS.bin 2>/dev/null || echo 0)
-    echo 1 | sudo tee /sys/kernel/debug/radfi/enabled >/dev/null
+    echo 1 | sudo tee ${INJECTOR_DBG}/enabled >/dev/null
 
     if [ "$FS" = "squashfs" ]; then
         sudo umount $MNT 2>/dev/null
@@ -262,11 +284,11 @@ attack)
         fi
     fi
 
-    CALL_A=$(sudo cat /sys/kernel/debug/radfi/call_count)
-    FLIP_A=$(sudo cat /sys/kernel/debug/radfi/flip_count)
+    CALL_A=$(sudo cat ${INJECTOR_DBG}/call_count)
+    FLIP_A=$(sudo cat ${INJECTOR_DBG}/${FLIP_COUNT_KEY})
 
-    echo 0 | sudo tee /sys/kernel/debug/radfi/enabled  >/dev/null
-    echo 0 | sudo tee /sys/kernel/debug/radfi/hook_blk >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/enabled  >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/hook_blk >/dev/null
 
     CALL_DELTA=$((CALL_A - CALL_B))
     FLIP_DELTA=$((FLIP_A - FLIP_B))
@@ -422,10 +444,10 @@ cluster_attack)
         echo "CLUSTER|HOST=$(hostname)|ATTACK=ERROR|reason=subdir_missing"
         exit 1
     fi
-    # Ensure radfi.ko loaded before testing debugfs presence
+    # Ensure ${INJECTOR_KO} loaded before testing debugfs presence
     ensure_modules
     if ! sudo test -d /sys/kernel/debug/radfi; then
-        echo "CLUSTER|HOST=$(hostname)|ATTACK=SKIP|reason=radfi_debugfs_unavailable"
+        echo "CLUSTER|HOST=$(hostname)|ATTACK=SKIP|reason=${INJECTOR}_debugfs_unavailable"
         exit 0
     fi
 
@@ -433,17 +455,17 @@ cluster_attack)
     DEV_MIN=$((0x$(stat -c '%T' $DEV_VDB)))
     DEV_NUM=$(( (DEV_MAJ << 20) | DEV_MIN ))
 
-    echo 0 | sudo tee /sys/kernel/debug/radfi/enabled  >/dev/null
-    echo 0 | sudo tee /sys/kernel/debug/radfi/hook_blk >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/enabled  >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/hook_blk >/dev/null
 
-    CALL_B=$(sudo cat /sys/kernel/debug/radfi/call_count)
-    FLIP_B=$(sudo cat /sys/kernel/debug/radfi/flip_count)
+    CALL_B=$(sudo cat ${INJECTOR_DBG}/call_count)
+    FLIP_B=$(sudo cat ${INJECTOR_DBG}/${FLIP_COUNT_KEY})
 
-    echo $DEV_NUM   | sudo tee /sys/kernel/debug/radfi/target_dev   >/dev/null
-    echo 0          | sudo tee /sys/kernel/debug/radfi/target_block >/dev/null
-    echo $PROB_VAL  | sudo tee /sys/kernel/debug/radfi/probability  >/dev/null
-    echo 1          | sudo tee /sys/kernel/debug/radfi/hook_blk     >/dev/null
-    echo 1          | sudo tee /sys/kernel/debug/radfi/enabled      >/dev/null
+    echo $DEV_NUM   | sudo tee ${INJECTOR_DBG}/target_dev   >/dev/null
+    echo 0          | sudo tee ${INJECTOR_DBG}/target_block >/dev/null
+    echo $PROB_VAL  | sudo tee ${INJECTOR_DBG}/probability  >/dev/null
+    echo 1          | sudo tee ${INJECTOR_DBG}/hook_blk     >/dev/null
+    echo 1          | sudo tee ${INJECTOR_DBG}/enabled      >/dev/null
 
     # bench-2 redesign (substep 10) : pristine-read under RadFI live attack
     # on the cluster /data/beamfs-bench-<TS> subdir. Same semantics as the
@@ -459,10 +481,10 @@ cluster_attack)
 
     # B.3 (M1 C4) : save pristine copy of TARGET_FILE BEFORE umount cycle.
     # RadFI temporarily disarmed (see multifs branch comment).
-    echo 0 | sudo tee /sys/kernel/debug/radfi/enabled >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/enabled >/dev/null
     sudo cat "$TARGET_FILE" > /tmp/pre-cat-cluster-$$.bin 2>/dev/null
     PRE_SIZE=$(stat -c '%s' /tmp/pre-cat-cluster-$$.bin 2>/dev/null || echo 0)
-    echo 1 | sudo tee /sys/kernel/debug/radfi/enabled >/dev/null
+    echo 1 | sudo tee ${INJECTOR_DBG}/enabled >/dev/null
 
     # B.2 (M1 C1) : umount + drop_caches + mount cycle for /data (beamfs).
     # Same rationale as multifs B.1 : without this, sync + drop_caches alone
@@ -485,11 +507,11 @@ cluster_attack)
         sudo cat $SUBDIR/dir-C/file-C3.bin > /dev/null 2>&1
     fi
 
-    CALL_A=$(sudo cat /sys/kernel/debug/radfi/call_count)
-    FLIP_A=$(sudo cat /sys/kernel/debug/radfi/flip_count)
+    CALL_A=$(sudo cat ${INJECTOR_DBG}/call_count)
+    FLIP_A=$(sudo cat ${INJECTOR_DBG}/${FLIP_COUNT_KEY})
 
-    echo 0 | sudo tee /sys/kernel/debug/radfi/enabled  >/dev/null
-    echo 0 | sudo tee /sys/kernel/debug/radfi/hook_blk >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/enabled  >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/hook_blk >/dev/null
 
     CALL_DELTA=$((CALL_A - CALL_B))
     FLIP_DELTA=$((FLIP_A - FLIP_B))
@@ -860,18 +882,18 @@ metadata_inject)
     DEV_MIN=$((0x$(stat -c '%T' $DEV)))
     DEV_NUM=$(( (DEV_MAJ << 20) | DEV_MIN ))
 
-    echo 0 | sudo tee /sys/kernel/debug/radfi/enabled  >/dev/null
-    echo 0 | sudo tee /sys/kernel/debug/radfi/hook_blk >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/enabled  >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/hook_blk >/dev/null
 
-    CALL_B=$(sudo cat /sys/kernel/debug/radfi/call_count)
-    FLIP_B=$(sudo cat /sys/kernel/debug/radfi/flip_count)
+    CALL_B=$(sudo cat ${INJECTOR_DBG}/call_count)
+    FLIP_B=$(sudo cat ${INJECTOR_DBG}/${FLIP_COUNT_KEY})
 
-    echo $DEV_NUM    | sudo tee /sys/kernel/debug/radfi/target_dev   >/dev/null
-    echo $BLOCK      | sudo tee /sys/kernel/debug/radfi/target_block >/dev/null
-    echo $PROB_VAL   | sudo tee /sys/kernel/debug/radfi/probability  >/dev/null
-    echo 1           | sudo tee /sys/kernel/debug/radfi/inject_on_read >/dev/null
-    echo 1           | sudo tee /sys/kernel/debug/radfi/hook_blk     >/dev/null
-    echo 1           | sudo tee /sys/kernel/debug/radfi/enabled      >/dev/null
+    echo $DEV_NUM    | sudo tee ${INJECTOR_DBG}/target_dev   >/dev/null
+    echo $BLOCK      | sudo tee ${INJECTOR_DBG}/target_block >/dev/null
+    echo $PROB_VAL   | sudo tee ${INJECTOR_DBG}/probability  >/dev/null
+    echo 1           | sudo tee ${INJECTOR_DBG}/inject_on_read >/dev/null
+    echo 1           | sudo tee ${INJECTOR_DBG}/hook_blk     >/dev/null
+    echo 1           | sudo tee ${INJECTOR_DBG}/enabled      >/dev/null
 
     # Force re-read of metadata: umount + drop caches + remount + traverse
     sudo umount "$MNT" 2>/dev/null
@@ -888,13 +910,13 @@ metadata_inject)
         sudo find "$MNT" -type f -exec cat {} > /dev/null 2>&1 \;
     fi
 
-    CALL_A=$(sudo cat /sys/kernel/debug/radfi/call_count)
-    FLIP_A=$(sudo cat /sys/kernel/debug/radfi/flip_count)
+    CALL_A=$(sudo cat ${INJECTOR_DBG}/call_count)
+    FLIP_A=$(sudo cat ${INJECTOR_DBG}/${FLIP_COUNT_KEY})
 
-    echo 0 | sudo tee /sys/kernel/debug/radfi/enabled  >/dev/null
-    echo 0 | sudo tee /sys/kernel/debug/radfi/hook_blk >/dev/null
-    echo 0 | sudo tee /sys/kernel/debug/radfi/inject_on_read >/dev/null
-    echo 0 | sudo tee /sys/kernel/debug/radfi/target_block >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/enabled  >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/hook_blk >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/inject_on_read >/dev/null
+    echo 0 | sudo tee ${INJECTOR_DBG}/target_block >/dev/null
 
     CALL_DELTA=$((CALL_A - CALL_B))
     FLIP_DELTA=$((FLIP_A - FLIP_B))
