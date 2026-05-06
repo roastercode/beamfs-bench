@@ -116,9 +116,27 @@ fi
 
 # ============================================================
 # Helper : ensure ${INJECTOR_KO} + beamfs.ko + (btrfs.ko if needed) loaded.
+# IMPORTANT: enforces strict injector isolation. Only the requested ${INJECTOR}
+# is loaded; any other injector (radfi when emufi is requested, or vice versa)
+# is rmmod'd first to prevent superposition of fault injection hooks.
+# This guarantees comparative analyses (radfi vs emufi) measure each injector
+# in isolation, not their union.
 # ============================================================
 ensure_modules() {
     local fs="${1:-}"
+    # --- Strict isolation: rmmod any OTHER injector before loading ours ---
+    case "$INJECTOR" in
+        radfi)
+            if lsmod | grep -q '^emufi'; then
+                sudo /sbin/rmmod emufi 2>/dev/null || true
+            fi
+            ;;
+        emufi)
+            if lsmod | grep -q '^radfi'; then
+                sudo /sbin/rmmod radfi 2>/dev/null || true
+            fi
+            ;;
+    esac
     sudo depmod -a 2>/dev/null
     if [ "$fs" = "btrfs" ]; then
         sudo modprobe btrfs 2>/dev/null || true
@@ -446,7 +464,7 @@ cluster_attack)
     fi
     # Ensure ${INJECTOR_KO} loaded before testing debugfs presence
     ensure_modules
-    if ! sudo test -d /sys/kernel/debug/radfi; then
+    if ! sudo test -d "${INJECTOR_DBG}"; then
         echo "CLUSTER|HOST=$(hostname)|ATTACK=SKIP|reason=${INJECTOR}_debugfs_unavailable"
         exit 0
     fi
@@ -873,8 +891,8 @@ metadata_inject)
     fi
 
     ensure_modules
-    if ! sudo test -d /sys/kernel/debug/radfi; then
-        echo "METADATA|HOST=$(hostname)|INJECT=SKIP|reason=radfi_unavailable"
+    if ! sudo test -d "${INJECTOR_DBG}"; then
+        echo "METADATA|HOST=$(hostname)|INJECT=SKIP|reason=${INJECTOR}_unavailable"
         exit 0
     fi
 
