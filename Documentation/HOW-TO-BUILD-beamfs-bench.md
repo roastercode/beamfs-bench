@@ -370,6 +370,35 @@ the FS-to-vd mapping).
 
 ---
 
+### 6.7 emufi vs radfi inject_on_read default mismatch
+
+**Symptom** : `beamfs-bench full --injector emufi` reports
+CALL_DELTA=0 and FLIP_DELTA=0 on the beamfs target despite a high
+probability. Same run with `--injector radfi` produces flips
+normally.
+
+**Cause** : emufi v0.3.0 defaulted `inject_on_read = false` while
+radfi defaults to `true`. worker.sh did not push the value
+explicitly, so the harness silently lost read-attack capability
+when switching to emufi.
+
+**Detection** : look at
+`forensics-beamfs-compute01/injector-counters.log` in the run's
+forensics tarball. The line `inject_on_read = N` means the attack
+is inert on read-driven workflows. Should be `Y`.
+
+**Fix (lockstep)** :
+  - **emufi v0.3.1** aligns default to `true` to match radfi.
+  - **beamfs-bench v0.7.6** pushes `inject_on_read=1` explicitly
+    to debugfs in `worker.sh` at attack arming time, regardless of
+    injector default. Defense-in-depth.
+
+**Operator implication** : when adding a new injector or upgrading
+an existing one, check its debugfs defaults match radfi's. Or
+better, push every required value explicitly from worker.sh and
+stop relying on injector defaults. The latter is the v0.7.6+
+policy.
+
 ## 7. Per-version release notes
 
 See the `pkg_postinst()` block of each versioned ebuild for the

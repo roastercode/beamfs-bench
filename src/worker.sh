@@ -241,6 +241,11 @@ attack)
     echo $DEV_NUM | sudo tee ${INJECTOR_DBG}/target_dev   >/dev/null
     echo 0        | sudo tee ${INJECTOR_DBG}/target_block >/dev/null
     echo $PROB    | sudo tee ${INJECTOR_DBG}/probability  >/dev/null
+    # v0.7.6 : push inject_on_read=1 unconditionally. emufi v0.3.0
+    # defaulted to false (vs radfi true), making read-driven attacks
+    # inert. emufi v0.3.1 aligns default to true ; this push remains
+    # as defense-in-depth and explicit harness-side contract.
+    echo 1        | sudo tee ${INJECTOR_DBG}/inject_on_read >/dev/null
     # v0.1.4 : flip_width MBU burst width. Default 1 (legacy single-bit SEU).
     # Honour env var FLIP_WIDTH if set by Rust caller. If debugfs entry
     # does not exist (radfi <0.1.4 / emufi <0.2.x), the tee silently fails
@@ -527,6 +532,8 @@ cluster_attack)
     echo $DEV_NUM   | sudo tee ${INJECTOR_DBG}/target_dev   >/dev/null
     echo 0          | sudo tee ${INJECTOR_DBG}/target_block >/dev/null
     echo $PROB_VAL  | sudo tee ${INJECTOR_DBG}/probability  >/dev/null
+    # v0.7.6 : push inject_on_read=1 unconditionally (see multifs site).
+    echo 1          | sudo tee ${INJECTOR_DBG}/inject_on_read >/dev/null
 
     # v0.7.4 : emufi 0.3.0 envvars (no auto-compute on metadata site).
     if [ -n "${FLIP_LOCALITY:-}" ] && [ -e ${INJECTOR_DBG}/flip_locality ]; then
