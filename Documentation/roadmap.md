@@ -45,7 +45,7 @@ close) is the empirical artefact justifying paper v3 figure
 
 ---
 
-## Stage 0 — MIL no-NAK pipeline
+## Stage 0 -- MIL no-NAK pipeline
 
 **Status :** CLOSED 2026-05-02 (`v0.4.0`).
 
@@ -67,7 +67,7 @@ Architectural anchors :
 
 ---
 
-## Stage 1 — Quality sprint
+## Stage 1 -- Quality sprint
 
 **Status :** CLOSED 2026-05-06 (`v0.7.2`).
 **Reference :** session 2026-05-06 transcript ; HEAD `0b2b1d0`.
@@ -105,7 +105,7 @@ manifest `manifest-20260506T100152Z.json.asc`, 0 fatal regression,
 
 ---
 
-## Stage 2 — Cluster scope verdict derivation
+## Stage 2 -- Cluster scope verdict derivation
 
 **Status :** PENDING.
 **Source :** `~/git/beamfs/Documentation/TODO.md` section 13.1.
@@ -137,7 +137,7 @@ RS_RECOVERED best).
 
 ---
 
-## Stage 3 — RadFI/EMUFI state timeline in forensics
+## Stage 3 -- RadFI/EMUFI state timeline in forensics
 
 **Status :** PENDING.
 **Source :** `~/git/beamfs/Documentation/TODO.md` section 13.2.
@@ -169,7 +169,7 @@ See `~/git/emufi/ROADMAP.md` section 7 (Migration plan).
 
 ---
 
-## Stage 4 — Multifs/cluster verdict redesign (paper v3 prerequisite)
+## Stage 4 -- Multifs/cluster verdict redesign (paper v3 prerequisite)
 
 **Status :** PENDING.
 **Source :** `Documentation/roadmap-bench.md` (ADR 2026-05-04).
@@ -189,7 +189,7 @@ evidence from R19 sub-5 (2026-05-04) :
 | squashfs | 0        | 2          | 13       | 0              |
 | beamfs   | 0        | 2          | 8        | 0              |
 
-ext4 received 15 flips and reports DIFFS=0 — ext4 has no FEC. The
+ext4 received 15 flips and reports DIFFS=0 -- ext4 has no FEC. The
 flips landed elsewhere on the device, or the byte that flipped is
 not re-read. `roadmap-bench.md` lays out the 6-component fix C1-C6
 mapped to 3 milestones.
@@ -200,14 +200,14 @@ prob, by FS") becomes empirically defensible. ext4 sortira
 "corrected by RS FEC" >= 1`, both observed in the same GPG-signed
 manifest.
 
-**M1 — forensic truth** (~5h, no kernel change) :
+**M1 -- forensic truth** (~5h, no kernel change) :
 - C1 : worker cycle write/sync/umount/attack/mount/read with
   drop_caches between attack and verify.
 - C3 : 5-class verdict derivation uniform across multifs + cluster
   (this overlaps with Stage 2 ; one fix covers both).
 - C4 : bits_diff / frac_corrupt / hamm_blocks metrics in records.
 
-**M2 — targeted attack** (~6-8h, kernel change) :
+**M2 -- targeted attack** (~6-8h, kernel change) :
 - C2 : `target_block_list` in RadFI debugfs (or its EMUFI
   successor), parsed at write. Comma-list semantic.
 - Worker filefrag + per-FS block-list derivation (ext4 + beamfs
@@ -218,7 +218,7 @@ manifest.
 - Coupled with **beamfs Stage 4 deliverable on FIEMAP support**
   (cf. beamfs-roadmap stage 4 `iomap_iter` path).
 
-**M3 — statistics** (~5h, instrumentation) :
+**M3 -- statistics** (~5h, instrumentation) :
 - C5 : N=5 runs per (FS, prob) point. Default N=1 (preserve current
   R19 time). N=5 invoked only for paper v3 dataset.
 - C6 : flip-budget calibration. Two-pass : run with prob=test,
@@ -251,7 +251,7 @@ manifest.
 
 ---
 
-## Stage 5 — Factor multifs/cluster worker duplication
+## Stage 5 -- Factor multifs/cluster worker duplication
 
 **Status :** PENDING.
 **Source :** `~/git/beamfs/Documentation/TODO.md` section 13.3.
@@ -266,7 +266,7 @@ refactors.
 
 ---
 
-## Stage 6 — Statistical N-runs aggregation (paper v3 dataset)
+## Stage 6 -- Statistical N-runs aggregation (paper v3 dataset)
 
 **Status :** PENDING.
 **Source :** Stage 4 M3 (already specified there).
