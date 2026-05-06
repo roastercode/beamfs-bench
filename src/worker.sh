@@ -291,6 +291,55 @@ attack)
         echo ${SEFI_WINDOW_MS} | sudo tee ${INJECTOR_DBG}/sefi_window_ms >/dev/null
     fi
 
+    # v0.8.0 : full emufi 0.3.2 debugfs surface. All optional, cumulative
+    # simultaneous. Each push guarded by [ -n VAR ] && sudo test -e entry,
+    # so radfi (lacks most entries) is no-op and unset host vars are no-op.
+    # Ordering does not matter (none of these depend on each other) but
+    # placement BEFORE hook_blk/enabled arming is critical so values are
+    # in place when injection starts.
+    # rv4-4 STRUCTURE-AWARE byte offset (complements TARGET_STRUCT_BLOCK_NO):
+    if [ -n "${TARGET_STRUCT_OFFSET:-}" ] && sudo test -e ${INJECTOR_DBG}/target_struct_offset; then
+        echo ${TARGET_STRUCT_OFFSET} | sudo tee ${INJECTOR_DBG}/target_struct_offset >/dev/null
+    fi
+    # FS-aware inode targeting:
+    if [ -n "${TARGET_INODE:-}" ] && sudo test -e ${INJECTOR_DBG}/target_inode; then
+        echo ${TARGET_INODE} | sudo tee ${INJECTOR_DBG}/target_inode >/dev/null
+    fi
+    # FS-level hook (in addition to blk-level which is always armed):
+    if [ -n "${HOOK_FS:-}" ] && sudo test -e ${INJECTOR_DBG}/hook_fs; then
+        echo ${HOOK_FS} | sudo tee ${INJECTOR_DBG}/hook_fs >/dev/null
+    fi
+    # Multi-segment burst (one event spans multiple non-contiguous segments):
+    if [ -n "${MULTI_SEGMENT:-}" ] && sudo test -e ${INJECTOR_DBG}/multi_segment; then
+        echo ${MULTI_SEGMENT} | sudo tee ${INJECTOR_DBG}/multi_segment >/dev/null
+    fi
+    # Multi-chip realism (event distributed over CHIP_COUNT chips):
+    if [ -n "${MULTI_CHIP:-}" ] && sudo test -e ${INJECTOR_DBG}/multi_chip; then
+        echo ${MULTI_CHIP} | sudo tee ${INJECTOR_DBG}/multi_chip >/dev/null
+    fi
+    if [ -n "${CHIP_COUNT:-}" ] && sudo test -e ${INJECTOR_DBG}/chip_count; then
+        echo ${CHIP_COUNT} | sudo tee ${INJECTOR_DBG}/chip_count >/dev/null
+    fi
+    # MBU width sampling mode (overrides FLIP_WIDTH semantic):
+    if [ -n "${WIDTH_MODE:-}" ] && sudo test -e ${INJECTOR_DBG}/width_mode; then
+        echo ${WIDTH_MODE} | sudo tee ${INJECTOR_DBG}/width_mode >/dev/null
+    fi
+    # Stride between flips in a burst (controls intra-burst spacing):
+    if [ -n "${FLIP_STRIDE_BITS:-}" ] && sudo test -e ${INJECTOR_DBG}/flip_stride_bits; then
+        echo ${FLIP_STRIDE_BITS} | sudo tee ${INJECTOR_DBG}/flip_stride_bits >/dev/null
+    fi
+    # RS-aware codeword targeting (FEC budget exploration):
+    if [ -n "${CODEWORD_SIZE_BYTES:-}" ] && sudo test -e ${INJECTOR_DBG}/codeword_size_bytes; then
+        echo ${CODEWORD_SIZE_BYTES} | sudo tee ${INJECTOR_DBG}/codeword_size_bytes >/dev/null
+    fi
+    if [ -n "${CODEWORD_ALIGN_BYTES:-}" ] && sudo test -e ${INJECTOR_DBG}/codeword_align_bytes; then
+        echo ${CODEWORD_ALIGN_BYTES} | sudo tee ${INJECTOR_DBG}/codeword_align_bytes >/dev/null
+    fi
+    # Reseed PRNG (write-only command, useful for campaign reproducibility):
+    if [ -n "${RESEED:-}" ] && sudo test -e ${INJECTOR_DBG}/reseed; then
+        echo ${RESEED} | sudo tee ${INJECTOR_DBG}/reseed >/dev/null
+    fi
+
     echo 1        | sudo tee ${INJECTOR_DBG}/hook_blk     >/dev/null
     echo 1        | sudo tee ${INJECTOR_DBG}/enabled      >/dev/null
 

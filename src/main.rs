@@ -75,6 +75,121 @@ const BEAMFS_BENCH_VERSION: &str = env!("CARGO_PKG_VERSION");
 struct Cli {
     #[command(subcommand)]
     command: Command,
+
+    /// emufi 0.3.2 attack-tuning flags. v0.8.0 expansion.
+    /// Every flag here is GLOBAL: accepted on any subcommand, applied
+    /// uniformly. Each flag, when present, is exported to the process
+    /// environment so cluster::worker_cmd() forwards it to worker.sh
+    /// which pushes the value to the matching debugfs entry IFF the
+    /// entry exists on the target injector (sudo test -e guard).
+    /// All flags are CUMULATIVE SIMULTANEOUS: any combination is valid.
+    /// radfi silently ignores flags it does not have a debugfs entry for.
+    #[command(flatten)]
+    attack: EmufiAttackArgs,
+}
+
+/// Cumulative attack-tuning options exposed by emufi 0.3.2 debugfs.
+/// All optional. None of these conflict with any other; combining them
+/// is the supported usage pattern (e.g. multi_chip + codeword_size_bytes
+/// + sefi_probability + burst_symbols in a single attack).
+#[derive(clap::Args, Debug, Default)]
+struct EmufiAttackArgs {
+    // ---- v0.7.x baseline flags promoted from env-var-only to CLI ----
+    /// Number of bits flipped per event (MBU width). emufi entry: flip_width.
+    #[arg(long, value_name = "U32", global = true)]
+    flip_width: Option<u32>,
+    /// LET intensity bucket (0=LOW 1=MEDIUM 2=HIGH 3=EXTREME).
+    /// emufi entry: let_class. Baumann 2005 / JEDEC JEP89 calibrated.
+    #[arg(long, value_name = "U8", global = true)]
+    let_class: Option<u8>,
+    /// Spatial flip pattern: RANDOM | CONSECUTIVE | EXACT. emufi entry: flip_locality.
+    #[arg(long, value_name = "STR", global = true)]
+    flip_locality: Option<String>,
+    /// Symbols per burst (RS codeword targeting). emufi entry: burst_symbols.
+    #[arg(long, value_name = "U8", global = true)]
+    burst_symbols: Option<u8>,
+    /// On-disk struct selector (1=SUPERBLOCK 2=INODE_TABLE 3=ROOT_DIR
+    /// 4=INODE_BITMAP 5=DATA_BLOCK). emufi entry: target_struct.
+    #[arg(long, value_name = "U8", global = true)]
+    target_struct: Option<u8>,
+    /// Block number within the target structure. emufi entry: target_struct_block_no.
+    #[arg(long, value_name = "U32", global = true)]
+    target_struct_block_no: Option<u32>,
+    /// SEFI per-event probability (ppm). emufi entry: sefi_probability.
+    #[arg(long, value_name = "PPM", global = true)]
+    sefi_probability: Option<u32>,
+    /// SEFI persistence window (ms). emufi entry: sefi_window_ms.
+    #[arg(long, value_name = "MS", global = true)]
+    sefi_window_ms: Option<u32>,
+
+    // ---- v0.8.0 additions: rest of the emufi 0.3.2 surface ----
+    /// Byte offset within the target struct block. emufi entry: target_struct_offset.
+    #[arg(long, value_name = "U32", global = true)]
+    target_struct_offset: Option<u32>,
+    /// Inode-aware FS targeting (FS-level hook required). emufi entry: target_inode.
+    #[arg(long, value_name = "U64", global = true)]
+    target_inode: Option<u64>,
+    /// Enable FS-level hook in addition to blk-level. emufi entry: hook_fs.
+    #[arg(long, global = true)]
+    hook_fs: bool,
+    /// Multi-segment burst (event spans non-contiguous segments).
+    /// emufi entry: multi_segment.
+    #[arg(long, global = true)]
+    multi_segment: bool,
+    /// Multi-chip injection realism (event distributed over chip_count chips).
+    /// emufi entry: multi_chip.
+    #[arg(long, global = true)]
+    multi_chip: bool,
+    /// Number of chips when multi_chip=1. emufi entry: chip_count.
+    #[arg(long, value_name = "U8", global = true)]
+    chip_count: Option<u8>,
+    /// MBU width sampling mode. emufi entry: width_mode.
+    #[arg(long, value_name = "U8", global = true)]
+    width_mode: Option<u8>,
+    /// Stride between flips in a burst (intra-burst spacing).
+    /// emufi entry: flip_stride_bits.
+    #[arg(long, value_name = "U8", global = true)]
+    flip_stride_bits: Option<u8>,
+    /// RS codeword size in bytes (FEC-aware targeting). emufi entry: codeword_size_bytes.
+    #[arg(long, value_name = "U32", global = true)]
+    codeword_size_bytes: Option<u32>,
+    /// RS codeword alignment in bytes. emufi entry: codeword_align_bytes.
+    #[arg(long, value_name = "U32", global = true)]
+    codeword_align_bytes: Option<u32>,
+    /// Reseed the injector PRNG (write-only command, fresh seed).
+    /// emufi entry: reseed.
+    #[arg(long, value_name = "U64", global = true)]
+    reseed: Option<u64>,
+}
+
+impl EmufiAttackArgs {
+    /// Export every set flag to the process environment so that
+    /// cluster::worker_cmd() picks them up and forwards them via SSH.
+    /// Boolean flags are exported as "1" when true (and not exported
+    /// when false, leaving the kernel default in place).
+    fn export_to_env(&self) {
+        // Macro-free table-driven export. Each (var_name, formatter)
+        // pair maps an Option<T> field to the corresponding env var.
+        if let Some(v) = self.flip_width { std::env::set_var("FLIP_WIDTH", v.to_string()); }
+        if let Some(v) = self.let_class { std::env::set_var("LET_CLASS", v.to_string()); }
+        if let Some(v) = self.flip_locality.as_ref() { std::env::set_var("FLIP_LOCALITY", v); }
+        if let Some(v) = self.burst_symbols { std::env::set_var("BURST_SYMBOLS", v.to_string()); }
+        if let Some(v) = self.target_struct { std::env::set_var("TARGET_STRUCT", v.to_string()); }
+        if let Some(v) = self.target_struct_block_no { std::env::set_var("TARGET_STRUCT_BLOCK_NO", v.to_string()); }
+        if let Some(v) = self.sefi_probability { std::env::set_var("SEFI_PROBABILITY", v.to_string()); }
+        if let Some(v) = self.sefi_window_ms { std::env::set_var("SEFI_WINDOW_MS", v.to_string()); }
+        if let Some(v) = self.target_struct_offset { std::env::set_var("TARGET_STRUCT_OFFSET", v.to_string()); }
+        if let Some(v) = self.target_inode { std::env::set_var("TARGET_INODE", v.to_string()); }
+        if self.hook_fs { std::env::set_var("HOOK_FS", "1"); }
+        if self.multi_segment { std::env::set_var("MULTI_SEGMENT", "1"); }
+        if self.multi_chip { std::env::set_var("MULTI_CHIP", "1"); }
+        if let Some(v) = self.chip_count { std::env::set_var("CHIP_COUNT", v.to_string()); }
+        if let Some(v) = self.width_mode { std::env::set_var("WIDTH_MODE", v.to_string()); }
+        if let Some(v) = self.flip_stride_bits { std::env::set_var("FLIP_STRIDE_BITS", v.to_string()); }
+        if let Some(v) = self.codeword_size_bytes { std::env::set_var("CODEWORD_SIZE_BYTES", v.to_string()); }
+        if let Some(v) = self.codeword_align_bytes { std::env::set_var("CODEWORD_ALIGN_BYTES", v.to_string()); }
+        if let Some(v) = self.reseed { std::env::set_var("RESEED", v.to_string()); }
+    }
 }
 
 #[derive(Subcommand)]
@@ -444,6 +559,11 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
 
 fn main() {
     let cli = Cli::parse();
+
+    // v0.8.0: cumulative-simultaneous emufi 0.3.2 attack flags.
+    // Export to process env BEFORE any subcommand dispatches, so
+    // that cluster::worker_cmd's std::env::var(...) picks them up.
+    cli.attack.export_to_env();
 
     // Session priming : sudo + GPG + ssh-agent caches populated once,
     // refreshed by keep-alive thread for the lifetime of the process.

@@ -54,7 +54,13 @@ pub fn worker_cmd(injector: &str, action_args: &str) -> String {
     // metadata cluster). Without this prefix, setting them at the host
     // shell has no effect because ssh resets the environment.
     let mut env_prefix = format!("INJECTOR={injector}");
+    // v0.8.0: full emufi 0.3.2 debugfs surface. All optional, all
+    // cumulative simultaneous. Each var is forwarded to worker.sh which
+    // pushes it to the matching debugfs entry IFF the entry exists
+    // (sudo test -e guard), so radfi (which lacks most of these)
+    // silently ignores vars it does not know.
     for var in &[
+        // v0.7.x baseline (kept verbatim):
         "FLIP_WIDTH",
         "LET_CLASS",
         "FLIP_LOCALITY",
@@ -63,6 +69,18 @@ pub fn worker_cmd(injector: &str, action_args: &str) -> String {
         "TARGET_STRUCT_BLOCK_NO",
         "SEFI_PROBABILITY",
         "SEFI_WINDOW_MS",
+        // v0.8.0 additions, expose remaining emufi 0.3.2 surface:
+        "TARGET_STRUCT_OFFSET",      // u32, byte offset within struct block
+        "TARGET_INODE",              // u64, inode-aware FS targeting
+        "HOOK_FS",                   // bool 0/1, FS-level hook (vs blk-only)
+        "MULTI_SEGMENT",             // bool 0/1, multi-segment burst
+        "MULTI_CHIP",                // bool 0/1, multi-chip injection
+        "CHIP_COUNT",                // u8, number of chips when multi_chip=1
+        "WIDTH_MODE",                // u8, MBU width sampling mode
+        "FLIP_STRIDE_BITS",          // u8, stride between flips in a burst
+        "CODEWORD_SIZE_BYTES",       // u32, RS codeword size for FEC-aware
+        "CODEWORD_ALIGN_BYTES",      // u32, RS codeword alignment
+        "RESEED",                    // u64, reseed PRNG (write-only command)
     ] {
         if let Ok(v) = std::env::var(var) {
             if !v.is_empty() {
