@@ -254,6 +254,38 @@ attack)
     if [ -n "${LET_CLASS:-}" ] && [ -e ${INJECTOR_DBG}/let_class ]; then
         echo $LET_CLASS | sudo tee ${INJECTOR_DBG}/let_class >/dev/null
     fi
+
+    # v0.7.4 : emufi 0.3.0 surgical attack envvars.
+    # All optional, all guarded by [ -e ] so radfi (no entry) is no-op.
+    # rv4-3 BURST-IN-CODEWORD :
+    if [ -n "${FLIP_LOCALITY:-}" ] && [ -e ${INJECTOR_DBG}/flip_locality ]; then
+        echo ${FLIP_LOCALITY} | sudo tee ${INJECTOR_DBG}/flip_locality >/dev/null
+    fi
+    if [ -n "${BURST_SYMBOLS:-}" ] && [ -e ${INJECTOR_DBG}/burst_symbols ]; then
+        echo ${BURST_SYMBOLS} | sudo tee ${INJECTOR_DBG}/burst_symbols >/dev/null
+    fi
+    # rv4-4 STRUCTURE-AWARE :
+    # Auto-fill TARGET_STRUCT_BLOCK_NO from already-computed ${TARGET_BLOCK}
+    # (line 194 filefrag) when TARGET_STRUCT=5 (DATA_BLOCK) and var is unset.
+    if [ -n "${TARGET_STRUCT:-}" ] && [ -e ${INJECTOR_DBG}/target_struct ]; then
+        echo ${TARGET_STRUCT} | sudo tee ${INJECTOR_DBG}/target_struct >/dev/null
+        if [ "${TARGET_STRUCT}" = "5" ] && [ -z "${TARGET_STRUCT_BLOCK_NO:-}" ] \
+               && [ -n "${TARGET_BLOCK:-}" ] && [ "${TARGET_BLOCK}" != "0" ]; then
+            TARGET_STRUCT_BLOCK_NO=${TARGET_BLOCK}
+            echo "INFO|reuse TARGET_BLOCK=${TARGET_BLOCK} as TARGET_STRUCT_BLOCK_NO" >&2
+        fi
+    fi
+    if [ -n "${TARGET_STRUCT_BLOCK_NO:-}" ] && [ -e ${INJECTOR_DBG}/target_struct_block_no ]; then
+        echo ${TARGET_STRUCT_BLOCK_NO} | sudo tee ${INJECTOR_DBG}/target_struct_block_no >/dev/null
+    fi
+    # rv4-1 SEFI :
+    if [ -n "${SEFI_PROBABILITY:-}" ] && [ -e ${INJECTOR_DBG}/sefi_probability ]; then
+        echo ${SEFI_PROBABILITY} | sudo tee ${INJECTOR_DBG}/sefi_probability >/dev/null
+    fi
+    if [ -n "${SEFI_WINDOW_MS:-}" ] && [ -e ${INJECTOR_DBG}/sefi_window_ms ]; then
+        echo ${SEFI_WINDOW_MS} | sudo tee ${INJECTOR_DBG}/sefi_window_ms >/dev/null
+    fi
+
     echo 1        | sudo tee ${INJECTOR_DBG}/hook_blk     >/dev/null
     echo 1        | sudo tee ${INJECTOR_DBG}/enabled      >/dev/null
 
@@ -495,6 +527,27 @@ cluster_attack)
     echo $DEV_NUM   | sudo tee ${INJECTOR_DBG}/target_dev   >/dev/null
     echo 0          | sudo tee ${INJECTOR_DBG}/target_block >/dev/null
     echo $PROB_VAL  | sudo tee ${INJECTOR_DBG}/probability  >/dev/null
+
+    # v0.7.4 : emufi 0.3.0 envvars (no auto-compute on metadata site).
+    if [ -n "${FLIP_LOCALITY:-}" ] && [ -e ${INJECTOR_DBG}/flip_locality ]; then
+        echo ${FLIP_LOCALITY} | sudo tee ${INJECTOR_DBG}/flip_locality >/dev/null
+    fi
+    if [ -n "${BURST_SYMBOLS:-}" ] && [ -e ${INJECTOR_DBG}/burst_symbols ]; then
+        echo ${BURST_SYMBOLS} | sudo tee ${INJECTOR_DBG}/burst_symbols >/dev/null
+    fi
+    if [ -n "${TARGET_STRUCT:-}" ] && [ -e ${INJECTOR_DBG}/target_struct ]; then
+        echo ${TARGET_STRUCT} | sudo tee ${INJECTOR_DBG}/target_struct >/dev/null
+    fi
+    if [ -n "${TARGET_STRUCT_BLOCK_NO:-}" ] && [ -e ${INJECTOR_DBG}/target_struct_block_no ]; then
+        echo ${TARGET_STRUCT_BLOCK_NO} | sudo tee ${INJECTOR_DBG}/target_struct_block_no >/dev/null
+    fi
+    if [ -n "${SEFI_PROBABILITY:-}" ] && [ -e ${INJECTOR_DBG}/sefi_probability ]; then
+        echo ${SEFI_PROBABILITY} | sudo tee ${INJECTOR_DBG}/sefi_probability >/dev/null
+    fi
+    if [ -n "${SEFI_WINDOW_MS:-}" ] && [ -e ${INJECTOR_DBG}/sefi_window_ms ]; then
+        echo ${SEFI_WINDOW_MS} | sudo tee ${INJECTOR_DBG}/sefi_window_ms >/dev/null
+    fi
+
     echo 1          | sudo tee ${INJECTOR_DBG}/hook_blk     >/dev/null
     echo 1          | sudo tee ${INJECTOR_DBG}/enabled      >/dev/null
 
