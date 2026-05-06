@@ -49,7 +49,28 @@ pub const REMOTE_WORKER_PATH: &str = "/tmp/beamfs-bench-worker.sh";
 /// "radfi" if INJECTOR is unset, so calling this helper without
 /// thinking still yields zero regression.
 pub fn worker_cmd(injector: &str, action_args: &str) -> String {
-    format!("INJECTOR={injector} {REMOTE_WORKER_PATH} {action_args}")
+    // v0.7.7 : forward attack-tuning env vars from host to remote worker.
+    // worker.sh consumes these (sites at lines ~244 multifs and ~497
+    // metadata cluster). Without this prefix, setting them at the host
+    // shell has no effect because ssh resets the environment.
+    let mut env_prefix = format!("INJECTOR={injector}");
+    for var in &[
+        "FLIP_WIDTH",
+        "LET_CLASS",
+        "FLIP_LOCALITY",
+        "BURST_SYMBOLS",
+        "TARGET_STRUCT",
+        "TARGET_STRUCT_BLOCK_NO",
+        "SEFI_PROBABILITY",
+        "SEFI_WINDOW_MS",
+    ] {
+        if let Ok(v) = std::env::var(var) {
+            if !v.is_empty() {
+                env_prefix.push_str(&format!(" {var}={v}"));
+            }
+        }
+    }
+    format!("{env_prefix} {REMOTE_WORKER_PATH} {action_args}")
 }
 
 /// One cluster node with its runtime-discovered state.
