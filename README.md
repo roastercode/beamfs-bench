@@ -4,6 +4,11 @@ Unified Rust harness for beamfs resilience testing under RadFI live
 fault injection. Replaces the legacy bash harness (`Tir-*.sh`,
 `hpc-benchmark*.sh`, ~1176 lines) with a single Rust binary.
 
+> **Building or releasing ?** See
+> [`Documentation/HOW-TO-BUILD-beamfs-bench.md`](Documentation/HOW-TO-BUILD-beamfs-bench.md)
+> for the canonical build, install, and release procedure (4 modes :
+> dev iteration, live ebuild, versioned ebuild, full release with bump).
+
 ## Status (2026-05-01)
 
 | Subcommand | Status   | Description                                              |
@@ -79,6 +84,10 @@ R19 forbids commit/push if any criterion fails.
 
 ## Installation (Gentoo)
 
+> Full install + release procedure (mask 9999, versioned vs live ebuild,
+> Manifest regeneration, common pitfalls) :
+> [`Documentation/HOW-TO-BUILD-beamfs-bench.md`](Documentation/HOW-TO-BUILD-beamfs-bench.md).
+
 Provided as `sys-fs/beamfs-bench` in the `beamfs-overlay` overlay
 (local, `/var/db/repos/beamfs-overlay/`).
 
@@ -96,10 +105,19 @@ Requirements:
   libvirt qemu:///system (XMLs in `/etc/libvirt/qemu/`)
 - libvirt network `hpcnet` (bridge `virbr1`, 192.168.56.0/24)
 - SSH key `~/.ssh/hpclab_admin` (passwordless, on `hpcadmin@<vm-ip>`)
-- 5 USB sticks attached to master VM via virtio-blk passthrough
-  (vdc=ext4, vdd=ext3, vde=btrfs, vdf=squashfs, vdg=beamfs target)
+- 1+ USB sticks attached to **compute01** (not master ; R-isolation)
+  via virtio-blk passthrough. The bench is fully adaptive to any
+  count : add or remove `<disk type='block'>` entries in the
+  libvirt XML and the bench picks them up at next run, mapping
+  filesystems by priority (`beamfs`, `ext4`, `squashfs`, `ext3`,
+  `btrfs`). Current default for hardware audit 2026-05-06 is 2 USBs
+  (vdc=ext4 reference, vdd=beamfs under test). See
+  [`Documentation/HOW-TO-BUILD-beamfs-bench.md`](Documentation/HOW-TO-BUILD-beamfs-bench.md)
+  section 6.6 for adding/removing USBs.
 
 ## Build from source (development)
+
+> Mode A in [`Documentation/HOW-TO-BUILD-beamfs-bench.md`](Documentation/HOW-TO-BUILD-beamfs-bench.md).
 
 cd ~/git/beamfs-bench
 cargo build --release
