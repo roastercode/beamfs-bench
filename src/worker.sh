@@ -241,6 +241,19 @@ attack)
     echo $DEV_NUM | sudo tee ${INJECTOR_DBG}/target_dev   >/dev/null
     echo 0        | sudo tee ${INJECTOR_DBG}/target_block >/dev/null
     echo $PROB    | sudo tee ${INJECTOR_DBG}/probability  >/dev/null
+    # v0.1.4 : flip_width MBU burst width. Default 1 (legacy single-bit SEU).
+    # Honour env var FLIP_WIDTH if set by Rust caller. If debugfs entry
+    # does not exist (radfi <0.1.4 / emufi <0.2.x), the tee silently fails
+    # which is fine -- module ignores it and behaves single-bit.
+    FLIP_WIDTH_VAL=${FLIP_WIDTH:-1}
+    if [ -e ${INJECTOR_DBG}/flip_width ]; then
+        echo $FLIP_WIDTH_VAL | sudo tee ${INJECTOR_DBG}/flip_width >/dev/null
+    fi
+    # v0.2.1 : LET_CLASS high-level intensity (overrides PROB/FLIP_WIDTH).
+    # 0=LOW 1=MEDIUM 2=HIGH 3=EXTREME (Baumann 2005 / JEDEC JEP89 calibrated).
+    if [ -n "${LET_CLASS:-}" ] && [ -e ${INJECTOR_DBG}/let_class ]; then
+        echo $LET_CLASS | sudo tee ${INJECTOR_DBG}/let_class >/dev/null
+    fi
     echo 1        | sudo tee ${INJECTOR_DBG}/hook_blk     >/dev/null
     echo 1        | sudo tee ${INJECTOR_DBG}/enabled      >/dev/null
 
