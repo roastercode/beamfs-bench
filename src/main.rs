@@ -6,7 +6,7 @@
 //! ## Subcommands (in this 0.2.0 release)
 //!
 //! - `version`  : print version + build info
-//! - `multifs`  : multi-FS head-to-head bench (5 FS x 3 probs by default)
+//! - `multifs`  : multi-FS head-to-head bench (2 FS x 3 probs by default)
 //!   with mandatory device validation prompt before mkfs.
 //! - `analyse`  : multifs + forensic capture (3 scopes: quick/standard/full).
 //!   Full scope = ftrace + perf + cluster-wide attack on the
@@ -59,6 +59,7 @@ mod regression_check;
 mod host_auth;
 mod ssh;
 mod synthesis;
+mod usb_health;
 
 const BEAMFS_BENCH_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -82,7 +83,7 @@ enum Command {
     Version,
 
     /// Multi-FS head-to-head bench under RadFI live injection.
-    /// Targets 5 FS x 3 probabilities by default.
+    /// Targets 2 FS x 3 probabilities by default.
     /// REQUIRES: device validation prompt (or --auto-confirm).
     Multifs {
         /// Skip the [y/N] prompt and proceed (use only in CI / scripted runs).
@@ -279,6 +280,13 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     }
     pipeline::record(&mut manifest, "0.0_isolation_r21", 0);
 
+    // Phase 0.0a -- USB pre-flight (host-side block device audit)
+    let usb_verdicts = match usb_health::run() {
+        Ok(v) => v,
+        Err(e) => return Err(pipeline::fail(&mut manifest, "0.0a_usb_health", &e)),
+    };
+    pipeline::record(&mut manifest, "0.0a_usb_health", 0);
+
     // Phase 0.0bis -- MIL/kernel.org code analysis gate
     let code_analysis_mode = if full_code_analysis {
         code_analysis::AnalysisMode::Full
@@ -395,6 +403,7 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
         vm_name: multifs::DEFAULT_VM_NAME.to_string(),
         bpftrace_host: bpftrace,
         injector: injector.clone(),
+        usb_verdicts: usb_verdicts.clone(),
     };
     let analyse_rc = analyse::run(&cfg).context("analyse phase failed")?;
 
@@ -450,7 +459,20 @@ fn main() {
         Command::Version => cmd_version(),
 
         Command::Multifs { auto_confirm, dry_run, injector } => {
-            match multifs::run(auto_confirm, dry_run, &injector) {
+            // L5 : also probe USB health when Multifs is invoked standalone.
+            let usb_verdicts = match usb_health::run() {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("beamfs-bench: USB pre-flight failed: {e:#}");
+                    std::process::exit(1);
+                }
+            };
+            let fs_mapping = usb_health::build_fs_mapping(&usb_verdicts);
+            if fs_mapping.is_empty() {
+                eprintln!("beamfs-bench: no healthy USB slots, multifs cannot run");
+                std::process::exit(1);
+            }
+            match multifs::run_with_mapping(auto_confirm, dry_run, &injector, fs_mapping) {
                 Ok(rc) => rc,
                 Err(e) => {
                     eprintln!("beamfs-bench: multifs failed: {e:#}");
@@ -460,6 +482,14 @@ fn main() {
         }
 
         Command::Analyse { scope, auto_confirm, dry_run, no_tarball, bpftrace, injector } => {
+            // L5 : Analyse standalone also probes USBs.
+            let usb_verdicts = match usb_health::run() {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("beamfs-bench: USB pre-flight failed: {e:#}");
+                    std::process::exit(1);
+                }
+            };
             let cfg = analyse::AnalyseConfig {
                 scope: scope.to_scope(),
                 auto_confirm,
@@ -468,6 +498,7 @@ fn main() {
                 make_tarball: !no_tarball,
                 vm_name: multifs::DEFAULT_VM_NAME.to_string(),
                 bpftrace_host: bpftrace,
+                usb_verdicts,
             };
             match analyse::run(&cfg) {
                 Ok(rc) => rc,

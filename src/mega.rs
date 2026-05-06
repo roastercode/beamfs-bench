@@ -259,10 +259,17 @@ pub fn run(injector: &str) -> Result<i32> {
     let _t0 = Instant::now();
     println!();
     println!("[mega] === Phase 01: pipeline R19 validation chain ===");
-    let pipeline_result: Result<()> = (|| {
+    // L5 : pipeline closure now also returns the USB verdicts captured
+    // at Phase 0.0a, so Phase 02 AnalyseConfig below can consume them
+    // without needing a separate stash variable + borrow-checker dance.
+    let pipeline_result: Result<Vec<crate::usb_health::SlotVerdict>> = (|| {
         let mut manifest = pipeline::build_initial_manifest()?;
         pipeline::assert_isolation_r21()?;
         pipeline::record(&mut manifest, "0.0_isolation_r21", 0);
+        // L5 : Phase 0.0a USB pre-flight (host-side block device audit).
+        let usb_verdicts = crate::usb_health::run()
+            .map_err(|e| anyhow::anyhow!("usb_health: {e:#}"))?;
+        pipeline::record(&mut manifest, "0.0a_usb_health", 0);
         pipeline::verify_clean_working_trees()?;
         pipeline::record(&mut manifest, "0.1_clean_trees", 0);
         let src = pipeline::verify_lockstep_sources()?;
@@ -291,7 +298,7 @@ pub fn run(injector: &str) -> Result<i32> {
         if let Ok(mp) = pipeline::emit_manifest(&manifest) {
             let _ = fs::copy(&mp, mega_dir.join("pipeline-manifest.json"));
         }
-        Ok(())
+        Ok(usb_verdicts)
     })();
     let pipeline_rc = if pipeline_result.is_ok() { 0 } else { 1 };
     phases.push(PhaseResult {
@@ -302,14 +309,17 @@ pub fn run(injector: &str) -> Result<i32> {
             Err(e) => format!("FAIL: {e:#}"),
         },
     });
-    if let Err(e) = pipeline_result {
-        eprintln!("[mega] pipeline failed; capturing build logs + tarball before abort");
-        let _ = capture_yocto_build_logs(&build_dir);
-        let _ = capture_kernel_artifacts(&build_dir);
-        let _ = write_global_manifest(&mega_dir, started_ts, started_inst, &phases);
-        let _ = make_mega_tarball(&mega_dir);
-        return Err(e);
-    }
+    let usb_verdicts = match pipeline_result {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[mega] pipeline failed; capturing build logs + tarball before abort");
+            let _ = capture_yocto_build_logs(&build_dir);
+            let _ = capture_kernel_artifacts(&build_dir);
+            let _ = write_global_manifest(&mega_dir, started_ts, started_inst, &phases);
+            let _ = make_mega_tarball(&mega_dir);
+            return Err(e);
+        }
+    };
 
     // Phase 02: analyse Full
     let before = list_run_dirs_with_prefix("beamfs-bench-analyse-full-");
@@ -322,6 +332,8 @@ pub fn run(injector: &str) -> Result<i32> {
         vm_name: multifs::DEFAULT_VM_NAME.to_string(),
         bpftrace_host: false,
         injector: injector.to_string(),
+        // L5 : verdicts captured in pipeline phase 0.0a above.
+        usb_verdicts: usb_verdicts.clone(),
     };
     let rc = match analyse::run(&cfg) {
         Ok(r) => r,

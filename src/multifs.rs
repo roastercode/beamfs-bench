@@ -1,4 +1,4 @@
-//! multifs.rs - port of Tir-multifs.sh (5 FS x 3 probabilities).
+//! multifs.rs - port of Tir-multifs.sh (2 FS x 3 probabilities).
 //!
 //! ## Public API
 //!
@@ -40,18 +40,6 @@ const WORKER_SH: &str = include_str!("worker.sh");
 pub fn worker_sh() -> &'static str {
     WORKER_SH
 }
-
-/// Default FS slot mapping. The vd assignment is the convention used since
-/// Tir-multifs.sh (line 53), kept identical so historical run dirs remain
-/// diff-comparable. The ACTUAL physical USB sticks behind these vds are
-/// discovered at runtime via `virsh dumpxml` (see `devices.rs`).
-pub const DEFAULT_FS_LIST: &[(&str, &str)] = &[
-    ("ext4",     "vdc"),
-    ("ext3",     "vdd"),
-    ("btrfs",    "vde"),
-    ("squashfs", "vdf"),
-    ("beamfs",   "vdg"),
-];
 
 /// Default probabilities (matches Tir-multifs.sh line 54).
 pub const DEFAULT_PROBS: &[u32] = &[1000, 100000, 1000000];
@@ -102,9 +90,10 @@ impl Default for MultifsConfig {
             .unwrap_or_else(|_| "/root/.ssh/hpclab_admin".to_string());
         Self {
             vm_name: DEFAULT_VM_NAME.to_string(),
-            fs_list: DEFAULT_FS_LIST.iter()
-                .map(|(f, v)| (f.to_string(), v.to_string()))
-                .collect(),
+            // L5 : fs_list is now built at runtime by usb_health::build_fs_mapping
+            // from the actual healthy USB count. Default is empty ; callers
+            // (cmd_full, Cli::Multifs) populate it after Phase 0.0a probing.
+            fs_list: Vec::new(),
             probs: DEFAULT_PROBS.to_vec(),
             injector: "radfi".to_string(),
             run_dir_prefix: "beamfs-bench-multifs".to_string(),
@@ -147,11 +136,37 @@ pub struct MultifsResult {
 }
 
 /// Convenience entry for `Cli::Multifs`. Uses default config.
+/// L5 deprecation note : prefer run_with_mapping() which accepts a runtime
+/// fs_list. This function is kept for callers that want the legacy behaviour
+/// (empty fs_list -> error from analyse). Currently unused by Cli::Multifs
+/// since L5 ; kept public for back-compat with external callers.
+#[allow(dead_code)]
 pub fn run(auto_confirm: bool, dry_run: bool, injector: &str) -> Result<i32> {
     let cfg = MultifsConfig {
         auto_confirm,
         dry_run,
         injector: injector.to_string(),
+        ..MultifsConfig::default()
+    };
+    let _result = run_with_config(&cfg)?;
+    Ok(0)
+}
+
+/// L5 entry for Cli::Multifs : accepts a runtime fs_list mapping built
+/// from usb_health::build_fs_mapping(). This replaces the legacy run()
+/// for the default invocation path (cmd_full -> analyse uses
+/// run_with_config directly, not this function).
+pub fn run_with_mapping(
+    auto_confirm: bool,
+    dry_run: bool,
+    injector: &str,
+    fs_list: Vec<(String, String)>,
+) -> Result<i32> {
+    let cfg = MultifsConfig {
+        auto_confirm,
+        dry_run,
+        injector: injector.to_string(),
+        fs_list,
         ..MultifsConfig::default()
     };
     let _result = run_with_config(&cfg)?;
