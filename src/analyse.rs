@@ -30,7 +30,8 @@ use crate::cluster;
 use crate::devices;
 use crate::forensics::{self, Scope};
 use crate::forensics_host;
-use crate::multifs::{self, MultifsConfig, DEFAULT_FS_LIST, DEFAULT_VM_NAME};
+use crate::multifs::{self, MultifsConfig, DEFAULT_VM_NAME};
+use crate::usb_health::SlotVerdict;
 
 /// Configuration for an analyse run.
 #[derive(Debug, Clone)]
@@ -46,6 +47,13 @@ pub struct AnalyseConfig {
     /// Fault injector to use: "radfi" or "emufi". Propagated to multifs
     /// + cluster scopes. Default: "radfi".
     pub injector: String,
+    /// USB pre-flight verdicts captured by usb_health::run() in Phase 0.0a.
+    /// Used to build the runtime (fs, vd) mapping via build_fs_mapping
+    /// without any hardcoded DEFAULT_FS_LIST. Empty Vec is allowed only
+    /// when scope=Standard or Quick is invoked without lifecycle/full
+    /// (in that case multifs cannot run, but analyse can still capture
+    /// host-level forensics).
+    pub usb_verdicts: Vec<SlotVerdict>,
 }
 
 impl Default for AnalyseConfig {
@@ -58,6 +66,7 @@ impl Default for AnalyseConfig {
             bpftrace_host: false,
             vm_name: DEFAULT_VM_NAME.to_string(),
             injector: "radfi".to_string(),
+            usb_verdicts: Vec::new(),
         }
     }
 }
@@ -77,7 +86,16 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     // ----------------------------------------------------------------
     // Step 1: Device validation (single prompt for the whole analyse run)
     // ----------------------------------------------------------------
-    let fs_list_refs: Vec<(&str, &str)> = DEFAULT_FS_LIST.to_vec();
+    // L5 : runtime fs mapping from Phase 0.0a verdicts.
+    let fs_list_owned = crate::usb_health::build_fs_mapping(&cfg.usb_verdicts);
+    if fs_list_owned.is_empty() {
+        return Err(anyhow::anyhow!(
+            "analyse::run : usb_verdicts is empty, cannot build fs_list.              Caller must populate AnalyseConfig.usb_verdicts via              usb_health::run() before invoking analyse."
+        ));
+    }
+    let fs_list_refs: Vec<(&str, &str)> = fs_list_owned.iter()
+        .map(|(f, v)| (f.as_str(), v.as_str()))
+        .collect();
     let validated = devices::discover_and_validate(
         &cfg.vm_name,
         &fs_list_refs,
@@ -204,6 +222,8 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
         pre_validated_mappings: Some(validated.clone()),
         auto_confirm: true,  // already validated
         injector: cfg.injector.clone(),
+        // L5 : populate fs_list from verdicts (default is empty).
+        fs_list: fs_list_owned.clone(),
         ..MultifsConfig::default()
     };
     if cfg.scope == Scope::Quick {
@@ -373,7 +393,13 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     // ----------------------------------------------------------------
     // Step 9: Crash report if anything failed
     // ----------------------------------------------------------------
-    let exit_code = if multifs_result.is_some() { 0 } else { 1 };
+    let exit_code = aggregate_exit_code(
+        &multifs_result,
+        &run_dir,
+        &cluster_records_path,
+        &multifs_cfg.probs,
+        &nodes,
+    );
     if exit_code != 0 {
         let tir_log = run_dir.join("multifs-all-records.txt");
         let tir_log_opt = if tir_log.exists() { Some(tir_log.as_path()) } else { None };
@@ -416,6 +442,127 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
 
     let _ = validated;  // silence unused warning if not used downstream
     Ok(exit_code)
+}
+
+/// Aggregate exit_code from multifs + cluster verdicts.
+///
+/// Trouvaille 2 fix : prior code returned 0 iff multifs_result.is_some(),
+/// which ignored the actual verdict content. R19 Phase 6 criterion
+/// "12/12 RECOVERED DIFFS=0" is now enforced here.
+///
+/// Decision rules :
+///   - multifs_result == None                       -> 1 (hard fail)
+///   - any beamfs (multifs) verdict != RS_RECOVERED|RS_PASSTHROUGH -> 1
+///   - any cluster (host, prob) verdict != RS_RECOVERED|RS_PASSTHROUGH -> 1
+///   - legacy multifs FS (ext4) FS_PANIC at any prob is ALLOWED
+///     (R19 explicitly says "ext4/btrfs FS_PANIC at prob=1M is expected
+///     and non-blocking ; only beamfs must RECOVERED 3/3").
+///   - else -> 0
+fn aggregate_exit_code(
+    multifs_result: &Option<crate::multifs::MultifsResult>,
+    run_dir: &Path,
+    cluster_records_path: &Option<PathBuf>,
+    multifs_probs: &[u32],
+    cluster_nodes: &[crate::cluster::ClusterNode],
+) -> i32 {
+    // Rule 1
+    if multifs_result.is_none() {
+        return 1;
+    }
+
+    // Rule 2 : beamfs in multifs scope
+    let multifs_log = run_dir.join("multifs-all-records.txt");
+    if multifs_log.exists() {
+        if let Ok(records) = std::fs::read_to_string(&multifs_log) {
+            for &prob in multifs_probs {
+                let v = crate::synthesis::extract_verdict(&records, "beamfs", prob);
+                if !verdict_is_pass(v.as_deref()) {
+                    eprintln!(
+                        "[exit_code] FAIL : multifs beamfs prob={prob} verdict={:?} (expected RS_RECOVERED or RS_PASSTHROUGH)",
+                        v.as_deref().unwrap_or("?"),
+                    );
+                    return 1;
+                }
+            }
+        } else {
+            eprintln!("[exit_code] FAIL : cannot read {}", multifs_log.display());
+            return 1;
+        }
+    } else {
+        eprintln!("[exit_code] FAIL : missing {}", multifs_log.display());
+        return 1;
+    }
+
+    // Rule 3 : cluster scope (Full only ; cluster_records_path None means
+    // scope was Quick or Standard, where cluster phase did not run).
+    if let Some(cl_path) = cluster_records_path {
+        if let Ok(records) = std::fs::read_to_string(cl_path) {
+            for n in cluster_nodes {
+                if !n.discovered.reachable {
+                    continue;
+                }
+                let host = &n.expected_hostname;
+                for &prob in multifs_probs {
+                    let v = crate::synthesis::extract_cluster_verdict(&records, host, prob);
+                    if !verdict_is_pass(v.as_deref()) {
+                        eprintln!(
+                            "[exit_code] FAIL : cluster host={host} prob={prob} verdict={:?} (expected RS_RECOVERED or RS_PASSTHROUGH)",
+                            v.as_deref().unwrap_or("?"),
+                        );
+                        return 1;
+                    }
+                }
+            }
+        } else {
+            eprintln!("[exit_code] FAIL : cannot read {}", cl_path.display());
+            return 1;
+        }
+    }
+
+    0
+}
+
+/// Verdict-pass predicate : the only states that count as a clean pass
+/// for beamfs (FEC-protected) are RS_RECOVERED (FEC corrected the flip)
+/// and RS_PASSTHROUGH (no flip reached data, FEC unused but data intact).
+/// Every other state (CORRUPTED_DATA, RS_FAILED, FS_PANIC, ?) is a fail.
+fn verdict_is_pass(v: Option<&str>) -> bool {
+    matches!(v, Some("RS_RECOVERED") | Some("RS_PASSTHROUGH"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verdict_is_pass_accepts_rs_recovered() {
+        assert!(verdict_is_pass(Some("RS_RECOVERED")));
+    }
+
+    #[test]
+    fn verdict_is_pass_accepts_rs_passthrough() {
+        assert!(verdict_is_pass(Some("RS_PASSTHROUGH")));
+    }
+
+    #[test]
+    fn verdict_is_pass_rejects_corrupted() {
+        assert!(!verdict_is_pass(Some("CORRUPTED_DATA")));
+    }
+
+    #[test]
+    fn verdict_is_pass_rejects_rs_failed() {
+        assert!(!verdict_is_pass(Some("RS_FAILED")));
+    }
+
+    #[test]
+    fn verdict_is_pass_rejects_fs_panic() {
+        assert!(!verdict_is_pass(Some("FS_PANIC")));
+    }
+
+    #[test]
+    fn verdict_is_pass_rejects_none() {
+        assert!(!verdict_is_pass(None));
+    }
 }
 
 pub fn make_tarball(run_dir: &Path) -> Result<PathBuf> {

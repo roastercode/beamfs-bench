@@ -426,7 +426,7 @@ pub fn extract_cluster_verdict(records: &str, host: &str, prob: u32) -> Option<S
     Some(derive_verdict_beamfs(&mount_state, cat_rc, &hash_pre, &hash_post, rs_corrected).to_string())
 }
 
-fn extract_verdict(records: &str, fs_name: &str, prob: u32) -> Option<String> {
+pub fn extract_verdict(records: &str, fs_name: &str, prob: u32) -> Option<String> {
     let mount_state = extract_verify_state(records, fs_name, prob)?;
     let cat_rc: i32 = extract_attack_field(records, fs_name, prob, "CAT_RC")
         .and_then(|v| v.parse().ok())
