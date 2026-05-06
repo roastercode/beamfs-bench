@@ -530,41 +530,6 @@ fn verdict_is_pass(v: Option<&str>) -> bool {
     matches!(v, Some("RS_RECOVERED") | Some("RS_PASSTHROUGH"))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn verdict_is_pass_accepts_rs_recovered() {
-        assert!(verdict_is_pass(Some("RS_RECOVERED")));
-    }
-
-    #[test]
-    fn verdict_is_pass_accepts_rs_passthrough() {
-        assert!(verdict_is_pass(Some("RS_PASSTHROUGH")));
-    }
-
-    #[test]
-    fn verdict_is_pass_rejects_corrupted() {
-        assert!(!verdict_is_pass(Some("CORRUPTED_DATA")));
-    }
-
-    #[test]
-    fn verdict_is_pass_rejects_rs_failed() {
-        assert!(!verdict_is_pass(Some("RS_FAILED")));
-    }
-
-    #[test]
-    fn verdict_is_pass_rejects_fs_panic() {
-        assert!(!verdict_is_pass(Some("FS_PANIC")));
-    }
-
-    #[test]
-    fn verdict_is_pass_rejects_none() {
-        assert!(!verdict_is_pass(None));
-    }
-}
-
 pub fn make_tarball(run_dir: &Path) -> Result<PathBuf> {
     let parent = run_dir.parent()
         .ok_or_else(|| anyhow::anyhow!("run_dir has no parent"))?;
@@ -639,4 +604,40 @@ pub fn make_tarball(run_dir: &Path) -> Result<PathBuf> {
         return Err(anyhow::anyhow!("tar failed (exit {:?})", status.code()));
     }
     Ok(archive)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verdict_is_pass_accepts_rs_recovered() {
+        assert!(verdict_is_pass(Some("RS_RECOVERED")));
+    }
+
+    #[test]
+    fn verdict_is_pass_accepts_rs_passthrough() {
+        assert!(verdict_is_pass(Some("RS_PASSTHROUGH")));
+    }
+
+    #[test]
+    fn verdict_is_pass_rejects_corrupted() {
+        assert!(!verdict_is_pass(Some("CORRUPTED_DATA")));
+    }
+
+    #[test]
+    fn verdict_is_pass_rejects_rs_failed() {
+        assert!(!verdict_is_pass(Some("RS_FAILED")));
+    }
+
+    #[test]
+    fn verdict_is_pass_rejects_fs_panic() {
+        assert!(!verdict_is_pass(Some("FS_PANIC")));
+    }
+
+    #[test]
+    fn verdict_is_pass_rejects_none() {
+        assert!(!verdict_is_pass(None));
+    }
 }
