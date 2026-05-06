@@ -241,7 +241,9 @@ pub(crate) fn ssh_probe(ip: &str, key_path: &str) -> bool {
 /// Architecture per recadrage R-isolation:
 ///   master    : vda (rootfs) + vdb (cluster /data) ONLY
 ///                (orchestrator, never RadFI target, no FS-test USB)
-///   compute01 : vda + vdb + vdc..vdg (5 USB FS-test victims)
+///   compute01 : vda + vdb + N USB FS-test victims at vdc..vd?
+///                (N is adaptive ; count is read from libvirt XML
+///                 by Phase 0.0a usb_health, not enforced here)
 ///   compute02 : vda + vdb only
 ///   compute03 : vda + vdb only
 ///
@@ -255,25 +257,25 @@ pub fn assert_isolation_architecture() -> Result<()> {
     println!(" beamfs-bench lifecycle - Phase 0: isolation pre-flight check");
     println!("================================================================");
 
-    // Per-VM expected target dev set
-    let expected: &[(&str, &[&str])] = &[
+    // Per-VM check policy.
+    //
+    // master + compute02 + compute03 : strict equal vs ["vda", "vdb"].
+    //   Invariant : these VMs MUST never receive a FS-test USB ; any
+    //   extra disk indicates a transverse-RadFI contamination risk.
+    //
+    // compute01 : starts with ["vda", "vdb"], then accepts any number
+    //   (including 0) of vd[c-z] USB slots. Phase 0.0a usb_health
+    //   audits those USB slots in detail immediately after.
+    //   Invariant : the FS-test USB topology is concentrated on
+    //   compute01 ; the exact USB count is hardware-dependent and
+    //   adaptive (see L5 + L6 changelog).
+    let strict_vms: &[(&str, &[&str])] = &[
         ("beamfs-master",    &["vda", "vdb"]),
-        ("beamfs-compute01", &["vda", "vdb", "vdc", "vdd", "vde", "vdf", "vdg"]),
         ("beamfs-compute02", &["vda", "vdb"]),
         ("beamfs-compute03", &["vda", "vdb"]),
     ];
 
-    for (vm, want) in expected {
-        let out = Command::new("sudo")
-            .args(["virsh", "-c", "qemu:///system", "dumpxml", vm])
-            .output()
-            .with_context(|| format!("virsh dumpxml {vm}"))?;
-        if !out.status.success() {
-            bail!("virsh dumpxml {vm} failed: {}", String::from_utf8_lossy(&out.stderr));
-        }
-        let xml = String::from_utf8_lossy(&out.stdout);
-
-        // Extract all <target dev='vdN' bus='virtio'/> lines for disk targets
+    let extract_disk_targets = |xml: &str| -> Vec<String> {
         let mut found: Vec<String> = xml.lines()
             .filter_map(|l| {
                 let l = l.trim();
@@ -288,10 +290,26 @@ pub fn assert_isolation_architecture() -> Result<()> {
             })
             .collect();
         found.sort();
+        found
+    };
 
+    let dumpxml = |vm: &str| -> Result<String> {
+        let out = Command::new("sudo")
+            .args(["virsh", "-c", "qemu:///system", "dumpxml", vm])
+            .output()
+            .with_context(|| format!("virsh dumpxml {vm}"))?;
+        if !out.status.success() {
+            bail!("virsh dumpxml {vm} failed: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    };
+
+    // 1. Strict-equal VMs.
+    for (vm, want) in strict_vms {
+        let xml = dumpxml(vm)?;
+        let found = extract_disk_targets(&xml);
         let mut want_sorted: Vec<String> = want.iter().map(|s| s.to_string()).collect();
         want_sorted.sort();
-
         if found != want_sorted {
             eprintln!("  [{vm}] FAIL");
             eprintln!("    expected : {want_sorted:?}");
@@ -299,11 +317,64 @@ pub fn assert_isolation_architecture() -> Result<()> {
             bail!(
                 "isolation architecture violation on {vm}: expected disk targets {want_sorted:?}, found {found:?}. \
                  The cluster has been modified outside beamfs-bench and the FS-test isolation \
-                 contract is broken. Restore architecture before running this bench. \
+                 contract is broken (a non-compute01 VM has a USB attached). \
+                 Restore architecture before running this bench. \
                  See context-recadrage.md R-isolation."
             );
         }
         println!("  [{vm}] OK ({} disks: {})", found.len(), found.join(","));
+    }
+
+    // 2. compute01 : vda + vdb + any vd[c-z] (>= 0 USBs).
+    {
+        let vm = "beamfs-compute01";
+        let xml = dumpxml(vm)?;
+        let found = extract_disk_targets(&xml);
+
+        // Required prefix.
+        if !found.contains(&"vda".to_string()) || !found.contains(&"vdb".to_string()) {
+            eprintln!("  [{vm}] FAIL");
+            eprintln!("    expected : at least vda + vdb");
+            eprintln!("    found    : {found:?}");
+            bail!(
+                "isolation architecture violation on {vm}: missing vda or vdb. \
+                 compute01 needs a rootfs (vda) and cluster /data (vdb) at minimum. \
+                 See context-recadrage.md R-isolation."
+            );
+        }
+
+        // Other disks must be vd[c-z] (USB slots).
+        let extras: Vec<&String> = found.iter()
+            .filter(|d| d.as_str() != "vda" && d.as_str() != "vdb")
+            .collect();
+        for d in &extras {
+            if d.len() != 3 || !d.starts_with("vd") {
+                eprintln!("  [{vm}] FAIL");
+                eprintln!("    found    : {found:?}");
+                bail!(
+                    "isolation architecture violation on {vm}: unexpected disk target {d:?}. \
+                     compute01 disks must be vda + vdb + USB slots at vd[c-z]. \
+                     See context-recadrage.md R-isolation."
+                );
+            }
+            let suffix = d.chars().nth(2).unwrap();
+            if !('c'..='z').contains(&suffix) {
+                eprintln!("  [{vm}] FAIL");
+                eprintln!("    found    : {found:?}");
+                bail!(
+                    "isolation architecture violation on {vm}: USB slot has out-of-range \
+                     target {d:?} (allowed: vdc..vdz). \
+                     See context-recadrage.md R-isolation."
+                );
+            }
+        }
+
+        println!(
+            "  [{vm}] OK ({} disks: {} ; {} USB slot(s) -- audit in Phase 0.0a)",
+            found.len(),
+            found.join(","),
+            extras.len(),
+        );
     }
 
     println!("[isolation] Phase 0 complete - architecture matches R-isolation contract");
