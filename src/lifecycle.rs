@@ -257,22 +257,25 @@ pub fn assert_isolation_architecture() -> Result<()> {
     println!(" beamfs-bench lifecycle - Phase 0: isolation pre-flight check");
     println!("================================================================");
 
-    // Per-VM check policy.
+    // Per-VM check policy (Architecture C, 2026-05-07 hardware refresh).
     //
-    // master + compute02 + compute03 : strict equal vs ["vda", "vdb"].
-    //   Invariant : these VMs MUST never receive a FS-test USB ; any
-    //   extra disk indicates a transverse-RadFI contamination risk.
+    // master : strict equal vs ["vda", "vdb"].
+    //   Invariant : master is orchestrator and never a FS-test victim.
+    //   Any extra disk indicates a transverse-RadFI contamination risk.
     //
-    // compute01 : starts with ["vda", "vdb"], then accepts any number
-    //   (including 0) of vd[c-z] USB slots. Phase 0.0a usb_health
-    //   audits those USB slots in detail immediately after.
-    //   Invariant : the FS-test USB topology is concentrated on
-    //   compute01 ; the exact USB count is hardware-dependent and
-    //   adaptive (see L5 + L6 changelog).
+    // compute01 + compute02 + compute03 : start with ["vda", "vdb"],
+    //   then accept any number (including 0) of vd[c-z] USB slots.
+    //   Phase 0.0a usb_health audits those slots in detail immediately
+    //   after. Invariant : the FS-test USB topology is symmetric across
+    //   the 3 computes (5 USB per compute on Architecture C, total 15) ;
+    //   the exact USB count is hardware-dependent and adaptive.
     let strict_vms: &[(&str, &[&str])] = &[
-        ("beamfs-master",    &["vda", "vdb"]),
-        ("beamfs-compute02", &["vda", "vdb"]),
-        ("beamfs-compute03", &["vda", "vdb"]),
+        ("beamfs-master", &["vda", "vdb"]),
+    ];
+    let usb_compute_vms: &[&str] = &[
+        "beamfs-compute01",
+        "beamfs-compute02",
+        "beamfs-compute03",
     ];
 
     let extract_disk_targets = |xml: &str| -> Vec<String> {
@@ -325,9 +328,9 @@ pub fn assert_isolation_architecture() -> Result<()> {
         println!("  [{vm}] OK ({} disks: {})", found.len(), found.join(","));
     }
 
-    // 2. compute01 : vda + vdb + any vd[c-z] (>= 0 USBs).
-    {
-        let vm = "beamfs-compute01";
+    // 2. compute01 + compute02 + compute03 : vda + vdb + any vd[c-z] (>= 0 USBs).
+    for vm in usb_compute_vms {
+        let vm = *vm;
         let xml = dumpxml(vm)?;
         let found = extract_disk_targets(&xml);
 
@@ -338,7 +341,7 @@ pub fn assert_isolation_architecture() -> Result<()> {
             eprintln!("    found    : {found:?}");
             bail!(
                 "isolation architecture violation on {vm}: missing vda or vdb. \
-                 compute01 needs a rootfs (vda) and cluster /data (vdb) at minimum. \
+                 {vm} needs a rootfs (vda) and cluster /data (vdb) at minimum. \
                  See context-recadrage.md R-isolation."
             );
         }
@@ -353,7 +356,7 @@ pub fn assert_isolation_architecture() -> Result<()> {
                 eprintln!("    found    : {found:?}");
                 bail!(
                     "isolation architecture violation on {vm}: unexpected disk target {d:?}. \
-                     compute01 disks must be vda + vdb + USB slots at vd[c-z]. \
+                     {vm} disks must be vda + vdb + USB slots at vd[c-z]. \
                      See context-recadrage.md R-isolation."
                 );
             }
