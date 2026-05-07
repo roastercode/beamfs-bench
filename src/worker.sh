@@ -183,7 +183,7 @@ setup)
         for letter in A B C; do
             sudo mkdir -p $MNT/dir-$letter
             for n in 1 2 3; do
-                sudo bash -c "head -c 3072 /dev/urandom > $MNT/dir-$letter/file-${letter}${n}.bin"
+                sudo bash -c "head -c 262144 /dev/urandom > $MNT/dir-$letter/file-${letter}${n}.bin"
             done
             sudo bash -c "cd $MNT/dir-$letter && sha256sum file-${letter}1.bin file-${letter}2.bin file-${letter}3.bin > HASHES.sha256"
         done
@@ -191,7 +191,12 @@ setup)
 
         TARGET_FILE=$MNT/dir-B/file-B2.bin
         if command -v filefrag >/dev/null 2>&1 && [ "$FS" != "beamfs" ]; then
-            TARGET_BLOCK=$(sudo filefrag -b4096 $TARGET_FILE 2>/dev/null | awk '/^ +0:/ {gsub(/[.:]/, "", $4); print $4; exit}')
+            # v0.8.2 (publication-grade) : -v required, sans lui filefrag
+            # n'imprime PAS la ligne "0: 0.. 63: 1081344.." que awk match.
+            # Sans -v on extrait '' qui devient TARGET_BLOCK=0, et le filtre
+            # blk_filter_match (target_struct_block_no=0) rejette 99% des bios
+            # vers skipped_filter, faussant la mesure de dose-réponse.
+            TARGET_BLOCK=$(sudo filefrag -v -b4096 $TARGET_FILE 2>/dev/null | awk '/^ +0:/ {gsub(/[.:]/, "", $4); print $4; exit}')
         else
             TARGET_BLOCK=0
         fi
@@ -206,7 +211,7 @@ setup)
         for letter in A B C; do
             sudo mkdir -p $TMPSRC/dir-$letter
             for n in 1 2 3; do
-                sudo bash -c "head -c 3072 /dev/urandom > $TMPSRC/dir-$letter/file-${letter}${n}.bin"
+                sudo bash -c "head -c 262144 /dev/urandom > $TMPSRC/dir-$letter/file-${letter}${n}.bin"
             done
             sudo bash -c "cd $TMPSRC/dir-$letter && sha256sum file-${letter}1.bin file-${letter}2.bin file-${letter}3.bin > HASHES.sha256"
         done
@@ -542,7 +547,7 @@ cluster_setup)
     for letter in A B C; do
         sudo mkdir -p "$SUBDIR/dir-$letter"
         for n in 1 2 3; do
-            sudo bash -c "head -c 3072 /dev/urandom > $SUBDIR/dir-$letter/file-${letter}${n}.bin"
+            sudo bash -c "head -c 262144 /dev/urandom > $SUBDIR/dir-$letter/file-${letter}${n}.bin"
         done
         sudo bash -c "cd $SUBDIR/dir-$letter && sha256sum file-${letter}1.bin file-${letter}2.bin file-${letter}3.bin > HASHES.sha256"
     done
