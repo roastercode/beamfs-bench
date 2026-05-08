@@ -127,6 +127,77 @@ pub fn write_synthesis_md(
         writeln!(f, "| {:<modes_w$} |", r.modes)?;
     }
 
+    // ============================================================
+    // Phase A.1: Verdict detail section. Companion to the head-to-head
+    // table above ; uses extract_verdict_detail to expose the
+    // fine-grained verdict (KERNEL_PANIC, DETECTED_FAIL_CLOSED,
+    // INACCESSIBLE, SILENT_CORRUPTION, RS_RECOVERED, RS_PASSTHROUGH,
+    // RECOVERED, CORRUPTED_DATA) that exploits DMESG_UNCORRECTABLE
+    // and DMESG_EIO signals.
+    // ============================================================
+    writeln!(f)?;
+    writeln!(f, "## Verdict detail (Phase A.1)")?;
+    writeln!(f)?;
+    writeln!(f, "Fine-grained verdicts using DMESG_UNCORRECTABLE / DMESG_EIO signals. The legacy `verdict` column above remains unchanged for backward compatibility.")?;
+    writeln!(f)?;
+
+    struct DetailRow {
+        fs: String,
+        cells: Vec<String>,
+        modes: String,
+    }
+    let mut detail_rows: Vec<DetailRow> = Vec::with_capacity(fs_list.len());
+    for &(fs_name, _vd) in fs_list {
+        let mut cells: Vec<String> = Vec::with_capacity(probs.len());
+        let mut modes_seen: Vec<String> = Vec::new();
+        for &prob in probs {
+            let v = extract_verdict_detail(&records, fs_name, prob).unwrap_or_else(|| "?".to_string());
+            cells.push(v.clone());
+            if !modes_seen.iter().any(|m| m == &v) {
+                modes_seen.push(v);
+            }
+        }
+        detail_rows.push(DetailRow {
+            fs: fs_name.to_string(),
+            cells,
+            modes: modes_seen.join(" "),
+        });
+    }
+
+    let dfs_w = std::cmp::max(2, detail_rows.iter().map(|r| r.fs.len()).max().unwrap_or(2));
+    let mut dprob_w: Vec<usize> = prob_headers.iter().map(|h| h.len()).collect();
+    for r in &detail_rows {
+        for (i, c) in r.cells.iter().enumerate() {
+            if i < dprob_w.len() && c.len() > dprob_w[i] {
+                dprob_w[i] = c.len();
+            }
+        }
+    }
+    let dmodes_w = std::cmp::max(
+        "Modes obs.".len(),
+        detail_rows.iter().map(|r| r.modes.len()).max().unwrap_or(0),
+    );
+
+    write!(f, "| {:<dfs_w$} ", "FS")?;
+    for (i, h) in prob_headers.iter().enumerate() {
+        write!(f, "| {:<w$} ", h, w = dprob_w[i])?;
+    }
+    writeln!(f, "| {:<dmodes_w$} |", "Modes obs.")?;
+
+    write!(f, "|{:-<sep_w$}", "", sep_w = dfs_w + 2)?;
+    for w in &dprob_w {
+        write!(f, "|{:-<sep_w$}", "", sep_w = w + 2)?;
+    }
+    writeln!(f, "|{:-<sep_w$}|", "", sep_w = dmodes_w + 2)?;
+
+    for r in &detail_rows {
+        write!(f, "| {:<dfs_w$} ", r.fs)?;
+        for (i, c) in r.cells.iter().enumerate() {
+            write!(f, "| {:<w$} ", c, w = dprob_w[i])?;
+        }
+        writeln!(f, "| {:<dmodes_w$} |", r.modes)?;
+    }
+
     writeln!(f)?;
     writeln!(f, "## Detailed per-FS results")?;
     writeln!(f)?;
@@ -339,6 +410,121 @@ fn derive_verdict_legacy(
     }
 }
 
+// ============================================================
+// Phase A.1 -- fine-grained verdict_detail (companion to verdict).
+//
+// The legacy `verdict` field above keeps 5 values (RS_RECOVERED,
+// RS_PASSTHROUGH, RS_FAILED, CORRUPTED_DATA, FS_PANIC) for backward
+// compatibility with archived forensics tarballs and the regression_check
+// ladder.
+//
+// `verdict_detail` is a strict refinement that exploits dmesg signals
+// (DMESG_UNCORRECTABLE, DMESG_EIO) already collected by worker.sh but
+// previously ignored by the derivation. It distinguishes:
+//
+//   KERNEL_PANIC         : VERIFY VERDICT=FS_PANIC, mount completely broken
+//   DETECTED_FAIL_CLOSED : cat_rc != 0 AND dmesg signals corruption
+//                          (i.e. kernel detected and refused to serve)
+//   INACCESSIBLE         : cat_rc != 0 AND dmesg silent
+//                          (i.e. read failed but kernel did not log why)
+//   SILENT_CORRUPTION    : hash mismatch AND cat_rc == 0 AND dmesg silent
+//                          (i.e. wrong bytes returned, no error path)
+//   RS_RECOVERED         : hash match AND rs_corrected > 0  (beamfs only)
+//   RS_PASSTHROUGH       : hash match AND rs_corrected == 0 (beamfs only)
+//   RECOVERED            : hash match (legacy FS, no FEC distinction)
+//   CORRUPTED_DATA       : hash mismatch AND dmesg signals (detected, no FEC)
+//
+// Both `verdict` and `verdict_detail` are emitted to synthesis.json under
+// per_fs_results[].modes_observed and per_fs_results[].modes_observed_detail
+// respectively. This keeps existing consumers working while exposing the
+// finer taxonomy to new analyses.
+// ============================================================
+
+/// Phase A.1: fine-grained verdict for FS=beamfs (FEC-protected).
+/// Exploits dmesg signals to distinguish detected-fail-closed from
+/// inaccessible-but-silent and from silent corruption.
+fn derive_verdict_detail_beamfs(
+    mount_state: &str,
+    cat_rc: i32,
+    hash_pre: &str,
+    hash_post: &str,
+    rs_corrected: u32,
+    dmesg_uncorrectable: u32,
+    dmesg_eio: u32,
+) -> &'static str {
+    if mount_state == "FS_PANIC" {
+        return "KERNEL_PANIC";
+    }
+    let dmesg_signal = dmesg_uncorrectable > 0 || dmesg_eio > 0;
+    if cat_rc != 0 {
+        if dmesg_signal {
+            return "DETECTED_FAIL_CLOSED";
+        }
+        return "INACCESSIBLE";
+    }
+    if hash_pre == "missing" || hash_post == "missing" || hash_post == "cat_failed" {
+        // cat_rc == 0 but hash bookkeeping broke: this is an instrument fault
+        // not a filesystem fault; classify under DETECTED_FAIL_CLOSED if
+        // dmesg signals corruption, INACCESSIBLE otherwise.
+        if dmesg_signal {
+            return "DETECTED_FAIL_CLOSED";
+        }
+        return "INACCESSIBLE";
+    }
+    if hash_post != hash_pre {
+        // Read returned different bytes than what was written. If the kernel
+        // logged uncorrectable/EIO, the path was technically detected but
+        // user-space still got bad bytes -- this is a kernel-side reporting
+        // bug, not a silent corruption. We classify as DETECTED_FAIL_CLOSED
+        // because the FEC layer signaled.
+        if dmesg_signal {
+            return "DETECTED_FAIL_CLOSED";
+        }
+        return "SILENT_CORRUPTION";
+    }
+    if rs_corrected > 0 {
+        "RS_RECOVERED"
+    } else {
+        "RS_PASSTHROUGH"
+    }
+}
+
+/// Phase A.1: fine-grained verdict for FS != beamfs (no FEC).
+/// Without FEC, the only differentiation is between detected (FS panic
+/// or kernel signal) and silent (hash mismatch with no kernel signal).
+fn derive_verdict_detail_legacy(
+    mount_state: &str,
+    cat_rc: i32,
+    hash_pre: &str,
+    hash_post: &str,
+    dmesg_uncorrectable: u32,
+    dmesg_eio: u32,
+) -> &'static str {
+    if mount_state == "FS_PANIC" {
+        return "KERNEL_PANIC";
+    }
+    let dmesg_signal = dmesg_uncorrectable > 0 || dmesg_eio > 0;
+    if cat_rc != 0 {
+        if dmesg_signal {
+            return "DETECTED_FAIL_CLOSED";
+        }
+        return "INACCESSIBLE";
+    }
+    if hash_pre == "missing" || hash_post == "missing" || hash_post == "cat_failed" {
+        if dmesg_signal {
+            return "DETECTED_FAIL_CLOSED";
+        }
+        return "INACCESSIBLE";
+    }
+    if hash_post != hash_pre {
+        if dmesg_signal {
+            return "CORRUPTED_DATA";
+        }
+        return "SILENT_CORRUPTION";
+    }
+    "RECOVERED"
+}
+
 /// Bench-2 cluster scope : extract a field from an ATTACK record matching
 /// (host, prob). Cluster format differs from multifs : prefix is "ATTACK|prob=N|"
 /// not "ATTACK|FS=...|PROB=...|", and host is HOST=<name> not FS=<name>.
@@ -426,6 +612,37 @@ pub fn extract_cluster_verdict(records: &str, host: &str, prob: u32) -> Option<S
     Some(derive_verdict_beamfs(&mount_state, cat_rc, &hash_pre, &hash_post, rs_corrected).to_string())
 }
 
+/// Phase A.1: fine-grained cluster verdict. Same sources as
+/// extract_cluster_verdict, but additionally reads DMESG_UNCORRECTABLE and
+/// DMESG_EIO to distinguish DETECTED_FAIL_CLOSED / INACCESSIBLE /
+/// SILENT_CORRUPTION / KERNEL_PANIC. Cluster /data is always beamfs (FEC).
+pub fn extract_cluster_verdict_detail(records: &str, host: &str, prob: u32) -> Option<String> {
+    let mount_state = extract_cluster_verify_state(records, host, prob)
+        .unwrap_or_else(|| "MOUNTED".to_string());
+    let mount_state = if mount_state == "VERIFIED" { "MOUNTED".to_string() } else { mount_state };
+    let cat_rc: i32 = extract_cluster_attack_field(records, host, prob, "CAT_RC")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(-1);
+    let hash_pre = extract_cluster_attack_field(records, host, prob, "HASH_PRE")
+        .unwrap_or_else(|| "missing".to_string());
+    let hash_post = extract_cluster_attack_field(records, host, prob, "HASH_POST")
+        .unwrap_or_else(|| "missing".to_string());
+    let rs_corrected: u32 = extract_cluster_attack_field(records, host, prob, "RS_CORRECTED")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let dmesg_uncorrectable: u32 = extract_cluster_attack_field(records, host, prob, "DMESG_UNCORRECTABLE")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let dmesg_eio: u32 = extract_cluster_attack_field(records, host, prob, "DMESG_EIO")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    Some(derive_verdict_detail_beamfs(
+        &mount_state, cat_rc, &hash_pre, &hash_post,
+        rs_corrected, dmesg_uncorrectable, dmesg_eio,
+    ).to_string())
+}
+
 pub fn extract_verdict(records: &str, fs_name: &str, prob: u32) -> Option<String> {
     let mount_state = extract_verify_state(records, fs_name, prob)?;
     let cat_rc: i32 = extract_attack_field(records, fs_name, prob, "CAT_RC")
@@ -443,6 +660,43 @@ pub fn extract_verdict(records: &str, fs_name: &str, prob: u32) -> Option<String
         derive_verdict_beamfs(&mount_state, cat_rc, &hash_pre, &hash_post, rs_corrected)
     } else {
         derive_verdict_legacy(&mount_state, cat_rc, &hash_pre, &hash_post)
+    };
+    Some(verdict.to_string())
+}
+
+/// Phase A.1: fine-grained verdict (multifs scope). Companion to
+/// extract_verdict, exploits dmesg signals to distinguish KERNEL_PANIC,
+/// DETECTED_FAIL_CLOSED, INACCESSIBLE, SILENT_CORRUPTION from the legacy
+/// 5-class taxonomy.
+pub fn extract_verdict_detail(records: &str, fs_name: &str, prob: u32) -> Option<String> {
+    let mount_state = extract_verify_state(records, fs_name, prob)?;
+    let cat_rc: i32 = extract_attack_field(records, fs_name, prob, "CAT_RC")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(-1);
+    let hash_pre = extract_attack_field(records, fs_name, prob, "HASH_PRE")
+        .unwrap_or_else(|| "missing".to_string());
+    let hash_post = extract_attack_field(records, fs_name, prob, "HASH_POST")
+        .unwrap_or_else(|| "missing".to_string());
+    let rs_corrected: u32 = extract_attack_field(records, fs_name, prob, "RS_CORRECTED")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let dmesg_uncorrectable: u32 = extract_attack_field(records, fs_name, prob, "DMESG_UNCORRECTABLE")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let dmesg_eio: u32 = extract_attack_field(records, fs_name, prob, "DMESG_EIO")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let verdict = if fs_name == "beamfs" {
+        derive_verdict_detail_beamfs(
+            &mount_state, cat_rc, &hash_pre, &hash_post,
+            rs_corrected, dmesg_uncorrectable, dmesg_eio,
+        )
+    } else {
+        derive_verdict_detail_legacy(
+            &mount_state, cat_rc, &hash_pre, &hash_post,
+            dmesg_uncorrectable, dmesg_eio,
+        )
     };
     Some(verdict.to_string())
 }
@@ -597,5 +851,91 @@ mod tests {
             "VERIFY|prob=1000000|CLUSTER|HOST=beamfs-master|VERDICT=VERIFIED|DIFFS=0|N_FILES_CHANGED=0|details=ok",
         ].join("\n");
         assert_eq!(extract_cluster_verdict(&r, "beamfs-master", 1_000_000).as_deref(), Some("RS_FAILED"));
+    }
+
+    // ============================================================
+    // Phase A.1 -- verdict_detail tests
+    // ============================================================
+
+    #[test]
+    fn detail_beamfs_kernel_panic() {
+        // mount_state == FS_PANIC -> KERNEL_PANIC
+        let r = rec(
+            "ATTACK|FS=beamfs|PROB=1000000|CALL_DELTA=10|FLIP_DELTA=99|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=cat_failed|CAT_RC=1|RS_CORRECTED=0|DMESG_UNCORRECTABLE=5|DMESG_EIO=3",
+            "VERIFY|fs=beamfs|prob=1000000|VERDICT=FS_PANIC|details=remount failed",
+        );
+        assert_eq!(extract_verdict_detail(&r, "beamfs", 1_000_000).as_deref(), Some("KERNEL_PANIC"));
+        // legacy verdict still says FS_PANIC
+        assert_eq!(extract_verdict(&r, "beamfs", 1_000_000).as_deref(), Some("FS_PANIC"));
+    }
+
+    #[test]
+    fn detail_beamfs_detected_fail_closed() {
+        // cat_rc != 0 AND dmesg signal -> DETECTED_FAIL_CLOSED
+        let r = rec(
+            "ATTACK|FS=beamfs|PROB=1000000|CALL_DELTA=10|FLIP_DELTA=10|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=cat_failed|CAT_RC=1|RS_CORRECTED=0|DMESG_UNCORRECTABLE=1|DMESG_EIO=1",
+            "VERIFY|fs=beamfs|prob=1000000|VERDICT=MOUNTED|DIFFS_PRE_POST=2|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=1|details=ok",
+        );
+        assert_eq!(extract_verdict_detail(&r, "beamfs", 1_000_000).as_deref(), Some("DETECTED_FAIL_CLOSED"));
+        // legacy verdict says RS_FAILED (which agglomerates this case)
+        assert_eq!(extract_verdict(&r, "beamfs", 1_000_000).as_deref(), Some("RS_FAILED"));
+    }
+
+    #[test]
+    fn detail_beamfs_inaccessible() {
+        // cat_rc != 0 AND dmesg silent -> INACCESSIBLE
+        let r = rec(
+            "ATTACK|FS=beamfs|PROB=1000000|CALL_DELTA=10|FLIP_DELTA=2|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=cat_failed|CAT_RC=1|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
+            "VERIFY|fs=beamfs|prob=1000000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
+        );
+        assert_eq!(extract_verdict_detail(&r, "beamfs", 1_000_000).as_deref(), Some("INACCESSIBLE"));
+        // legacy verdict still RS_FAILED
+        assert_eq!(extract_verdict(&r, "beamfs", 1_000_000).as_deref(), Some("RS_FAILED"));
+    }
+
+    #[test]
+    fn detail_beamfs_silent_corruption() {
+        // hash mismatch AND cat_rc == 0 AND dmesg silent -> SILENT_CORRUPTION
+        let r = rec(
+            "ATTACK|FS=beamfs|PROB=1000000|CALL_DELTA=10|FLIP_DELTA=5|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=def|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
+            "VERIFY|fs=beamfs|prob=1000000|VERDICT=MOUNTED|DIFFS_PRE_POST=2|DIFFS_PRE_REMOUNT=2|N_FILES_CHANGED=1|details=ok",
+        );
+        assert_eq!(extract_verdict_detail(&r, "beamfs", 1_000_000).as_deref(), Some("SILENT_CORRUPTION"));
+        // legacy verdict says CORRUPTED_DATA
+        assert_eq!(extract_verdict(&r, "beamfs", 1_000_000).as_deref(), Some("CORRUPTED_DATA"));
+    }
+
+    #[test]
+    fn detail_beamfs_rs_recovered_unchanged() {
+        // hash match AND rs_corrected > 0 -> RS_RECOVERED (same as legacy)
+        let r = rec(
+            "ATTACK|FS=beamfs|PROB=1000000|CALL_DELTA=10|FLIP_DELTA=3|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=2|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
+            "VERIFY|fs=beamfs|prob=1000000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
+        );
+        assert_eq!(extract_verdict_detail(&r, "beamfs", 1_000_000).as_deref(), Some("RS_RECOVERED"));
+        assert_eq!(extract_verdict(&r, "beamfs", 1_000_000).as_deref(), Some("RS_RECOVERED"));
+    }
+
+    #[test]
+    fn detail_legacy_silent_corruption() {
+        // ext4 hash mismatch with no dmesg signal -> SILENT_CORRUPTION (detail)
+        // vs legacy CORRUPTED_DATA which conflates silent and detected.
+        let r = rec(
+            "ATTACK|FS=ext4|PROB=100000|CALL_DELTA=10|FLIP_DELTA=5|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=def|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
+            "VERIFY|fs=ext4|prob=100000|VERDICT=MOUNTED|DIFFS_PRE_POST=2|DIFFS_PRE_REMOUNT=2|N_FILES_CHANGED=1|details=ok",
+        );
+        assert_eq!(extract_verdict_detail(&r, "ext4", 100_000).as_deref(), Some("SILENT_CORRUPTION"));
+        assert_eq!(extract_verdict(&r, "ext4", 100_000).as_deref(), Some("CORRUPTED_DATA"));
+    }
+
+    #[test]
+    fn detail_cluster_detected_fail_closed() {
+        // cluster compute01 with CAT_RC=1 and dmesg EIO=1 -> DETECTED_FAIL_CLOSED
+        let r = [
+            "ATTACK|prob=1000000|CLUSTER|HOST=beamfs-compute01|PROB=1000000|CALL_DELTA=28|FLIP_DELTA=4|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=mount_failed|CAT_RC=1|RS_CORRECTED=0|DMESG_UNCORRECTABLE=1|DMESG_EIO=1",
+            "VERIFY|prob=1000000|CLUSTER|HOST=beamfs-compute01|VERDICT=VERIFIED|DIFFS=0|N_FILES_CHANGED=0|details=ok",
+        ].join("\n");
+        assert_eq!(extract_cluster_verdict_detail(&r, "beamfs-compute01", 1_000_000).as_deref(), Some("DETECTED_FAIL_CLOSED"));
+        assert_eq!(extract_cluster_verdict(&r, "beamfs-compute01", 1_000_000).as_deref(), Some("RS_FAILED"));
     }
 }

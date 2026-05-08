@@ -325,6 +325,15 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
                 if let Some(v) = crate::synthesis::extract_cluster_verdict(&buf, &r.host, prob) {
                     writeln!(cf, "DERIVED|prob={prob}|host={}|verdict={}", r.host, v)?;
                 }
+                // Phase A.1: companion verdict_detail line. Same input,
+                // additionally exploits DMESG_UNCORRECTABLE and DMESG_EIO
+                // signals to distinguish KERNEL_PANIC / DETECTED_FAIL_CLOSED /
+                // INACCESSIBLE / SILENT_CORRUPTION from the legacy 5-class
+                // taxonomy. Downstream tooling that does not know this line
+                // can safely ignore it.
+                if let Some(vd) = crate::synthesis::extract_cluster_verdict_detail(&buf, &r.host, prob) {
+                    writeln!(cf, "DERIVED|prob={prob}|host={}|verdict_detail={}", r.host, vd)?;
+                }
             }
 
             // Re-create the test layout for the next probability iteration
