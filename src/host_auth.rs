@@ -88,8 +88,31 @@ pub fn prime_session() -> Result<()> {
 }
 
 fn prime_sudo() -> Result<()> {
-    print!("[priming] sudo -v (one-shot password prompt if cache empty)... ");
+    print!("[priming] sudo session check... ");
     use std::io::Write;
+    std::io::stdout().flush().ok();
+
+    // v0.8.3 : detect NOPASSWD before invoking sudo -v.
+    // sudo -v requires a TTY for password input even when NOPASSWD
+    // is active (sudo only short-circuits -v in narrow conditions
+    // depending on version + plugin). Without a TTY (nohup/setsid
+    // detached batch run), sudo -v fails with -EIO and aborts the
+    // bench. Test sudo -n true first : if it succeeds, NOPASSWD is
+    // active for this user and no -v refresh is needed.
+    let nopasswd = Command::new("sudo")
+        .args(["-n", "true"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if nopasswd {
+        println!("NOPASSWD detected, skipping -v refresh");
+        return Ok(());
+    }
+
+    print!("(NOPASSWD not set, invoking sudo -v) ");
     std::io::stdout().flush().ok();
     let status = Command::new("sudo")
         .arg("-v")
