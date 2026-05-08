@@ -156,6 +156,36 @@ ensure_modules() {
 # multifs scope : setup / attack / verify (master-only, USB targets)
 # Args: $1=action $2=fs $3=vd $4=prob
 # ============================================================
+
+# Phase A.2 helper: extract the physical block offsets of a target file via
+# filefrag, to detect CoW relocation between pre-attack and post-attack
+# states. Output format: comma-separated u64 list, or 'na' if filefrag is
+# unsupported on the FS, or 'filefrag_failed' on tool error.
+filefrag_phys() {
+    local fs="$1" tgt="$2"
+    if [ "$fs" = "beamfs" ] || [ "$fs" = "squashfs" ]; then
+        echo "na"
+        return 0
+    fi
+    if ! command -v filefrag >/dev/null 2>&1; then
+        echo "na"
+        return 0
+    fi
+    if [ ! -e "$tgt" ]; then
+        echo "missing"
+        return 0
+    fi
+    local out
+    out=$(sudo filefrag -v -b4096 "$tgt" 2>/dev/null \
+        | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $4); print $4}' \
+        | paste -sd, 2>/dev/null)
+    if [ -z "$out" ]; then
+        echo "filefrag_failed"
+    else
+        echo "$out"
+    fi
+}
+
 case "$ACTION" in
 
 setup)
@@ -361,6 +391,8 @@ attack)
     HASH_PRE=$(sudo awk '$2 == "file-B2.bin" {print $1}' "$HASHES_FILE" 2>/dev/null)
     [ -z "$HASH_PRE" ] && HASH_PRE=missing
     HASH_POST=""  # B.1 : explicit init so umount/mount failure can pre-set
+    # Phase A.2 : capture pre-attack physical extent map for CoW detection
+    FRAG_PRE_PHYS=$(filefrag_phys "$FS" "$TARGET_FILE")
     DMESG_MARK="bench2-attack-$FS-$PROB-$$-$(date +%s%N)"
     sudo bash -c "echo \"$DMESG_MARK\" > /dev/kmsg" 2>/dev/null || true
 
@@ -411,6 +443,30 @@ attack)
 
     echo 0 | sudo tee ${INJECTOR_DBG}/enabled  >/dev/null
     echo 0 | sudo tee ${INJECTOR_DBG}/hook_blk >/dev/null
+
+    # Phase A.2 : capture post-attack physical extent map for CoW detection.
+    # If mount_failed already set, the FS is not currently mounted; report
+    # mount_failed for FRAG_POST_PHYS rather than calling filefrag on a
+    # non-existent path. Otherwise filefrag the live remounted file.
+    if [ "$HASH_POST" = "mount_failed" ]; then
+        FRAG_POST_PHYS="mount_failed"
+    else
+        FRAG_POST_PHYS=$(filefrag_phys "$FS" "$TARGET_FILE")
+    fi
+    # Compute FRAG_RELOCATED: 1 if PRE and POST are both non-na/non-failed
+    # AND differ ; 0 if both are non-na/non-failed AND equal ; na otherwise.
+    case "$FRAG_PRE_PHYS:$FRAG_POST_PHYS" in
+        na:*|*:na|*:mount_failed|*:filefrag_failed|filefrag_failed:*|missing:*|*:missing)
+            FRAG_RELOCATED=na
+            ;;
+        *)
+            if [ "$FRAG_PRE_PHYS" = "$FRAG_POST_PHYS" ]; then
+                FRAG_RELOCATED=0
+            else
+                FRAG_RELOCATED=1
+            fi
+            ;;
+    esac
 
     CALL_DELTA=$((CALL_A - CALL_B))
     FLIP_DELTA=$((FLIP_A - FLIP_B))
@@ -469,7 +525,7 @@ print(f'{bits} {frac_bp} {len(blocks)}')
 
     sudo rm -f /tmp/pre-cat-$FS.bin /tmp/post-cat-$FS.bin /tmp/cat-err-$FS.log 2>/dev/null || true
 
-    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE"
+    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|FRAG_PRE_PHYS=$FRAG_PRE_PHYS|FRAG_POST_PHYS=$FRAG_POST_PHYS|FRAG_RELOCATED=$FRAG_RELOCATED"
     ;;
 
 verify)
