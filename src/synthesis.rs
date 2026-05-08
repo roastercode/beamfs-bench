@@ -198,6 +198,74 @@ pub fn write_synthesis_md(
         writeln!(f, "| {:<dmodes_w$} |", r.modes)?;
     }
 
+    // ============================================================
+    // Phase A.2: CoW characterization section. For each (FS, prob)
+    // cell, reports FRAG_RELOCATED status (whether the target file's
+    // physical extent moved between pre-attack and post-attack
+    // states). CoW filesystems (btrfs, bcachefs) typically show
+    // reloc=1 ; in-place filesystems (ext4, ext3, xfs) typically
+    // show reloc=0 ; beamfs and squashfs always show 'na' as
+    // filefrag is unsupported on those filesystems.
+    //
+    // The CoW characterization is informational, not a verdict; it
+    // helps interpret the legacy verdict and verdict_detail columns
+    // by exposing the underlying mechanism (e.g. btrfs's apparent
+    // resilience may be partly due to CoW deflecting attacks away
+    // from the target's original extent).
+    // ============================================================
+    writeln!(f)?;
+    writeln!(f, "## CoW characterization (Phase A.2)")?;
+    writeln!(f)?;
+    writeln!(f, "Per-cell FRAG_RELOCATED status from filefrag pre/post diff. CoW filesystems relocate extents on each write ; in-place filesystems update the same physical block. Values: `0` = in-place update, `1` = CoW relocation, `na` = filefrag unsupported or error path.")?;
+    writeln!(f)?;
+
+    struct CowRow {
+        fs: String,
+        cells: Vec<String>,
+    }
+    let mut cow_rows: Vec<CowRow> = Vec::with_capacity(fs_list.len());
+    for &(fs_name, _vd) in fs_list {
+        let mut cells: Vec<String> = Vec::with_capacity(probs.len());
+        for &prob in probs {
+            let v = extract_frag_relocated(&records, fs_name, prob).unwrap_or_else(|| "?".to_string());
+            cells.push(format!("reloc={v}"));
+        }
+        cow_rows.push(CowRow {
+            fs: fs_name.to_string(),
+            cells,
+        });
+    }
+
+    let cfs_w = std::cmp::max(2, cow_rows.iter().map(|r| r.fs.len()).max().unwrap_or(2));
+    let mut cprob_w: Vec<usize> = prob_headers.iter().map(|h| h.len()).collect();
+    for r in &cow_rows {
+        for (i, c) in r.cells.iter().enumerate() {
+            if i < cprob_w.len() && c.len() > cprob_w[i] {
+                cprob_w[i] = c.len();
+            }
+        }
+    }
+
+    write!(f, "| {:<cfs_w$} ", "FS")?;
+    for (i, h) in prob_headers.iter().enumerate() {
+        write!(f, "| {:<w$} ", h, w = cprob_w[i])?;
+    }
+    writeln!(f, "|")?;
+
+    write!(f, "|{:-<sep_w$}", "", sep_w = cfs_w + 2)?;
+    for w in &cprob_w {
+        write!(f, "|{:-<sep_w$}", "", sep_w = w + 2)?;
+    }
+    writeln!(f, "|")?;
+
+    for r in &cow_rows {
+        write!(f, "| {:<cfs_w$} ", r.fs)?;
+        for (i, c) in r.cells.iter().enumerate() {
+            write!(f, "| {:<w$} ", c, w = cprob_w[i])?;
+        }
+        writeln!(f, "|")?;
+    }
+
     writeln!(f)?;
     writeln!(f, "## Detailed per-FS results")?;
     writeln!(f)?;
@@ -701,6 +769,20 @@ pub fn extract_verdict_detail(records: &str, fs_name: &str, prob: u32) -> Option
     Some(verdict.to_string())
 }
 
+/// Phase A.2: extract the FRAG_RELOCATED field from the ATTACK record
+/// matching (fs, prob). Returns one of:
+///   "0"  : in-place update, physical extent unchanged
+///   "1"  : CoW relocation, physical extent moved
+///   "na" : filefrag unsupported (beamfs / squashfs), or any error path
+/// Returns None if the record is absent or the field is missing.
+///
+/// Companion to extract_verdict_detail; the CoW relocation is a mechanism,
+/// not a verdict, so it is reported alongside but not folded into the
+/// verdict_detail enum.
+pub fn extract_frag_relocated(records: &str, fs_name: &str, prob: u32) -> Option<String> {
+    extract_attack_field(records, fs_name, prob, "FRAG_RELOCATED")
+}
+
 fn extract_flip_delta(records: &str, fs_name: &str, prob: u32) -> Option<String> {
     extract_attack_field(records, fs_name, prob, "FLIP_DELTA")
 }
@@ -937,5 +1019,49 @@ mod tests {
         ].join("\n");
         assert_eq!(extract_cluster_verdict_detail(&r, "beamfs-compute01", 1_000_000).as_deref(), Some("DETECTED_FAIL_CLOSED"));
         assert_eq!(extract_cluster_verdict(&r, "beamfs-compute01", 1_000_000).as_deref(), Some("RS_FAILED"));
+    }
+
+    // ============================================================
+    // Phase A.2 -- FRAG_RELOCATED tests
+    // ============================================================
+
+    #[test]
+    fn frag_relocated_inplace_ext4() {
+        // ext4 typical: same physical extent before/after attack -> "0"
+        let r = rec(
+            "ATTACK|FS=ext4|PROB=100000|CALL_DELTA=10|FLIP_DELTA=5|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=def|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0|BITS_DIFF=2|FRAC_CORRUPT=8|HAMM_BLOCKS=1|FILE_SIZE=262144|FRAG_PRE_PHYS=1081344,1081345,1081346|FRAG_POST_PHYS=1081344,1081345,1081346|FRAG_RELOCATED=0",
+            "VERIFY|fs=ext4|prob=100000|VERDICT=MOUNTED|DIFFS_PRE_POST=2|DIFFS_PRE_REMOUNT=2|N_FILES_CHANGED=1|details=ok",
+        );
+        assert_eq!(extract_frag_relocated(&r, "ext4", 100_000).as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn frag_relocated_cow_btrfs() {
+        // btrfs typical: extent moved after attack -> "1"
+        let r = rec(
+            "ATTACK|FS=btrfs|PROB=100000|CALL_DELTA=10|FLIP_DELTA=5|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0|BITS_DIFF=0|FRAC_CORRUPT=0|HAMM_BLOCKS=0|FILE_SIZE=262144|FRAG_PRE_PHYS=2097152,2097153|FRAG_POST_PHYS=3145728,3145729|FRAG_RELOCATED=1",
+            "VERIFY|fs=btrfs|prob=100000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
+        );
+        assert_eq!(extract_frag_relocated(&r, "btrfs", 100_000).as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn frag_relocated_na_beamfs() {
+        // beamfs / squashfs: filefrag unsupported -> "na"
+        let r = rec(
+            "ATTACK|FS=beamfs|PROB=1000000|CALL_DELTA=10|FLIP_DELTA=3|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=2|DMESG_UNCORRECTABLE=0|DMESG_EIO=0|BITS_DIFF=0|FRAC_CORRUPT=0|HAMM_BLOCKS=0|FILE_SIZE=262144|FRAG_PRE_PHYS=na|FRAG_POST_PHYS=na|FRAG_RELOCATED=na",
+            "VERIFY|fs=beamfs|prob=1000000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
+        );
+        assert_eq!(extract_frag_relocated(&r, "beamfs", 1_000_000).as_deref(), Some("na"));
+    }
+
+    #[test]
+    fn frag_relocated_missing_returns_none() {
+        // Old-format record without FRAG_* fields -> None
+        let r = rec(
+            "ATTACK|FS=ext4|PROB=1000|CALL_DELTA=2|FLIP_DELTA=0|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
+            "VERIFY|fs=ext4|prob=1000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
+        );
+        assert_eq!(extract_frag_relocated(&r, "ext4", 1000), None);
     }
 }
