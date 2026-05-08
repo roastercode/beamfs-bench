@@ -248,7 +248,14 @@ pub fn write_synthesis_md(
         let mut cells: Vec<String> = Vec::with_capacity(probs.len());
         for &prob in probs {
             let v = extract_frag_relocated(&records, fs_name, prob).unwrap_or_else(|| "?".to_string());
-            cells.push(format!("reloc={v}"));
+            // Phase A.4 : co-display ATTACKED_BYTES_UNIQUE alongside the
+            // FRAG_RELOCATED status. The two metrics are complementary :
+            // FRAG_RELOCATED says whether CoW occurred (qualitative) ;
+            // bytes_unique says how many physical bytes were touched
+            // (quantitative dose). Together they enable fair cross-FS
+            // comparison normalized by attack surface, not bio count.
+            let u = extract_attacked_bytes_unique(&records, fs_name, prob).unwrap_or_else(|| "?".to_string());
+            cells.push(format!("reloc={v} bytes={u}"));
         }
         cow_rows.push(CowRow {
             fs: fs_name.to_string(),
@@ -812,6 +819,27 @@ pub fn extract_workload_mode(records: &str, fs_name: &str, prob: u32) -> Option<
     extract_attack_field(records, fs_name, prob, "WORKLOAD_MODE")
 }
 
+/// Phase A.4: extract the ATTACKED_BYTES_UNIQUE field from the ATTACK
+/// record. This is the count of unique (sector, byte_offset) tuples
+/// touched during the attack window, derived from the EMUFI flip_log
+/// ring buffer.
+///
+/// This metric is the recommended denominator for fair cross-FS
+/// comparison. It normalizes attack dose by physical bytes touched
+/// rather than by bios issued (which varies by 5x between ext4 and
+/// btrfs at identical probability_ppm).
+///
+/// Limitation : the flip_log ring buffer is 4096 entries ; under
+/// saturation (probability=10^6 + workload-active) the ring wraps
+/// and ATTACKED_BYTES_UNIQUE becomes a lower bound. EMUFI v1 §VII.C.a
+/// documents this regime explicitly.
+///
+/// Returns "na" for FS where the flip_log is unavailable, or None
+/// if the field is absent (legacy records pre-A.4).
+pub fn extract_attacked_bytes_unique(records: &str, fs_name: &str, prob: u32) -> Option<String> {
+    extract_attack_field(records, fs_name, prob, "ATTACKED_BYTES_UNIQUE")
+}
+
 fn extract_flip_delta(records: &str, fs_name: &str, prob: u32) -> Option<String> {
     extract_attack_field(records, fs_name, prob, "FLIP_DELTA")
 }
@@ -1124,5 +1152,38 @@ mod tests {
             "VERIFY|fs=ext4|prob=1000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
         );
         assert_eq!(extract_workload_mode(&r, "ext4", 1000), None);
+    }
+
+    // ============================================================
+    // Phase A.4 -- ATTACKED_BYTES_UNIQUE tests
+    // ============================================================
+
+    #[test]
+    fn attacked_bytes_unique_present() {
+        let r = rec(
+            "ATTACK|FS=ext4|PROB=100000|CALL_DELTA=10|FLIP_DELTA=5|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=def|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0|BITS_DIFF=2|FRAC_CORRUPT=8|HAMM_BLOCKS=1|FILE_SIZE=262144|FRAG_PRE_PHYS=1081344|FRAG_POST_PHYS=1081344|FRAG_RELOCATED=0|WORKLOAD_MODE=static|WORKLOAD_DURATION=15|ATTACKED_BYTES_UNIQUE=1259",
+            "VERIFY|fs=ext4|prob=100000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
+        );
+        assert_eq!(extract_attacked_bytes_unique(&r, "ext4", 100_000).as_deref(), Some("1259"));
+    }
+
+    #[test]
+    fn attacked_bytes_unique_na_when_flip_log_absent() {
+        // emufi may emit "na" if /sys/kernel/debug/emufi/flip_log is missing
+        let r = rec(
+            "ATTACK|FS=btrfs|PROB=100000|CALL_DELTA=200|FLIP_DELTA=0|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0|BITS_DIFF=0|FRAC_CORRUPT=0|HAMM_BLOCKS=0|FILE_SIZE=262144|FRAG_PRE_PHYS=2097152|FRAG_POST_PHYS=2097152|FRAG_RELOCATED=0|WORKLOAD_MODE=static|WORKLOAD_DURATION=15|ATTACKED_BYTES_UNIQUE=na",
+            "VERIFY|fs=btrfs|prob=100000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
+        );
+        assert_eq!(extract_attacked_bytes_unique(&r, "btrfs", 100_000).as_deref(), Some("na"));
+    }
+
+    #[test]
+    fn attacked_bytes_unique_missing_returns_none() {
+        // Pre-A.4 record without ATTACKED_BYTES_UNIQUE field
+        let r = rec(
+            "ATTACK|FS=ext4|PROB=1000|CALL_DELTA=2|FLIP_DELTA=0|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
+            "VERIFY|fs=ext4|prob=1000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
+        );
+        assert_eq!(extract_attacked_bytes_unique(&r, "ext4", 1000), None);
     }
 }

@@ -570,9 +570,30 @@ print(f'{bits} {frac_bp} {len(blocks)}')
     [ -z "$DMESG_UNCORR" ] && DMESG_UNCORR=0
     [ -z "$DMESG_EIO" ] && DMESG_EIO=0
 
+    # Phase A.4 : count unique bytes attacked from the EMUFI flip_log ring
+    # buffer. Each flip event carries (sector, byte_offset) ; we deduplicate
+    # the tuple to count bytes physically distinct on disk.
+    #
+    # CSV header: seq,ktime_ns,sector,bio_op,byte_offset,bit_index,before,after
+    # Columns of interest: $3 (sector) and $5 (byte_offset).
+    #
+    # Limitation: ring buffer is 4096 entries ; under saturation
+    # (probability=10^6 + workload-active) seq numbers wrap and earlier
+    # flips are overwritten. ATTACKED_BYTES_UNIQUE is therefore a lower
+    # bound in such regimes (EMUFI v1 §VII.C.a).
+    if [ -e ${INJECTOR_DBG}/flip_log ]; then
+        ATTACKED_BYTES_UNIQUE=$(sudo cat ${INJECTOR_DBG}/flip_log 2>/dev/null \
+            | awk -F',' 'NR>1 && $2!="0" {print $3","$5}' \
+            | sort -u \
+            | wc -l)
+        [ -z "$ATTACKED_BYTES_UNIQUE" ] && ATTACKED_BYTES_UNIQUE=0
+    else
+        ATTACKED_BYTES_UNIQUE=na
+    fi
+
     sudo rm -f /tmp/pre-cat-$FS.bin /tmp/post-cat-$FS.bin /tmp/cat-err-$FS.log 2>/dev/null || true
 
-    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|FRAG_PRE_PHYS=$FRAG_PRE_PHYS|FRAG_POST_PHYS=$FRAG_POST_PHYS|FRAG_RELOCATED=$FRAG_RELOCATED|WORKLOAD_MODE=$WORKLOAD_MODE_VAL|WORKLOAD_DURATION=$WORKLOAD_DURATION_VAL"
+    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|FRAG_PRE_PHYS=$FRAG_PRE_PHYS|FRAG_POST_PHYS=$FRAG_POST_PHYS|FRAG_RELOCATED=$FRAG_RELOCATED|WORKLOAD_MODE=$WORKLOAD_MODE_VAL|WORKLOAD_DURATION=$WORKLOAD_DURATION_VAL|ATTACKED_BYTES_UNIQUE=$ATTACKED_BYTES_UNIQUE"
     ;;
 
 verify)
