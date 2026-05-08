@@ -219,6 +219,26 @@ pub fn write_synthesis_md(
     writeln!(f, "Per-cell FRAG_RELOCATED status from filefrag pre/post diff. CoW filesystems relocate extents on each write ; in-place filesystems update the same physical block. Values: `0` = in-place update, `1` = CoW relocation, `na` = filefrag unsupported or error path.")?;
     writeln!(f)?;
 
+    // Phase A.3: report the workload mode in effect for this run. Reads
+    // from the first available cell (any (fs, prob) suffices because the
+    // bench uses a single WORKLOAD_MODE per run by construction).
+    let mut workload_mode_seen: Option<String> = None;
+    for &(fs_name, _vd) in fs_list {
+        for &prob in probs {
+            if let Some(m) = extract_workload_mode(&records, fs_name, prob) {
+                workload_mode_seen = Some(m);
+                break;
+            }
+        }
+        if workload_mode_seen.is_some() {
+            break;
+        }
+    }
+    let workload_label = workload_mode_seen.unwrap_or_else(|| "static (legacy record)".to_string());
+    writeln!(f, "Workload mode for this run: `{workload_label}`. (`static` = FS quiescent during attack ; `write-active` = continuous fio randwrite on TARGET_FILE during attack.)")?;
+    writeln!(f)?;
+
+
     struct CowRow {
         fs: String,
         cells: Vec<String>,
