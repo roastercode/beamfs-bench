@@ -193,6 +193,7 @@ fs_is_supported() {
         squashfs) mkfs_tool="mksquashfs" ;;
         erofs)    mkfs_tool="mkfs.erofs" ;;
         beamfs)   mkfs_tool="mkfs.beamfs" ;;
+        zfs)      mkfs_tool="zpool" ;;
         *)        return 1 ;;
     esac
     if ! command -v "$mkfs_tool" >/dev/null 2>&1; then
@@ -209,13 +210,17 @@ fs_is_supported() {
         bcachefs) sudo modprobe -n -v bcachefs >/dev/null 2>&1 || return 1 ;;
         hfsplus)  sudo modprobe -n -v hfsplus  >/dev/null 2>&1 || return 1 ;;
         erofs)    sudo modprobe -n -v erofs    >/dev/null 2>&1 || return 1 ;;
+        zfs)      sudo modprobe -n -v zfs      >/dev/null 2>&1 || return 1 ;;
     esac
     return 0
 }
 
 filefrag_phys() {
     local fs="$1" tgt="$2"
-    if [ "$fs" = "beamfs" ] || is_readonly_fs "$fs"; then
+    # Phase C-fix: skip filefrag for zfs (ZFS pool block allocation
+    # doesn't expose physical extents via filefrag in a way that maps
+    # back to a single underlying device).
+    if [ "$fs" = "beamfs" ] || [ "$fs" = "zfs" ] || is_readonly_fs "$fs"; then
         echo "na"
         return 0
     fi
@@ -276,11 +281,23 @@ setup)
         squashfs|erofs)
             ;;  # read-only FS handled below via offline image build
         beamfs)   sudo mkfs.beamfs -s inline -O per_inode_rs $DEV >/dev/null ;;
+        zfs)
+            # ZFS uses zpool, not mkfs. The pool name embeds VD to ensure
+            # uniqueness across compute nodes. -f forces creation even if
+            # the device has a previous label. -m sets the mount point
+            # explicitly to override ZFS auto-mount default.
+            POOL_NAME="bench_zfs_${VD}"
+            sudo zpool destroy "$POOL_NAME" 2>/dev/null || true
+            sudo zpool create -f -m "$MNT" "$POOL_NAME" "$DEV"
+            ;;
         *)        echo "ERROR: unknown FS $FS" >&2; exit 1 ;;
     esac
 
     if ! is_readonly_fs "$FS"; then
-        sudo mount -t $FS $DEV $MNT
+        # ZFS auto-mounts via zpool create -m ; skip explicit mount.
+        if [ "$FS" != "zfs" ]; then
+            sudo mount -t $FS $DEV $MNT
+        fi
         for letter in A B C; do
             sudo mkdir -p $MNT/dir-$letter
             for n in 1 2 3; do
@@ -543,10 +560,22 @@ attack)
         # forces the VFS to reread SB, root inode, target inode, and data
         # blocks via submit_bio, all of which are caught by RadFI.
         sudo sync
-        sudo umount $MNT 2>/tmp/umount-err-$FS.log
+        # Phase C-fix: ZFS uses zpool export instead of umount.
+        if [ "$FS" = "zfs" ]; then
+            POOL_NAME="bench_zfs_${VD}"
+            sudo zpool export "$POOL_NAME" 2>/tmp/umount-err-$FS.log || true
+        else
+            sudo umount $MNT 2>/tmp/umount-err-$FS.log
+        fi
         UMOUNT_RC=$?
         echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
-        sudo mount -t $FS $DEV $MNT 2>/tmp/mount-err-$FS.log
+        # Phase C-fix: ZFS uses zpool import instead of mount.
+        if [ "$FS" = "zfs" ]; then
+            POOL_NAME="bench_zfs_${VD}"
+            sudo zpool import -d /dev -f "$POOL_NAME" 2>/tmp/mount-err-$FS.log
+        else
+            sudo mount -t $FS $DEV $MNT 2>/tmp/mount-err-$FS.log
+        fi
         MOUNT_RC=$?
         if [ $MOUNT_RC -ne 0 ]; then
             CAT_RC=255
@@ -703,9 +732,17 @@ verify)
     DIFFS=${DIFFS:-0}
 
     if ! is_readonly_fs "$FS"; then
-        sudo umount $MNT 2>/dev/null
-        sudo mount -t $FS $DEV $MNT 2>/dev/null
-        REMOUNT_OK=$?
+        # Phase C-fix: ZFS uses zpool export/import.
+        if [ "$FS" = "zfs" ]; then
+            POOL_NAME="bench_zfs_${VD}"
+            sudo zpool export "$POOL_NAME" 2>/dev/null
+            sudo zpool import -d /dev -f "$POOL_NAME" 2>/dev/null
+            REMOUNT_OK=$?
+        else
+            sudo umount $MNT 2>/dev/null
+            sudo mount -t $FS $DEV $MNT 2>/dev/null
+            REMOUNT_OK=$?
+        fi
     else
         sudo umount $MNT 2>/dev/null
         sudo mount -t $FS -o ro $DEV $MNT 2>/dev/null
