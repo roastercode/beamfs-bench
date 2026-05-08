@@ -81,6 +81,9 @@ pub fn worker_cmd(injector: &str, action_args: &str) -> String {
         "CODEWORD_SIZE_BYTES",       // u32, RS codeword size for FEC-aware
         "CODEWORD_ALIGN_BYTES",      // u32, RS codeword alignment
         "RESEED",                    // u64, reseed PRNG (write-only command)
+        // Phase A.3 -- workload mode declaration:
+        "WORKLOAD_MODE",             // string: "static" (default) or "write-active"
+        "WORKLOAD_DURATION",         // u32, seconds for active workload (default 15)
     ] {
         if let Ok(v) = std::env::var(var) {
             if !v.is_empty() {

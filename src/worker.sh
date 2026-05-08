@@ -378,6 +378,41 @@ attack)
     echo 1        | sudo tee ${INJECTOR_DBG}/hook_blk     >/dev/null
     echo 1        | sudo tee ${INJECTOR_DBG}/enabled      >/dev/null
 
+    # Phase A.3 -- workload mode dispatch.
+    # Default "static" matches legacy behavior (FS quiescent during attack).
+    # "write-active" launches a background fio randwrite on TARGET_FILE for
+    # WORKLOAD_DURATION seconds, exercising the write path under live
+    # injection. CoW filesystems will allocate fresh extents on each write,
+    # exposing the relocation mechanism to the FRAG_RELOCATED measurement.
+    WORKLOAD_MODE_VAL=${WORKLOAD_MODE:-static}
+    WORKLOAD_DURATION_VAL=${WORKLOAD_DURATION:-15}
+    WORKLOAD_PID=""
+    if [ "$WORKLOAD_MODE_VAL" = "write-active" ] && [ "$FS" != "squashfs" ]; then
+        # fio target only the attack file ; --time_based + --runtime bound
+        # the write loop, so the bg job self-terminates after the window.
+        # --size= bounds the file growth ; we keep it at PRE_SIZE to overwrite
+        # in place (or CoW-relocate, depending on FS) without growing the file.
+        TARGET_FULLPATH="$MNT/$TARGET_REL"
+        if command -v fio >/dev/null 2>&1 && [ -e "$TARGET_FULLPATH" ]; then
+            sudo fio --name=workload-active \
+                     --filename="$TARGET_FULLPATH" \
+                     --rw=randwrite \
+                     --bs=4k \
+                     --size=$(stat -c '%s' "$TARGET_FULLPATH" 2>/dev/null || echo 262144) \
+                     --time_based=1 \
+                     --runtime=${WORKLOAD_DURATION_VAL} \
+                     --ioengine=psync \
+                     --direct=0 \
+                     --output-format=terse \
+                     >/tmp/fio-workload-$FS.log 2>&1 &
+            WORKLOAD_PID=$!
+            # Brief wait so fio actually starts emitting bios before the
+            # cat-driven attack begins (otherwise the attack window may
+            # complete before fio writes anything).
+            sleep 0.5
+        fi
+    fi
+
     # bench-2 redesign (substep 10) : pristine-read under RadFI live attack.
     # Previous implementation overwrote dir-B/file-B2.bin with random bytes
     # before the cat, which guaranteed a hash mismatch by construction and
@@ -443,6 +478,18 @@ attack)
 
     echo 0 | sudo tee ${INJECTOR_DBG}/enabled  >/dev/null
     echo 0 | sudo tee ${INJECTOR_DBG}/hook_blk >/dev/null
+
+    # Phase A.3 -- terminate the active workload if one was launched.
+    # fio is time_based=1 so it self-terminates at WORKLOAD_DURATION ; the
+    # explicit kill is defense-in-depth in case fio overshoots or hung.
+    if [ -n "$WORKLOAD_PID" ]; then
+        sudo kill -TERM $WORKLOAD_PID 2>/dev/null || true
+        # Brief grace period for clean shutdown then force.
+        sleep 0.2
+        sudo kill -KILL $WORKLOAD_PID 2>/dev/null || true
+        wait $WORKLOAD_PID 2>/dev/null || true
+        sudo sync
+    fi
 
     # Phase A.2 : capture post-attack physical extent map for CoW detection.
     # If mount_failed already set, the FS is not currently mounted; report
@@ -525,7 +572,7 @@ print(f'{bits} {frac_bp} {len(blocks)}')
 
     sudo rm -f /tmp/pre-cat-$FS.bin /tmp/post-cat-$FS.bin /tmp/cat-err-$FS.log 2>/dev/null || true
 
-    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|FRAG_PRE_PHYS=$FRAG_PRE_PHYS|FRAG_POST_PHYS=$FRAG_POST_PHYS|FRAG_RELOCATED=$FRAG_RELOCATED"
+    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|FRAG_PRE_PHYS=$FRAG_PRE_PHYS|FRAG_POST_PHYS=$FRAG_POST_PHYS|FRAG_RELOCATED=$FRAG_RELOCATED|WORKLOAD_MODE=$WORKLOAD_MODE_VAL|WORKLOAD_DURATION=$WORKLOAD_DURATION_VAL"
     ;;
 
 verify)

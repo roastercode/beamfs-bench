@@ -783,6 +783,15 @@ pub fn extract_frag_relocated(records: &str, fs_name: &str, prob: u32) -> Option
     extract_attack_field(records, fs_name, prob, "FRAG_RELOCATED")
 }
 
+/// Phase A.3: extract the WORKLOAD_MODE field from the ATTACK record.
+/// Returns the workload mode under which the attack was performed:
+///   "static"        : default, FS quiescent during attack
+///   "write-active"  : continuous fio randwrite on TARGET_FILE during attack
+/// Returns None if the field is absent (legacy records pre-A.3).
+pub fn extract_workload_mode(records: &str, fs_name: &str, prob: u32) -> Option<String> {
+    extract_attack_field(records, fs_name, prob, "WORKLOAD_MODE")
+}
+
 fn extract_flip_delta(records: &str, fs_name: &str, prob: u32) -> Option<String> {
     extract_attack_field(records, fs_name, prob, "FLIP_DELTA")
 }
@@ -1063,5 +1072,37 @@ mod tests {
             "VERIFY|fs=ext4|prob=1000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
         );
         assert_eq!(extract_frag_relocated(&r, "ext4", 1000), None);
+    }
+
+    // ============================================================
+    // Phase A.3 -- WORKLOAD_MODE tests
+    // ============================================================
+
+    #[test]
+    fn workload_mode_static() {
+        let r = rec(
+            "ATTACK|FS=ext4|PROB=100000|CALL_DELTA=10|FLIP_DELTA=5|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=def|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0|BITS_DIFF=2|FRAC_CORRUPT=8|HAMM_BLOCKS=1|FILE_SIZE=262144|FRAG_PRE_PHYS=1081344|FRAG_POST_PHYS=1081344|FRAG_RELOCATED=0|WORKLOAD_MODE=static|WORKLOAD_DURATION=15",
+            "VERIFY|fs=ext4|prob=100000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
+        );
+        assert_eq!(extract_workload_mode(&r, "ext4", 100_000).as_deref(), Some("static"));
+    }
+
+    #[test]
+    fn workload_mode_write_active() {
+        let r = rec(
+            "ATTACK|FS=btrfs|PROB=100000|CALL_DELTA=200|FLIP_DELTA=12|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0|BITS_DIFF=0|FRAC_CORRUPT=0|HAMM_BLOCKS=0|FILE_SIZE=262144|FRAG_PRE_PHYS=2097152|FRAG_POST_PHYS=3145728|FRAG_RELOCATED=1|WORKLOAD_MODE=write-active|WORKLOAD_DURATION=15",
+            "VERIFY|fs=btrfs|prob=100000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
+        );
+        assert_eq!(extract_workload_mode(&r, "btrfs", 100_000).as_deref(), Some("write-active"));
+    }
+
+    #[test]
+    fn workload_mode_missing_returns_none() {
+        // Old-format record (pre-A.3) without WORKLOAD_MODE -> None
+        let r = rec(
+            "ATTACK|FS=ext4|PROB=1000|CALL_DELTA=2|FLIP_DELTA=0|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
+            "VERIFY|fs=ext4|prob=1000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
+        );
+        assert_eq!(extract_workload_mode(&r, "ext4", 1000), None);
     }
 }
