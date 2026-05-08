@@ -161,9 +161,61 @@ ensure_modules() {
 # filefrag, to detect CoW relocation between pre-attack and post-attack
 # states. Output format: comma-separated u64 list, or 'na' if filefrag is
 # unsupported on the FS, or 'filefrag_failed' on tool error.
+# Phase B.1: generalized read-only FS detection helper. Used by
+# filefrag_phys() and the setup/attack/verify branches to handle
+# squashfs, erofs (and any future RO FS) uniformly.
+is_readonly_fs() {
+    case "$1" in
+        squashfs|erofs) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Phase B.1: probe whether mkfs.<fs> tool AND the kernel module
+# are available. Returns 0 if usable, 1 if either is missing.
+# Used by setup branches to gracefully skip unsupported FS.
+fs_is_supported() {
+    local fs="$1"
+    local mkfs_tool=""
+    case "$fs" in
+        ext2)     mkfs_tool="mkfs.ext2" ;;
+        ext3)     mkfs_tool="mkfs.ext3" ;;
+        ext4)     mkfs_tool="mkfs.ext4" ;;
+        btrfs)    mkfs_tool="mkfs.btrfs" ;;
+        xfs)      mkfs_tool="mkfs.xfs" ;;
+        f2fs)     mkfs_tool="mkfs.f2fs" ;;
+        jfs)      mkfs_tool="mkfs.jfs" ;;
+        bcachefs) mkfs_tool="mkfs.bcachefs" ;;
+        ntfs3)    mkfs_tool="mkfs.ntfs" ;;
+        exfat)    mkfs_tool="mkfs.exfat" ;;
+        vfat)     mkfs_tool="mkfs.vfat" ;;
+        hfsplus)  mkfs_tool="mkfs.hfsplus" ;;
+        squashfs) mkfs_tool="mksquashfs" ;;
+        erofs)    mkfs_tool="mkfs.erofs" ;;
+        beamfs)   mkfs_tool="mkfs.beamfs" ;;
+        *)        return 1 ;;
+    esac
+    if ! command -v "$mkfs_tool" >/dev/null 2>&1; then
+        return 1
+    fi
+    # Module load test (non-destructive). vfat <-> fat module aliasing
+    # handled implicitly by modprobe -n.
+    case "$fs" in
+        ntfs3)    sudo modprobe -n -v ntfs3    >/dev/null 2>&1 || return 1 ;;
+        exfat)    sudo modprobe -n -v exfat    >/dev/null 2>&1 || return 1 ;;
+        xfs)      sudo modprobe -n -v xfs      >/dev/null 2>&1 || return 1 ;;
+        f2fs)     sudo modprobe -n -v f2fs     >/dev/null 2>&1 || return 1 ;;
+        jfs)      sudo modprobe -n -v jfs      >/dev/null 2>&1 || return 1 ;;
+        bcachefs) sudo modprobe -n -v bcachefs >/dev/null 2>&1 || return 1 ;;
+        hfsplus)  sudo modprobe -n -v hfsplus  >/dev/null 2>&1 || return 1 ;;
+        erofs)    sudo modprobe -n -v erofs    >/dev/null 2>&1 || return 1 ;;
+    esac
+    return 0
+}
+
 filefrag_phys() {
     local fs="$1" tgt="$2"
-    if [ "$fs" = "beamfs" ] || [ "$fs" = "squashfs" ]; then
+    if [ "$fs" = "beamfs" ] || is_readonly_fs "$fs"; then
         echo "na"
         return 0
     fi
@@ -195,20 +247,39 @@ setup)
     MNT="/mnt/test-$FS"
 
     ensure_modules "$FS"
+
+    # Phase B.1: gracefully skip unsupported FS. The worker emits a
+    # SKIP record that synthesis.rs treats as a no-op cell rather
+    # than a hard error.
+    if ! fs_is_supported "$FS"; then
+        echo "FS=$FS|VD=$VD|MNT=$MNT|TARGET_FILE=na|TARGET_BLOCK=0|SETUP=SKIP|reason=tool_or_module_missing"
+        exit 0
+    fi
+
     sudo umount $MNT 2>/dev/null || true
     sudo rm -rf $MNT
     sudo mkdir -p $MNT
 
     case "$FS" in
-        ext4)     sudo mkfs.ext4 -F -q $DEV ;;
+        ext2)     sudo mkfs.ext2 -F -q $DEV ;;
         ext3)     sudo mkfs.ext3 -F -q $DEV ;;
+        ext4)     sudo mkfs.ext4 -F -q $DEV ;;
         btrfs)    sudo mkfs.btrfs -f $DEV >/dev/null ;;
-        squashfs) ;;
+        xfs)      sudo mkfs.xfs  -f -q $DEV >/dev/null ;;
+        f2fs)     sudo mkfs.f2fs -f -q $DEV >/dev/null ;;
+        jfs)      sudo mkfs.jfs  -q $DEV >/dev/null ;;
+        bcachefs) sudo mkfs.bcachefs -f $DEV >/dev/null ;;
+        ntfs3)    sudo mkfs.ntfs -F -Q $DEV >/dev/null ;;
+        exfat)    sudo mkfs.exfat $DEV >/dev/null ;;
+        vfat)     sudo mkfs.vfat -F 32 $DEV >/dev/null ;;
+        hfsplus)  sudo mkfs.hfsplus $DEV >/dev/null ;;
+        squashfs|erofs)
+            ;;  # read-only FS handled below via offline image build
         beamfs)   sudo mkfs.beamfs -s inline -O per_inode_rs $DEV >/dev/null ;;
         *)        echo "ERROR: unknown FS $FS" >&2; exit 1 ;;
     esac
 
-    if [ "$FS" != "squashfs" ]; then
+    if ! is_readonly_fs "$FS"; then
         sudo mount -t $FS $DEV $MNT
         for letter in A B C; do
             sudo mkdir -p $MNT/dir-$letter
@@ -235,7 +306,10 @@ setup)
         echo "FS=$FS|VD=$VD|MNT=$MNT|TARGET_FILE=$TARGET_FILE|TARGET_BLOCK=$TARGET_BLOCK"
         sudo find $MNT -type f -exec sha256sum {} \; | sort > /tmp/pre-attack-$FS.txt
     else
-        TMPSRC=/tmp/squashfs-src-$$
+        # Phase B.1: read-only FS branch covers squashfs and erofs uniformly.
+        # Build offline image with the standard 3-dirs x 3-files layout,
+        # write it to the target device, mount RO.
+        TMPSRC=/tmp/${FS}-src-$$
         sudo rm -rf $TMPSRC
         sudo mkdir -p $TMPSRC
         for letter in A B C; do
@@ -245,13 +319,25 @@ setup)
             done
             sudo bash -c "cd $TMPSRC/dir-$letter && sha256sum file-${letter}1.bin file-${letter}2.bin file-${letter}3.bin > HASHES.sha256"
         done
-        sudo mksquashfs $TMPSRC /tmp/sqimg.sqfs -noappend -comp xz >/dev/null 2>&1
-        sudo dd if=/tmp/sqimg.sqfs of=$DEV bs=1M conv=notrunc status=none
-        sudo rm -rf $TMPSRC /tmp/sqimg.sqfs
-        sudo mount -t squashfs -o ro $DEV $MNT
+        case "$FS" in
+            squashfs)
+                sudo mksquashfs $TMPSRC /tmp/roimg-$$.img -noappend -comp xz >/dev/null 2>&1
+                ;;
+            erofs)
+                sudo mkfs.erofs /tmp/roimg-$$.img $TMPSRC >/dev/null 2>&1
+                ;;
+            *)
+                echo "ERROR: unsupported read-only FS $FS in setup" >&2
+                sudo rm -rf $TMPSRC
+                exit 1
+                ;;
+        esac
+        sudo dd if=/tmp/roimg-$$.img of=$DEV bs=1M conv=notrunc status=none
+        sudo rm -rf $TMPSRC /tmp/roimg-$$.img
+        sudo mount -t $FS -o ro $DEV $MNT
 
         TARGET_FILE=$MNT/dir-B/file-B2.bin
-        echo "FS=squashfs|VD=$VD|MNT=$MNT|TARGET_FILE=$TARGET_FILE|TARGET_BLOCK=0"
+        echo "FS=$FS|VD=$VD|MNT=$MNT|TARGET_FILE=$TARGET_FILE|TARGET_BLOCK=0"
         sudo find $MNT -type f -exec sha256sum {} \; | sort > /tmp/pre-attack-$FS.txt
     fi
     ;;
@@ -387,7 +473,7 @@ attack)
     WORKLOAD_MODE_VAL=${WORKLOAD_MODE:-static}
     WORKLOAD_DURATION_VAL=${WORKLOAD_DURATION:-15}
     WORKLOAD_PID=""
-    if [ "$WORKLOAD_MODE_VAL" = "write-active" ] && [ "$FS" != "squashfs" ]; then
+    if [ "$WORKLOAD_MODE_VAL" = "write-active" ] && ! is_readonly_fs "$FS"; then
         # fio target only the attack file ; --time_based + --runtime bound
         # the write loop, so the bg job self-terminates after the window.
         # --size= bounds the file growth ; we keep it at PRE_SIZE to overwrite
@@ -441,10 +527,10 @@ attack)
     PRE_SIZE=$(stat -c '%s' /tmp/pre-cat-$FS.bin 2>/dev/null || echo 0)
     echo 1 | sudo tee ${INJECTOR_DBG}/enabled >/dev/null
 
-    if [ "$FS" = "squashfs" ]; then
+    if is_readonly_fs "$FS"; then
         sudo umount $MNT 2>/dev/null
         echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
-        sudo mount -t squashfs -o ro $DEV $MNT 2>/dev/null || true
+        sudo mount -t $FS -o ro $DEV $MNT 2>/dev/null || true
         sudo cat "$TARGET_FILE" > /tmp/post-cat-$FS.bin 2>/tmp/cat-err-$FS.log
         CAT_RC=$?
         sudo cat $MNT/dir-A/file-A1.bin > /dev/null 2>&1
@@ -616,13 +702,13 @@ verify)
     DIFFS=$(diff $PRE_FILE $POST_FILE 2>/dev/null | grep -c '^[<>]')
     DIFFS=${DIFFS:-0}
 
-    if [ "$FS" != "squashfs" ]; then
+    if ! is_readonly_fs "$FS"; then
         sudo umount $MNT 2>/dev/null
         sudo mount -t $FS $DEV $MNT 2>/dev/null
         REMOUNT_OK=$?
     else
         sudo umount $MNT 2>/dev/null
-        sudo mount -t squashfs -o ro $DEV $MNT 2>/dev/null
+        sudo mount -t $FS -o ro $DEV $MNT 2>/dev/null
         REMOUNT_OK=$?
     fi
 
