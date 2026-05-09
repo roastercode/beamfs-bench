@@ -312,19 +312,37 @@ setup)
         sudo sync
 
         TARGET_FILE=$MNT/dir-B/file-B2.bin
+        # S3.1: compute TARGET_BLOCK plus the full physical-block range of
+        # the target file. The single-extent TARGET_BLOCK is kept for
+        # backward compatibility (legacy structure-aware path).
+        # The new TARGET_BLOCK_RANGE_{START,END} pair, in sectors (512 B),
+        # is consumed by emufi v0.3.4+ to focus injection on the file's
+        # extent footprint instead of the whole device. Required for
+        # file-level RS-FEC functional correctness measurement (Theorem IV.1).
+        TARGET_BLOCK=0
+        TARGET_BLOCK_RANGE_START=0
+        TARGET_BLOCK_RANGE_END=0
         if command -v filefrag >/dev/null 2>&1; then
             # v0.8.2 (publication-grade) : -v required, sans lui filefrag
             # n'imprime PAS la ligne "0: 0.. 63: 1081344.." que awk match.
             # Sans -v on extrait '' qui devient TARGET_BLOCK=0, et le filtre
             # blk_filter_match (target_struct_block_no=0) rejette 99% des bios
             # vers skipped_filter, faussant la mesure de dose-réponse.
-            TARGET_BLOCK=$(sudo filefrag -v -b4096 $TARGET_FILE 2>/dev/null | awk '/^ +0:/ {gsub(/[.:]/, "", $4); print $4; exit}')
-        else
-            TARGET_BLOCK=0
+            FRAG_OUT=$(sudo filefrag -v -b4096 "$TARGET_FILE" 2>/dev/null)
+            TARGET_BLOCK=$(echo "$FRAG_OUT" | awk '/^ +0:/ {gsub(/[.:]/, "", $4); print $4; exit}')
+            # S3.1: extract ALL physical block numbers, find min and max,
+            # convert to sectors (×8), apply exclusive upper bound (+1 then ×8).
+            EXTENTS=$(echo "$FRAG_OUT" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $4); print $4}')
+            if [ -n "$EXTENTS" ]; then
+                RMIN=$(echo "$EXTENTS" | sort -n | head -1)
+                RMAX=$(echo "$EXTENTS" | sort -n | tail -1)
+                TARGET_BLOCK_RANGE_START=$((RMIN * 8))
+                TARGET_BLOCK_RANGE_END=$(((RMAX + 1) * 8))
+            fi
         fi
         [ -z "$TARGET_BLOCK" ] && TARGET_BLOCK=0
 
-        echo "FS=$FS|VD=$VD|MNT=$MNT|TARGET_FILE=$TARGET_FILE|TARGET_BLOCK=$TARGET_BLOCK"
+        echo "FS=$FS|VD=$VD|MNT=$MNT|TARGET_FILE=$TARGET_FILE|TARGET_BLOCK=$TARGET_BLOCK|TARGET_BLOCK_RANGE_START=$TARGET_BLOCK_RANGE_START|TARGET_BLOCK_RANGE_END=$TARGET_BLOCK_RANGE_END"
         sudo find $MNT -type f -exec sha256sum {} \; | sort > /tmp/pre-attack-$FS.txt
     else
         # Phase B.1: read-only FS branch covers squashfs and erofs uniformly.
@@ -382,6 +400,16 @@ attack)
 
     echo $DEV_NUM | sudo tee ${INJECTOR_DBG}/target_dev   >/dev/null
     echo 0        | sudo tee ${INJECTOR_DBG}/target_block >/dev/null
+    # S3.1: file-precise targeting via target_block_range (emufi v0.3.4+).
+    # Both env vars must be set (>0 and end>start) to activate. Falls back
+    # silently to broadcast (target_block=0) on older modules without these
+    # debugfs entries.
+    if [ -n "${TARGET_BLOCK_RANGE_START:-}" ] && [ -n "${TARGET_BLOCK_RANGE_END:-}" ] \
+       && [ "${TARGET_BLOCK_RANGE_END}" -gt "${TARGET_BLOCK_RANGE_START:-0}" ] \
+       && sudo test -e ${INJECTOR_DBG}/target_block_range_start; then
+        echo ${TARGET_BLOCK_RANGE_START} | sudo tee ${INJECTOR_DBG}/target_block_range_start >/dev/null
+        echo ${TARGET_BLOCK_RANGE_END}   | sudo tee ${INJECTOR_DBG}/target_block_range_end   >/dev/null
+    fi
     echo $PROB    | sudo tee ${INJECTOR_DBG}/probability  >/dev/null
     # v0.7.6 : push inject_on_read=1 unconditionally. emufi v0.3.0
     # defaulted to false (vs radfi true), making read-driven attacks

@@ -86,6 +86,9 @@ pub fn worker_cmd(injector: &str, action_args: &str) -> String {
         // Phase A.3 -- workload mode declaration:
         "WORKLOAD_MODE",             // string: "static" (default) or "write-active"
         "WORKLOAD_DURATION",         // u32, seconds for active workload (default 15)
+        // S3.1 -- file-precise targeting via emufi v0.3.4+ target_block_range:
+        "TARGET_BLOCK_RANGE_START",  // u64, sector unit (= fs_block × 8)
+        "TARGET_BLOCK_RANGE_END",    // u64, sector unit, exclusive bound
     ] {
         if let Ok(v) = std::env::var(var) {
             if !v.is_empty() {
