@@ -220,7 +220,11 @@ filefrag_phys() {
     # Phase C-fix: skip filefrag for zfs (ZFS pool block allocation
     # doesn't expose physical extents via filefrag in a way that maps
     # back to a single underlying device).
-    if [ "$fs" = "beamfs" ] || [ "$fs" = "zfs" ] || is_readonly_fs "$fs"; then
+    # S2.4: beamfs supports FIEMAP since v0.1.1 (commit c98e851 in
+    # roastercode/beamfs-devel devel). zfs and read-only FS are still
+    # skipped (zfs doesn't map filefrag back to a single underlying
+    # device; squashfs/erofs are offline images without dynamic mapping).
+    if [ "$fs" = "zfs" ] || is_readonly_fs "$fs"; then
         echo "na"
         return 0
     fi
