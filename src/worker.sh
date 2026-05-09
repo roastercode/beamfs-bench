@@ -308,7 +308,7 @@ setup)
         sudo sync
 
         TARGET_FILE=$MNT/dir-B/file-B2.bin
-        if command -v filefrag >/dev/null 2>&1 && [ "$FS" != "beamfs" ]; then
+        if command -v filefrag >/dev/null 2>&1; then
             # v0.8.2 (publication-grade) : -v required, sans lui filefrag
             # n'imprime PAS la ligne "0: 0.. 63: 1081344.." que awk match.
             # Sans -v on extrait '' qui devient TARGET_BLOCK=0, et le filtre
