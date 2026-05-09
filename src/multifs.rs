@@ -76,6 +76,31 @@ pub fn worker_sh() -> &'static str {
 /// Default probabilities (matches Tir-multifs.sh line 54).
 pub const DEFAULT_PROBS: &[u32] = &[1000, 100000, 1000000];
 
+/// v3 campaign : read BEAMFS_BENCH_PROBS env var and parse as comma-separated
+/// list of u32 ppm values. Fallback to DEFAULT_PROBS if env var is unset or
+/// invalid. Used by MultifsConfig::default() and run_with_mapping() callers.
+/// Format : "100,1000,10000,100000,500000,1000000" (no spaces).
+pub fn resolve_probs() -> Vec<u32> {
+    match std::env::var("BEAMFS_BENCH_PROBS") {
+        Ok(env_val) if !env_val.trim().is_empty() => {
+            let parsed: Result<Vec<u32>, _> = env_val
+                .split(',')
+                .map(|s| s.trim().parse::<u32>())
+                .collect();
+            match parsed {
+                Ok(v) if !v.is_empty() => v,
+                _ => {
+                    eprintln!(
+                        "[multifs] WARN : BEAMFS_BENCH_PROBS=\"{env_val}\" failed to parse ; falling back to DEFAULT_PROBS"
+                    );
+                    DEFAULT_PROBS.to_vec()
+                }
+            }
+        }
+        _ => DEFAULT_PROBS.to_vec(),
+    }
+}
+
 pub const SSH_USER: &str = "hpcadmin";
 pub const MULTIFS_TARGET_IP: &str = "192.168.56.11";  // compute01 holds the 5 USB sticks (isolation per recadrage R-isolation)
 pub const REMOTE_WORKER_PATH: &str = "/tmp/beamfs-bench-worker.sh";
@@ -126,7 +151,7 @@ impl Default for MultifsConfig {
             // from the actual healthy USB count. Default is empty ; callers
             // (cmd_full, Cli::Multifs) populate it after Phase 0.0a probing.
             fs_list: Vec::new(),
-            probs: DEFAULT_PROBS.to_vec(),
+            probs: resolve_probs(),
             injector: "radfi".to_string(),
             run_dir_prefix: "beamfs-bench-multifs".to_string(),
             ssh_user: SSH_USER.to_string(),

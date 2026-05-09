@@ -56,6 +56,10 @@ set -u
 # differs (radfi=flip_count, emufi=flip_count_total).
 # Reference: EMUFI v1 paper Zenodo DOI 10.5281/zenodo.20041762
 INJECTOR="${INJECTOR:-radfi}"
+# v3 campaign : beamfs mkfs scheme parameterization
+# scheme=inline (default, scheme=2) reproduces N=30 baseline behaviour
+# scheme=inode-universal (scheme=5) enables paper v2 §VI.B B1/B2 latency benchmarks
+BEAMFS_SCHEME="${BEAMFS_SCHEME:-inline}"
 case "${INJECTOR}" in
     radfi) INJECTOR_DBG="/sys/kernel/debug/radfi" ; INJECTOR_KO="radfi.ko" ; FLIP_COUNT_KEY="flip_count" ;;
     emufi) INJECTOR_DBG="/sys/kernel/debug/emufi" ; INJECTOR_KO="emufi.ko" ; FLIP_COUNT_KEY="flip_count_total" ;;
@@ -284,7 +288,7 @@ setup)
         hfsplus)  sudo mkfs.hfsplus $DEV >/dev/null ;;
         squashfs|erofs)
             ;;  # read-only FS handled below via offline image build
-        beamfs)   sudo mkfs.beamfs -s inline -O per_inode_rs $DEV >/dev/null ;;
+        beamfs)   sudo mkfs.beamfs -s "$BEAMFS_SCHEME" -O per_inode_rs $DEV >/dev/null ;;
         zfs)
             # ZFS uses zpool, not mkfs. The pool name embeds VD to ensure
             # uniqueness across compute nodes. -f forces creation even if
@@ -1063,7 +1067,7 @@ bootstrap_data)
     # root inode and all inodes are RS-protected. Without this flag,
     # inode 1 CRC32 mismatch under attack at high probability is
     # uncorrectable and the mount fails (compute03 R19 v0.7.4).
-    if ! sudo mkfs.beamfs -s inline -O per_inode_rs /dev/vdb >/tmp/mkfs-bootstrap.log 2>&1; then
+    if ! sudo mkfs.beamfs -s "$BEAMFS_SCHEME" -O per_inode_rs /dev/vdb >/tmp/mkfs-bootstrap.log 2>&1; then
         TAIL=$(tail -3 /tmp/mkfs-bootstrap.log | tr '\n' ' ')
         echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=ERROR|reason=mkfs failed|details=$TAIL"
         exit 1
@@ -1094,7 +1098,7 @@ bitrot_setup)
             echo "BITROT|HOST=$(hostname)|SETUP=ERROR|reason=/dev/vdb missing"
             exit 1
         fi
-        if ! sudo mkfs.beamfs -s inline -O per_inode_rs /dev/vdb >/tmp/bitrot-mkfs.log 2>&1; then
+        if ! sudo mkfs.beamfs -s "$BEAMFS_SCHEME" -O per_inode_rs /dev/vdb >/tmp/bitrot-mkfs.log 2>&1; then
             TAIL=$(tail -3 /tmp/bitrot-mkfs.log | tr '\n' ' ')
             echo "BITROT|HOST=$(hostname)|SETUP=ERROR|reason=auto_mkfs_failed|details=$TAIL"
             exit 1
@@ -1264,7 +1268,7 @@ metadata_setup)
         squashfs) sudo bash -c "mkdir -p /tmp/sq-$TS_TAG && head -c 1M /dev/urandom > /tmp/sq-$TS_TAG/data.bin && mksquashfs /tmp/sq-$TS_TAG $DEV -noappend -quiet" >/dev/null 2>&1 && rm -rf /tmp/sq-$TS_TAG ;;
         beamfs)
             ensure_modules
-            MKFS_LOG=$(sudo mkfs.beamfs -s inline -O per_inode_rs "$DEV" 2>&1)
+            MKFS_LOG=$(sudo mkfs.beamfs -s "$BEAMFS_SCHEME" -O per_inode_rs "$DEV" 2>&1)
             MKFS_RC=$?
             if [ $MKFS_RC -ne 0 ]; then
                 echo "METADATA|HOST=$(hostname)|SETUP=ERROR|reason=mkfs_failed|fs=beamfs|dev=$DEV|mkfs_rc=$MKFS_RC|mkfs_log=$MKFS_LOG"
@@ -1443,7 +1447,7 @@ crash_setup)
             ;;
         beamfs)
             ensure_modules
-            MKFS_LOG=$(sudo mkfs.beamfs -s inline -O per_inode_rs "$DEV" 2>&1)
+            MKFS_LOG=$(sudo mkfs.beamfs -s "$BEAMFS_SCHEME" -O per_inode_rs "$DEV" 2>&1)
             MKFS_RC=$?
             if [ $MKFS_RC -ne 0 ]; then
                 echo "CRASH|HOST=$(hostname)|SETUP=ERROR|reason=mkfs_failed|fs=beamfs|dev=$DEV|mkfs_rc=$MKFS_RC|mkfs_log=$MKFS_LOG"

@@ -190,10 +190,35 @@ pub fn build_fs_mapping(verdicts: &[SlotVerdict]) -> Vec<(String, String)> {
         .collect();
     healthy_slots.sort();
 
-    let n = std::cmp::min(healthy_slots.len(), FS_PRIORITY.len());
+    // v3 campaign : env var BEAMFS_BENCH_FS_LIST overrides FS_PRIORITY
+    // for batch-mode comparative testing across multiple FS sets without
+    // rebuild. Fallback to FS_PRIORITY hardcoded list.
+    // Format : "fs1,fs2,fs3,..." (comma-separated, no spaces around commas).
+    let fs_priority_owned: Vec<String>;
+    let fs_priority_slice: &[&str] = match std::env::var("BEAMFS_BENCH_FS_LIST") {
+        Ok(env_val) if !env_val.trim().is_empty() => {
+            fs_priority_owned = env_val
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            // Leak to &'static is unsafe ; instead use Vec<&str> built from owned
+            // Use a temporary Vec that lives as long as this function scope.
+            // We build the output directly below to avoid lifetime issues.
+            let n = std::cmp::min(healthy_slots.len(), fs_priority_owned.len());
+            let mut out = Vec::with_capacity(n);
+            for i in 0..n {
+                out.push((fs_priority_owned[i].clone(), healthy_slots[i].to_string()));
+            }
+            return out;
+        }
+        _ => FS_PRIORITY,
+    };
+
+    let n = std::cmp::min(healthy_slots.len(), fs_priority_slice.len());
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        out.push((FS_PRIORITY[i].to_string(), healthy_slots[i].to_string()));
+        out.push((fs_priority_slice[i].to_string(), healthy_slots[i].to_string()));
     }
     out
 }
