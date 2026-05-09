@@ -69,6 +69,8 @@ pub fn worker_cmd(injector: &str, action_args: &str) -> String {
         "TARGET_STRUCT_BLOCK_NO",
         "SEFI_PROBABILITY",
         "SEFI_WINDOW_MS",
+        // Phase A.5: SB-targeted I/O burst loop count for RS saturation
+        "SB_READ_LOOPS",
         // v0.8.0 additions, expose remaining emufi 0.3.2 surface:
         "TARGET_STRUCT_OFFSET",      // u32, byte offset within struct block
         "TARGET_INODE",              // u64, inode-aware FS targeting

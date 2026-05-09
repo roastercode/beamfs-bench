@@ -430,3 +430,27 @@ fn walk_up_for_repo(start: &Path) -> Option<PathBuf> {
         if !cur.pop() { return None; }
     }
 }
+
+#[cfg(test)]
+mod tests_phase_a5 {
+    use super::*;
+
+    /// Phase A.5: verify worker.sh embeds the SB_READ_LOOPS guard for
+    /// SB-targeted I/O burst (RS saturation campaign).
+    #[test]
+    fn worker_sh_contains_sb_read_loops_guard() {
+        let w = worker_sh();
+        assert!(
+            w.contains("SB_READ_LOOPS"),
+            "worker.sh must reference SB_READ_LOOPS env var"
+        );
+        assert!(
+            w.contains("iflag=direct"),
+            "worker.sh must use iflag=direct for cache bypass on SB reads"
+        );
+        assert!(
+            w.contains("A.5 SB burst"),
+            "worker.sh must include the A.5 INFO marker for run logs"
+        );
+    }
+}

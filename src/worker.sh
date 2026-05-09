@@ -481,6 +481,22 @@ attack)
     echo 1        | sudo tee ${INJECTOR_DBG}/hook_blk     >/dev/null
     echo 1        | sudo tee ${INJECTOR_DBG}/enabled      >/dev/null
 
+    # Phase A.5 : SB-targeted I/O burst for RS saturation campaign.
+    # When TARGET_STRUCT=1 (SUPERBLOCK) and SB_READ_LOOPS is set,
+    # generate N raw direct-I/O reads on block 0 during the
+    # attack-armed window. Each read produces one bio matching the
+    # kprobe filter, applying one flip. Without this, a single mount
+    # + cat generates only 1-3 SB reads, insufficient to saturate
+    # the RS journal (need T+1=5 flips per 40-byte codeword).
+    # With N=500 + probability=1000000 ppm, density ~13 flips/sub-block.
+    # Empirical validation: bloc R7 -- 50 reads -> 50 flips (100% yield).
+    if [ "${TARGET_STRUCT:-0}" = "1" ] && [ -n "${SB_READ_LOOPS:-}" ]; then
+        echo "INFO|A.5 SB burst: ${SB_READ_LOOPS} direct reads on $DEV block 0" >&2
+        for sb_i in $(seq 1 ${SB_READ_LOOPS}); do
+            sudo dd if=$DEV bs=4k count=1 skip=0 iflag=direct of=/dev/null 2>/dev/null
+        done
+    fi
+
     # Phase A.3 -- workload mode dispatch.
     # Default "static" matches legacy behavior (FS quiescent during attack).
     # "write-active" launches a background fio randwrite on TARGET_FILE for

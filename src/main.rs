@@ -121,6 +121,14 @@ struct EmufiAttackArgs {
     /// SEFI persistence window (ms). emufi entry: sefi_window_ms.
     #[arg(long, value_name = "MS", global = true)]
     sefi_window_ms: Option<u32>,
+    /// Phase A.5: number of raw direct-I/O reads on block 0 during
+    /// attack window (SB-targeted I/O burst). Only effective when
+    /// --target-struct=1. Calibration: 200 = probable saturation,
+    /// 500 = statistical certainty (RS journal 1535 bytes /
+    /// 40-byte sub-blocks). Without this flag, only 1-3 natural
+    /// SB reads occur per attack, insufficient to saturate.
+    #[arg(long, value_name = "U32", global = true)]
+    sb_read_loops: Option<u32>,
 
     // ---- v0.8.0 additions: rest of the emufi 0.3.2 surface ----
     /// Byte offset within the target struct block. emufi entry: target_struct_offset.
@@ -178,6 +186,7 @@ impl EmufiAttackArgs {
         if let Some(v) = self.target_struct_block_no { std::env::set_var("TARGET_STRUCT_BLOCK_NO", v.to_string()); }
         if let Some(v) = self.sefi_probability { std::env::set_var("SEFI_PROBABILITY", v.to_string()); }
         if let Some(v) = self.sefi_window_ms { std::env::set_var("SEFI_WINDOW_MS", v.to_string()); }
+        if let Some(v) = self.sb_read_loops { std::env::set_var("SB_READ_LOOPS", v.to_string()); }
         if let Some(v) = self.target_struct_offset { std::env::set_var("TARGET_STRUCT_OFFSET", v.to_string()); }
         if let Some(v) = self.target_inode { std::env::set_var("TARGET_INODE", v.to_string()); }
         if self.hook_fs { std::env::set_var("HOOK_FS", "1"); }
