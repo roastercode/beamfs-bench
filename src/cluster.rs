@@ -89,6 +89,13 @@ pub fn worker_cmd(injector: &str, action_args: &str) -> String {
         // S3.1 -- file-precise targeting via emufi v0.3.4+ target_block_range:
         "TARGET_BLOCK_RANGE_START",  // u64, sector unit (= fs_block × 8)
         "TARGET_BLOCK_RANGE_END",    // u64, sector unit, exclusive bound
+        // pre-N100 fix : forward beamfs publication-campaign env vars
+        // BEAMFS_SCHEME is consumed directly by worker.sh:62 (mkfs.beamfs -s)
+        // BEAMFS_BENCH_FS_LIST and BEAMFS_BENCH_PROBS are consumed orchestrator-
+        // side but forwarded for consistency (Rust reads from local env, not SSH).
+        "BEAMFS_SCHEME",             // string: "inline" | "inode-universal"
+        "BEAMFS_BENCH_FS_LIST",      // CSV: "beamfs,ext4,btrfs,xfs,ext2"
+        "BEAMFS_BENCH_PROBS",        // CSV: "100,1000,10000,100000,500000,1000000"
     ] {
         if let Ok(v) = std::env::var(var) {
             if !v.is_empty() {
