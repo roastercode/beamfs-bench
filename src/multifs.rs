@@ -25,6 +25,38 @@
 use anyhow::{Context, Result};
 use chrono::Local;
 use std::fs;
+use std::collections::HashMap;
+
+/// S3.1: parsed payload from the SETUP record echo emitted by
+/// worker.sh::setup case. Captures the file-precise injection range
+/// computed via filefrag during setup, to be propagated to attack
+/// phase as env vars (TARGET_BLOCK_RANGE_START / _END).
+#[derive(Debug, Clone, Default)]
+struct SetupParse {
+    target_block_range_start: u64,
+    target_block_range_end: u64,
+}
+
+/// Parse a key=value| pipe-delimited setup record into SetupParse.
+/// Unknown keys are ignored. Missing range keys default to 0/0
+/// (= range filter inactive, broadcast fallback preserved).
+fn parse_setup_record(out: &str) -> SetupParse {
+    let mut parsed = SetupParse::default();
+    for tok in out.trim().split('|') {
+        if let Some((k, v)) = tok.split_once('=') {
+            match k {
+                "TARGET_BLOCK_RANGE_START" => {
+                    parsed.target_block_range_start = v.trim().parse().unwrap_or(0);
+                }
+                "TARGET_BLOCK_RANGE_END" => {
+                    parsed.target_block_range_end = v.trim().parse().unwrap_or(0);
+                }
+                _ => {}
+            }
+        }
+    }
+    parsed
+}
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -241,6 +273,8 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
     // Phase 2: setup all FS
     // ----------------------------------------------------------------
     blue("[2/5] Format + populate 5 partitions with 3 dirs x 3 files (3KB each)");
+    // S3.1: collect per-FS file-precise injection range from SETUP records.
+    let mut setup_parsed: HashMap<String, SetupParse> = HashMap::new();
     for m in &validated {
         let cmd = crate::cluster::worker_cmd(&cfg.injector, &format!("setup {} {}", m.fs_name, m.disk.guest_dev));
         let out = ssh.exec_lenient(&cmd)
@@ -251,6 +285,8 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
         fs::create_dir_all(&fs_dir)
             .with_context(|| format!("create_dir_all {:?}", fs_dir))?;
         write_text(&fs_dir.join("setup.txt"), &format!("{out}\n"))?;
+        // S3.1: parse and store the range for later propagation.
+        setup_parsed.insert(m.fs_name.clone(), parse_setup_record(&out));
     }
 
     // ----------------------------------------------------------------
@@ -274,6 +310,16 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
         let mut verifies_f = fs::File::create(&verifies_path)
             .with_context(|| format!("create {:?}", verifies_path))?;
 
+        // S3.1: set TARGET_BLOCK_RANGE_* env vars from per-FS SETUP parse.
+        let setup_p = setup_parsed.get(&m.fs_name).cloned().unwrap_or_default();
+        let range_active = setup_p.target_block_range_end > setup_p.target_block_range_start;
+        if range_active {
+            std::env::set_var("TARGET_BLOCK_RANGE_START", setup_p.target_block_range_start.to_string());
+            std::env::set_var("TARGET_BLOCK_RANGE_END",   setup_p.target_block_range_end.to_string());
+        } else {
+            std::env::remove_var("TARGET_BLOCK_RANGE_START");
+            std::env::remove_var("TARGET_BLOCK_RANGE_END");
+        }
         for &prob in &cfg.probs {
             let attack_cmd = crate::cluster::worker_cmd(&cfg.injector,
                 &format!("attack {} {} {prob}", m.fs_name, m.disk.guest_dev));
@@ -296,6 +342,9 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
         }
     }
     drop(all_records);
+    // S3.1: cleanup file-precise injection env vars.
+    std::env::remove_var("TARGET_BLOCK_RANGE_START");
+    std::env::remove_var("TARGET_BLOCK_RANGE_END");
 
     // ----------------------------------------------------------------
     // Phase 4: synthesis report
