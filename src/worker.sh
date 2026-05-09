@@ -269,7 +269,20 @@ setup)
         exit 0
     fi
 
+    # pre-N100 fix: device-level cleanup to prevent residual mounts
+    # from polluting the new run. The previous worker.sh (pre-S3.x) only
+    # umounted the current mountpoint $MNT, which fails to detect when
+    # $DEV is still mounted under a *different* mountpoint left by a
+    # previous run with a different FS_LIST mapping (e.g. Batch A xfs on
+    # /mnt/test-xfs, then Batch B vfat expecting /dev/vdf clean).
+    # findmnt --source returns ALL mountpoints currently using $DEV;
+    # we umount each, then wipefs to scrub FS magic numbers so the
+    # subsequent mkfs operates on a virgin device.
+    for resmnt in $(findmnt --source "$DEV" --noheadings --output TARGET 2>/dev/null); do
+        sudo umount -f "$resmnt" 2>/dev/null || sudo umount -l "$resmnt" 2>/dev/null || true
+    done
     sudo umount $MNT 2>/dev/null || true
+    sudo wipefs -a "$DEV" >/dev/null 2>&1 || true
     sudo rm -rf $MNT
     sudo mkdir -p $MNT
 
