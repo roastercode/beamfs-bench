@@ -696,7 +696,12 @@ print(f'{bits} {frac_bp} {len(blocks)}')
     # (probability=10^6 + workload-active) seq numbers wrap and earlier
     # flips are overwritten. ATTACKED_BYTES_UNIQUE is therefore a lower
     # bound in such regimes (EMUFI v1 §VII.C.a).
-    if [ -e ${INJECTOR_DBG}/flip_log ]; then
+    # Phase A.4-fix : use 'sudo test -e' instead of '[ -e ]' because
+    # /sys/kernel/debug/ is typically mode 700 (root only), so a
+    # non-root shell test fails the existence check even though
+    # 'sudo cat' would succeed afterward. The privilege level of the
+    # gate must match the privilege level of the read.
+    if sudo test -e "${INJECTOR_DBG}/flip_log" ; then
         ATTACKED_BYTES_UNIQUE=$(sudo cat ${INJECTOR_DBG}/flip_log 2>/dev/null \
             | awk -F',' 'NR>1 && $2!="0" {print $3","$5}' \
             | sort -u \
