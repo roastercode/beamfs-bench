@@ -327,3 +327,134 @@ roadmap updates.
 - 2026-05-06 : Stage 1 closed (`v0.7.2`). Quality sprint
   (L1 USB module, L4 exit_code, L5 adaptive USB, L6 R21 adaptive,
   L7 clippy). HEAD `0b2b1d0`, manifest `manifest-20260506T100152Z`.
+
+---
+
+## v1.0.0 - Multifs equitable bench
+
+**Status :** PLANNED.
+**Estimated effort :** 30-40 hours focused work (Phase C of emufi
+v0.4.0 roadmap).
+**Precondition :** emufi v0.4.0 multifs-capable injector available
+(see `~/git/emufi/Documentation/roadmap.md`).
+
+### Motivation
+
+The 2026-05-10 N=100 multifs run (raw data sha256
+`f9f01a585c2871cab063ffbf2bbfc015777537918339a5d742b2137846e8a615`)
+demonstrated that beamfs-bench v0.10.0 can orchestrate a
+multifs sweep but cannot produce equitable resistance comparison.
+The structural cause is in emufi : `target_block_range` is
+calibrated to one FS file layout per attack window. All other
+FS show FLIP_DELTA=0 because emufi rejects bios outside that
+range.
+
+Beamfs-bench v1.0 is the bench-side refactor that pairs with
+emufi v0.4.0's `target_offsets[]` debugfs API. It introduces
+per-FS file-block resolution at setup time, aggregating ranges
+into a single multi-target injection list pushed to emufi.
+
+### Scope
+
+#### S1 - fs_resolver.rs module (10h)
+
+New module under `src/` that for each FS in `BEAMFS_BENCH_FS_LIST` :
+
+  1. Sets up the test file on the mounted FS
+  2. Resolves logical file blocks to device sectors using the
+     FS-appropriate tool :
+     - `filefrag` for ext2/ext3/ext4
+     - `debugfs.btrfs` for btrfs
+     - `xfs_bmap` for xfs
+     - filefrag fallback for f2fs, ntfs3, jfs
+     - `bcachefs subvolume snapshot` introspection for bcachefs
+  3. Aggregates extents into `(start_sector, end_sector)` tuples
+  4. Pushes the aggregated list via debugfs to emufi v0.4
+     `target_offsets`
+
+#### S2 - Pipeline refactor (8h)
+
+The v0.10 pipeline assumes 1 FS per attack window. v1.0 refactors
+to N-FS parallel attack :
+
+  - **Setup phase** : iterate over FS list, create file per-FS
+  - **Resolve phase** : compute target_offsets aggregated across all FS
+  - **Attack phase** : 1 emufi window with N target_offsets armed
+  - **Verify phase** : iterate over FS list, hash check per-FS
+  - **Report phase** : per-FS metrics with proper attribution
+
+#### S3 - worker.sh refactor (6h)
+
+The current worker.sh has linear setup→attack→verify per-FS. v1.0
+restructures the action flow :
+
+  - `setup` action loops over the FS list
+  - `attack` action arms emufi once with all target_offsets
+  - `verify` action loops over the FS list comparing hash_pre/hash_post
+  - Legacy single-FS mode preserved behind a flag for beamfs-only
+    intensive testing
+
+#### S4 - CLI / env vars cleanup (3h)
+
+  - Remove `--target-struct=N` and related (deprecated by emufi v0.4)
+  - Add proper `--fs-list` and `--probs-list` CLI flags (replace
+    BEAMFS_BENCH_FS_LIST and BEAMFS_BENCH_PROBS env vars or keep
+    both for backward compat)
+  - Document the new CLI in `--help`
+
+#### S5 - Validation campaign (5-10h)
+
+Before committing to N=100 publication-grade run with v1.0 :
+
+  - N=10 mini-test on full 12-FS list to validate every FS
+    receives non-zero FLIP_DELTA simultaneously
+  - Per-FS counter attribution verified
+  - Saturation test : confirm Theorem v2.2 reproduction at
+    high dose for beamfs scheme=2 (regression check vs N=100
+    of 2026-05-10)
+
+### Risks
+
+  - **R1** : per-FS file-block resolution adds 10-30 seconds
+    per run setup. Mitigation : cache resolution results
+    across runs when file layout is stable.
+  - **R2** : aggregated `target_offsets` list grows large for
+    many FS × big files. emufi v0.4 must handle a list of
+    sufficient size (design constraint to communicate).
+  - **R3** : worker.sh refactor breaks existing single-FS
+    beamfs-only N=100 tests. Mitigation : maintain a legacy
+    mode behind a flag.
+
+### Exit conditions
+
+  1. All v0.10.x single-FS tests still pass (regression
+     guarantee)
+  2. N=10 multifs POC produces non-zero FLIP_DELTA on every
+     FS in a 12-FS list simultaneously
+  3. Per-FS hash_match rate is meaningful (proportional to
+     each FS's actual injection volume, not zeroed by
+     calibration mismatch)
+  4. Documentation under `Documentation/` describes the v1.0
+     architecture and reproducibility procedure
+  5. The 2026-05-10 N=100 single-FS-effective dataset is
+     reproducible bit-for-bit in legacy mode (regression
+     anti-drift)
+
+### Tag
+
+Planned : `v1.0.0-multifs`. GPG-signed annotated tag.
+
+### Dependency note
+
+beamfs-bench v1.0 cannot be released before emufi v0.4 because
+the `target_offsets[]` debugfs entry is a v0.4 emufi feature.
+Phases A and B of emufi v0.4 must complete first. Phase C of
+emufi v0.4 IS this beamfs-bench v1.0 release. The two are the
+same engineering deliverable tracked from two project perspectives.
+
+---
+
+## Document maintenance
+
+This roadmap is updated at each version closure. Cross-reference
+emufi roadmap and beamfs roadmap on each update.
