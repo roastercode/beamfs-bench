@@ -94,6 +94,7 @@ pub fn worker_cmd(injector: &str, action_args: &str) -> String {
         // BEAMFS_BENCH_FS_LIST and BEAMFS_BENCH_PROBS are consumed orchestrator-
         // side but forwarded for consistency (Rust reads from local env, not SSH).
         "BEAMFS_SCHEME",             // string: "inline" | "inode-universal"
+        "BEAMFS_INODE_COUNT",        // u64, total inodes at mkfs time (0=default 256)
         "BEAMFS_BENCH_FS_LIST",      // CSV: "beamfs,ext4,btrfs,xfs,ext2"
         "BEAMFS_BENCH_PROBS",        // CSV: "100,1000,10000,100000,500000,1000000"
     ] {
