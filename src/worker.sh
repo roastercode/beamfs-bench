@@ -125,7 +125,7 @@ if [ "$ACTION" = "discover_cluster" ]; then
     echo "INJECTOR_LOADED=$(lsmod | grep -q "^${INJECTOR}" && echo yes || echo no)"
     echo "INJECTOR_KO_PRESENT=$([ -f /lib/modules/$(uname -r)/updates/${INJECTOR_KO} ] && echo yes || echo no)"
     echo "RADFI_LOADED=$(lsmod | grep -q '^radfi' && echo yes || echo no)"
-    echo "BEAMFS_LOADED=$(lsmod | grep -q '^beamfs' && echo yes || echo no)"
+    echo "BEAMFS_LOADED=$(grep -qw beamfs /proc/filesystems && echo yes || echo no)"
     echo "RADFI_KO_PRESENT=$([ -f /lib/modules/$(uname -r)/updates/radfi.ko ] && echo yes || echo no)"
     echo "EMUFI_LOADED=$(lsmod | grep -q '^emufi' && echo yes || echo no)"
     echo "EMUFI_KO_PRESENT=$([ -f /lib/modules/$(uname -r)/updates/emufi.ko ] && echo yes || echo no)"
@@ -161,11 +161,15 @@ ensure_modules() {
     if [ "$fs" = "btrfs" ]; then
         sudo modprobe btrfs 2>/dev/null || true
     fi
-    if ! lsmod | grep -q '^reed_solomon'; then
+    # reed_solomon is built-in (CONFIG_REED_SOLOMON=y in BEAMFS-arm64.cfg).
+    # Detect by exported symbol instead of lsmod.
+    if ! sudo grep -qE '^[0-9a-f]+ [Tt] encode_rs8$' /proc/kallsyms; then
         sudo modprobe reed_solomon 2>/dev/null || true
     fi
-    if ! lsmod | grep -q '^beamfs'; then
-        sudo /sbin/insmod /lib/modules/$(uname -r)/updates/beamfs.ko 2>/dev/null || true
+    # beamfs is built-in (CONFIG_BEAMFS_FS=y) since commit eddf561.
+    # No module to load; presence is verified via /proc/filesystems.
+    if ! grep -qw beamfs /proc/filesystems; then
+        echo "WORKER|HOST=$(hostname)|ERROR=beamfs not in /proc/filesystems (built-in missing)" >&2
     fi
     if ! lsmod | grep -q "^${INJECTOR}"; then
         sudo /sbin/insmod /lib/modules/$(uname -r)/updates/${INJECTOR_KO} 2>/dev/null || true
@@ -1076,12 +1080,14 @@ cluster_verify)
 
 bootstrap_data)
     ensure_modules
-    if ! lsmod | grep -q '^beamfs'; then
-        echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=ERROR|reason=beamfs.ko not loaded"
+    # beamfs is built-in (CONFIG_BEAMFS_FS=y); detect via /proc/filesystems.
+    if ! grep -qw beamfs /proc/filesystems; then
+        echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=ERROR|reason=beamfs not in /proc/filesystems"
         exit 1
     fi
-    if ! lsmod | grep -q '^reed_solomon'; then
-        echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=ERROR|reason=reed_solomon not loaded"
+    # reed_solomon is built-in; detect via exported symbol in /proc/kallsyms.
+    if ! sudo grep -qE '^[0-9a-f]+ [Tt] encode_rs8$' /proc/kallsyms; then
+        echo "CLUSTER|HOST=$(hostname)|BOOTSTRAP=ERROR|reason=reed_solomon symbol absent"
         exit 1
     fi
     if mountpoint -q /data; then
