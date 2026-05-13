@@ -18,6 +18,7 @@
 //! - `crash`    : NOT YET IMPLEMENTED (Test B: virsh destroy mid-write)
 //! - `bitrot`   : NOT YET IMPLEMENTED (Test C: dd random on offline partition)
 //! - `fsck`     : NOT YET IMPLEMENTED (Test D: e2fsck recovery post-FS_PANIC)
+//! - `tindirect`: triple-indirect addressing round-trip (Test F, sparse write)
 //!
 //! ## Safety model (anti-NAK / R12 / R13 of context-recadrage)
 //!
@@ -59,6 +60,7 @@ mod regression_check;
 mod host_auth;
 mod ssh;
 mod synthesis;
+mod tindirect;
 mod usb_health;
 
 const BEAMFS_BENCH_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -323,6 +325,16 @@ enum Command {
     /// New scope, not in legacy harness.
     Fsck {
         /// Fault injector to use: "radfi" or "emufi".
+        #[arg(long, default_value = "radfi")]
+        injector: String,
+    },
+
+    /// Test F - tindirect: triple-indirect addressing round-trip.
+    /// Sparse writes at iblocks crossing dindirect->tindirect frontier,
+    /// then sync + drop_caches + remount + read-verify byte-identical.
+    /// No fault injection; validates addressing math + bounds checks.
+    Tindirect {
+        /// Fault injector to use (kept for worker.sh module-loading uniformity).
         #[arg(long, default_value = "radfi")]
         injector: String,
     },
@@ -684,6 +696,15 @@ fn main() {
                 Ok(rc) => rc,
                 Err(e) => {
                     eprintln!("beamfs-bench: fsck failed: {e:#}");
+                    1
+                }
+            }
+        }
+        Command::Tindirect { injector } => {
+            match tindirect::run(&injector) {
+                Ok(rc) => rc,
+                Err(e) => {
+                    eprintln!("beamfs-bench: tindirect failed: {e:#}");
                     1
                 }
             }

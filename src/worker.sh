@@ -1643,13 +1643,125 @@ fsck_check)
     echo "FSCK|HOST=$(hostname)|CHECK=OK|fs=$FS|dev=$DEV|fsck_rc=$FSCK_RC|fsck_summary=$FSCK_OUT"
     ;;
 
+tindirect_setup)
+    # Args: ARG2=tag
+    # Build a 4 GiB sparse loop-backed beamfs volume on tmpfs (/tmp).
+    # Sparse-mounted tmpfs only allocates pages on actual write, so the
+    # apparent 4 GiB volume costs only a few MiB of RAM for the metadata
+    # blocks + sparse data writes.
+    TS_TAG="$ARG2"
+    IMG="/tmp/tindirect-$TS_TAG.img"
+    MNT="/mnt/tindirect-$TS_TAG"
+    ensure_modules
+    # Build sparse 4 GiB backing file. truncate -s creates a sparse file
+    # in O(1) without writing zero bytes; the actual disk usage stays
+    # near zero until pages are written.
+    sudo rm -f "$IMG"
+    sudo truncate -s 4G "$IMG"
+    LOOP=$(sudo losetup --find --show "$IMG" 2>&1)
+    if [ -z "$LOOP" ] || [ ! -b "$LOOP" ]; then
+        echo "TINDIRECT|HOST=$(hostname)|SETUP=ERROR|reason=losetup_failed|out=$LOOP"
+        exit 1
+    fi
+    MKFS_OUT=$(sudo mkfs.beamfs -N 8192 "$LOOP" 2>&1 | tail -5 | tr '
+' ';')
+    if [ $? -ne 0 ]; then
+        sudo losetup -d "$LOOP" 2>/dev/null || true
+        echo "TINDIRECT|HOST=$(hostname)|SETUP=ERROR|reason=mkfs_failed|out=$MKFS_OUT"
+        exit 1
+    fi
+    sudo mkdir -p "$MNT"
+    if ! sudo mount -t beamfs "$LOOP" "$MNT" 2>&1; then
+        sudo losetup -d "$LOOP" 2>/dev/null || true
+        echo "TINDIRECT|HOST=$(hostname)|SETUP=ERROR|reason=mount_failed"
+        exit 1
+    fi
+    # Persist loop dev + mountpoint for later phases.
+    echo "$LOOP" | sudo tee "/tmp/tindirect-$TS_TAG.loop" >/dev/null
+    echo "$MNT"  | sudo tee "/tmp/tindirect-$TS_TAG.mnt"  >/dev/null
+    echo "TINDIRECT|HOST=$(hostname)|SETUP=OK|tag=$TS_TAG|loop=$LOOP|mnt=$MNT|mkfs=$MKFS_OUT"
+    ;;
+
+tindirect_test)
+    # Args: ARG2=tag, ARG3=iblock
+    # Sparse-write 4 disk blocks (16 KiB) at the given iblock,
+    # compute sha256 of the 16 KiB slice on the still-mounted FS
+    # (page cache reads), then drop_caches + umount + mount, then
+    # recompute sha256 from cold reads. Emit MATCH or MISMATCH.
+    TS_TAG="$ARG2"
+    IBLOCK="$ARG3"
+    LOOP=$(sudo cat "/tmp/tindirect-$TS_TAG.loop" 2>/dev/null)
+    MNT=$(sudo cat "/tmp/tindirect-$TS_TAG.mnt" 2>/dev/null)
+    if [ -z "$LOOP" ] || [ -z "$MNT" ]; then
+        echo "TINDIRECT|HOST=$(hostname)|VERDICT=ERROR|reason=missing_state_for_tag_$TS_TAG"
+        exit 1
+    fi
+    if ! mountpoint -q "$MNT"; then
+        echo "TINDIRECT|HOST=$(hostname)|VERDICT=ERROR|reason=not_mounted"
+        exit 1
+    fi
+    F="$MNT/test-$IBLOCK.bin"
+    # 16 KiB slice = 4 disk blocks at iblock N.
+    # `dd seek=$IBLOCK bs=4096 count=4 if=/dev/urandom` writes 4 blocks
+    # at iblock N..N+3, leaving everything before as HOLE.
+    DD_OUT=$(sudo dd if=/dev/urandom of="$F" bs=4096 seek="$IBLOCK" count=4 conv=notrunc status=none 2>&1)
+    DD_RC=$?
+    if [ $DD_RC -ne 0 ]; then
+        echo "TINDIRECT|HOST=$(hostname)|VERDICT=ERROR|reason=dd_write_rc=$DD_RC|out=$DD_OUT"
+        exit 1
+    fi
+    sudo sync
+    # sha256 of the 16 KiB slice at offset iblock*4096 (warm cache).
+    SLICE_OFFSET=$(( IBLOCK * 4096 ))
+    SHA_WARM=$(sudo dd if="$F" bs=4096 skip="$IBLOCK" count=4 status=none 2>/dev/null | sha256sum | awk '{print $1}')
+    if [ -z "$SHA_WARM" ]; then
+        echo "TINDIRECT|HOST=$(hostname)|VERDICT=ERROR|reason=sha_warm_empty"
+        exit 1
+    fi
+    # Cold cycle: drop_caches + umount + mount.
+    echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null
+    if ! sudo umount "$MNT" 2>&1; then
+        echo "TINDIRECT|HOST=$(hostname)|VERDICT=ERROR|reason=umount_failed|sha_warm=$SHA_WARM"
+        exit 1
+    fi
+    if ! sudo mount -t beamfs "$LOOP" "$MNT" 2>&1; then
+        echo "TINDIRECT|HOST=$(hostname)|VERDICT=ERROR|reason=remount_failed|sha_warm=$SHA_WARM"
+        exit 1
+    fi
+    SHA_COLD=$(sudo dd if="$F" bs=4096 skip="$IBLOCK" count=4 status=none 2>/dev/null | sha256sum | awk '{print $1}')
+    DMESG_TAIL=$(sudo dmesg | tail -20 | grep -cE "beyond|EOPNOTSUPP|EUCLEAN|BUG|Oops|WARN" 2>/dev/null | head -1 | tr -d "\n")
+    if [ "$SHA_WARM" = "$SHA_COLD" ]; then
+        echo "TINDIRECT|HOST=$(hostname)|VERDICT=MATCH|iblock=$IBLOCK|offset=$SLICE_OFFSET|sha_warm=$SHA_WARM|sha_cold=$SHA_COLD|dmesg_anomaly=$DMESG_TAIL"
+    else
+        echo "TINDIRECT|HOST=$(hostname)|VERDICT=MISMATCH|iblock=$IBLOCK|offset=$SLICE_OFFSET|sha_warm=$SHA_WARM|sha_cold=$SHA_COLD|dmesg_anomaly=$DMESG_TAIL"
+    fi
+    ;;
+
+tindirect_cleanup)
+    # Args: ARG2=tag
+    TS_TAG="$ARG2"
+    LOOP=$(sudo cat "/tmp/tindirect-$TS_TAG.loop" 2>/dev/null)
+    MNT=$(sudo cat "/tmp/tindirect-$TS_TAG.mnt" 2>/dev/null)
+    IMG="/tmp/tindirect-$TS_TAG.img"
+    if [ -n "$MNT" ] && mountpoint -q "$MNT"; then
+        sudo umount "$MNT" 2>/dev/null || true
+        sudo rmdir "$MNT" 2>/dev/null || true
+    fi
+    if [ -n "$LOOP" ] && [ -b "$LOOP" ]; then
+        sudo losetup -d "$LOOP" 2>/dev/null || true
+    fi
+    sudo rm -f "$IMG" "/tmp/tindirect-$TS_TAG.loop" "/tmp/tindirect-$TS_TAG.mnt"
+    echo "TINDIRECT|HOST=$(hostname)|CLEANUP=OK|tag=$TS_TAG"
+    ;;
+
 *)
     echo "ERROR: unknown action $ACTION" >&2
     echo "Valid actions: discover_devices, discover_cluster, setup, attack, verify," >&2
     echo "               cluster_setup, cluster_attack, cluster_verify, bootstrap_data,"
     echo "               metadata_setup, metadata_inject, metadata_verify,"
     echo "               crash_setup, crash_start_writer, crash_verify, fsck_check," >&2
-    echo "               bitrot_setup, bitrot_inject, bitrot_verify" >&2
+    echo "               bitrot_setup, bitrot_inject, bitrot_verify," >&2
+    echo "               tindirect_setup, tindirect_test, tindirect_cleanup" >&2
     exit 2
     ;;
 
