@@ -279,7 +279,7 @@ enum Command {
         /// Use only for repeated runs on a known-good cluster.
         #[arg(long)]
         skip_vm_bootstrap: bool,
-        /// Skip the bitbake image rebuild (use existing canonical .ext2).
+        /// Skip the bitbake image rebuild (use existing canonical .beamfs).
         /// Use when iterating on the pipeline itself; never skip in R19 production.
         #[arg(long)]
         skip_bitbake: bool,
@@ -459,10 +459,10 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     pipeline::record(&mut manifest, "0.3_bitbake", 0);
 
     // Phase 0.4
-    let (ref_ko, ext2_sha) = pipeline::extract_reference_ko_sha()
+    let (ref_ko, beamfs_sha) = pipeline::extract_reference_ko_sha()
         .map_err(|e| pipeline::fail(&mut manifest, "0.4_extract_ref", &e))?;
     manifest.reference_ko_sha256   = ref_ko.clone();
-    manifest.canonical_ext2_sha256 = ext2_sha;
+    manifest.canonical_beamfs_sha256 = beamfs_sha;
     pipeline::record(&mut manifest, "0.4_extract_ref", 0);
 
     // Phase 0.5

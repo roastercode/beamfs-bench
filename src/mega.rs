@@ -277,9 +277,9 @@ pub fn run(injector: &str) -> Result<i32> {
         pipeline::record(&mut manifest, "0.2_lockstep", 0);
         pipeline::bitbake_image_to(false, Some(&build_dir))?;
         pipeline::record(&mut manifest, "0.3_bitbake", 0);
-        let (ref_ko, ext2_sha) = pipeline::extract_reference_ko_sha()?;
+        let (ref_ko, beamfs_sha) = pipeline::extract_reference_ko_sha()?;
         manifest.reference_ko_sha256 = ref_ko.clone();
-        manifest.canonical_ext2_sha256 = ext2_sha;
+        manifest.canonical_beamfs_sha256 = beamfs_sha;
         pipeline::record(&mut manifest, "0.4_extract_ref", 0);
         pipeline::redeploy_4_vms()?;
         pipeline::record(&mut manifest, "0.5_redeploy", 0);

@@ -111,7 +111,7 @@ pub fn pre_capture_host(
         "canonical-ko.log",
         r#"
 set -e
-IMG=~/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.ext2
+IMG=~/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.beamfs
 echo "image: $IMG"
 if [ -e "$IMG" ]; then
     echo "image-target: $(readlink -f "$IMG")"
@@ -404,19 +404,19 @@ cd ~/yocto/poky 2>/dev/null &&   source oe-init-build-env build-qemu-arm64 >/dev
     capture_to(host_dir, "bitbake-provenance.log", cmd);
 }
 
-/// Capture qemu-img info + sha256 for each VM rootfs .ext2.
+/// Capture qemu-img info + sha256 for each VM rootfs .beamfs.
 /// Proves R31 step 4 (redeploy completeness) was respected.
 fn capture_vm_rootfs_format(host_dir: &Path) {
     println!("[pre]    Host capture: VM rootfs format + sha256");
     let cmd = r#"
-CANONICAL=~/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.ext2
+CANONICAL=~/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.beamfs
 echo "=== canonical ==="
 sudo qemu-img info "$(readlink -f "$CANONICAL")" 2>&1
 echo "canonical sha256: $(sudo sha256sum "$(readlink -f "$CANONICAL")" 2>&1 | awk '{print $1}')"
 echo
 for vm in beamfs-master beamfs-compute01 beamfs-compute02 beamfs-compute03; do
-    f=/var/lib/libvirt/images/hpc-arm64/$vm.ext2
-    echo "=== $vm.ext2 ==="
+    f=/var/lib/libvirt/images/hpc-arm64/$vm.beamfs
+    echo "=== $vm.beamfs ==="
     sudo qemu-img info "$f" 2>&1 | head -5
     echo "sha256: $(sudo sha256sum "$f" 2>&1 | awk '{print $1}')"
     echo

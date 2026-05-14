@@ -3,7 +3,7 @@
 //! Phases executed before any test runs:
 //!   0.1 verify_clean_working_trees   3 git repos must be clean
 //!   0.2 verify_lockstep_sources      sha256 manifest source vs yocto layer
-//!   0.3 bitbake_image                build canonical .ext2
+//!   0.3 bitbake_image                build canonical .beamfs
 //!   0.4 extract_reference_ko_sha     loop-mount canonical, sha256 module
 //!   0.5 redeploy_4_vms               virsh destroy + cp x4 + chown + start
 //!   0.6 wait_ssh_ready_parallel      reuse lifecycle helper
@@ -33,9 +33,10 @@ const KERNEL_SOURCES: &[&str] = &[
 
 const POKY_DIR:       &str = "/home/aurelien/yocto/poky";
 const BUILD_DIR_NAME: &str = "build-qemu-arm64";
-const CANONICAL_EXT2: &str = "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.ext2";
-const LIBVIRT_DIR:    &str = "/var/lib/libvirt/images/hpc-arm64";
+const CANONICAL_BEAMFS: &str = "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.beamfs";
+const KO_BUILD_DIR:   &str = "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/work/qemuarm64-poky-linux/hpc-arm64-research-beamfs/1.0/rootfs/lib/modules";
 const KO_PATH_IN_FS:  &str = "lib/modules/7.0.3/updates/beamfs.ko";
+const LIBVIRT_DIR:    &str = "/var/lib/libvirt/images/hpc-arm64";
 
 const VM_NAMES: &[&str] = &["beamfs-master", "beamfs-compute01", "beamfs-compute02", "beamfs-compute03"];
 const VM_IPS:   &[&str] = &["192.168.56.10", "192.168.56.11", "192.168.56.12", "192.168.56.13"];
@@ -49,7 +50,7 @@ pub struct PipelineManifest {
     pub commit_yocto:      String,
     pub commit_bench:      String,
     pub source_sha256:     Vec<(String, String)>,
-    pub canonical_ext2_sha256: String,
+    pub canonical_beamfs_sha256: String,
     pub reference_ko_sha256:   String,
     pub in_vm_ko_sha256:   Vec<(String, String)>,
     pub phases:            Vec<(String, String, i32)>,
@@ -61,16 +62,6 @@ fn sha256_file(path: &Path) -> Result<String> {
         .with_context(|| format!("sha256sum {}", path.display()))?;
     if !out.status.success() {
         bail!("sha256sum failed on {}: {}", path.display(), String::from_utf8_lossy(&out.stderr));
-    }
-    let s = String::from_utf8_lossy(&out.stdout);
-    Ok(s.split_whitespace().next().unwrap_or("").to_string())
-}
-
-fn sha256_file_sudo(path: &str) -> Result<String> {
-    let out = Command::new("sudo").args(["sha256sum", path]).output()
-        .with_context(|| format!("sudo sha256sum {path}"))?;
-    if !out.status.success() {
-        bail!("sudo sha256sum failed on {path}: {}", String::from_utf8_lossy(&out.stderr));
     }
     let s = String::from_utf8_lossy(&out.stdout);
     Ok(s.split_whitespace().next().unwrap_or("").to_string())
@@ -188,11 +179,11 @@ pub fn bitbake_image_to(skip: bool, log_dir: Option<&Path>) -> Result<()> {
     if !status.success() {
         bail!("bitbake hpc-arm64-research-beamfs failed (exit {:?})", status.code());
     }
-    let p = PathBuf::from(CANONICAL_EXT2);
+    let p = PathBuf::from(CANONICAL_BEAMFS);
     if !p.exists() {
-        bail!("canonical ext2 not produced: {}", p.display());
+        bail!("canonical beamfs not produced: {}", p.display());
     }
-    println!("  canonical ext2 produced: {}", p.display());
+    println!("  canonical beamfs produced: {}", p.display());
     Ok(())
 }
 
@@ -200,26 +191,35 @@ pub fn bitbake_image_to(skip: bool, log_dir: Option<&Path>) -> Result<()> {
 // Phase 0.4
 // ---------------------------------------------------------------------
 pub fn extract_reference_ko_sha() -> Result<(String, String)> {
-    println!("[pipeline 0.4] extract reference beamfs.ko sha256 from canonical .ext2");
-    let mnt = Command::new("mktemp").arg("-d").output().context("mktemp")?;
-    let mnt = String::from_utf8_lossy(&mnt.stdout).trim().to_string();
-    let mount_st = Command::new("sudo")
-        .args(["mount", "-o", "ro,loop", CANONICAL_EXT2, &mnt])
-        .status().context("sudo mount loop")?;
-    if !mount_st.success() { bail!("loop mount failed on {CANONICAL_EXT2}"); }
-
-    let ko_path = format!("{mnt}/{KO_PATH_IN_FS}");
-    let ko_sha  = sha256_file_sudo(&ko_path);
-    let ext2_sha = sha256_file(Path::new(CANONICAL_EXT2));
-
-    let _ = Command::new("sudo").args(["umount", &mnt]).status();
-    let _ = Command::new("rmdir").arg(&mnt).status();
-
-    let ko_sha   = ko_sha.context("extract ko sha")?;
-    let ext2_sha = ext2_sha.context("hash ext2")?;
-    println!("  reference ko sha256:   {ko_sha}");
-    println!("  canonical ext2 sha256: {ext2_sha}");
-    Ok((ko_sha, ext2_sha))
+    println!("[pipeline 0.4] extract reference beamfs.ko sha256 from rootfs build dir");
+    // The Gentoo host kernel doesn't include beamfs.ko, so we can't loop-mount
+    // a .beamfs image. Read the .ko directly from the Yocto rootfs build dir,
+    // which Yocto preserves (no rm_work) after image generation. The path is
+    // lib/modules/<kver>/updates/beamfs.ko; we discover <kver> via read_dir.
+    let modules_dir = std::path::Path::new(KO_BUILD_DIR);
+    if !modules_dir.exists() {
+        bail!("KO build dir missing: {} (rm_work enabled? rerun bitbake)", modules_dir.display());
+    }
+    let mut ko_candidate: Option<PathBuf> = None;
+    for entry in std::fs::read_dir(modules_dir)
+        .with_context(|| format!("read_dir {}", modules_dir.display()))?
+    {
+        let entry = entry?;
+        let kver_dir = entry.path();
+        if !kver_dir.is_dir() { continue; }
+        let candidate = kver_dir.join("updates").join("beamfs.ko");
+        if candidate.exists() {
+            ko_candidate = Some(candidate);
+            break;
+        }
+    }
+    let ko_path = ko_candidate
+        .ok_or_else(|| anyhow::anyhow!("beamfs.ko not found under {}/<kver>/updates/", modules_dir.display()))?;
+    let ko_sha = sha256_file(&ko_path).with_context(|| format!("hash {}", ko_path.display()))?;
+    let beamfs_sha = sha256_file(Path::new(CANONICAL_BEAMFS)).context("hash canonical .beamfs")?;
+    println!("  reference ko sha256:     {ko_sha}");
+    println!("  canonical beamfs sha256: {beamfs_sha}");
+    Ok((ko_sha, beamfs_sha))
 }
 
 // ---------------------------------------------------------------------
@@ -241,7 +241,7 @@ pub fn assert_isolation_r21() -> Result<()> {
 // step between destroy and start.
 // ---------------------------------------------------------------------
 pub fn redeploy_4_vms() -> Result<()> {
-    println!("[pipeline 0.5] redeploy 4 VMs from canonical .ext2");
+    println!("[pipeline 0.5] redeploy 4 VMs from canonical .beamfs");
 
     crate::lifecycle::define_missing_vms()
         .context("define missing VMs (cold-start safety)")?;
@@ -249,24 +249,24 @@ pub fn redeploy_4_vms() -> Result<()> {
         .context("destroy all VMs before redeploy")?;
 
     // R31 step 4: ensure libvirt/QEMU has fully released file descriptors
-    // on .ext2 rootfs files before we overwrite them. virsh destroy is
+    // on .beamfs rootfs files before we overwrite them. virsh destroy is
     // SIGKILL-level but QEMU buffer flush is best-effort; sync forces the
     // host page cache + dirty pages to disk so subsequent cp lands on a
     // quiesced filesystem state.
     let _ = Command::new("sync").status();
 
-    // Reference sha256 of the canonical .ext2 -- computed once, used to
+    // Reference sha256 of the canonical .beamfs -- computed once, used to
     // verify each cp byte-for-byte. Establishes the R31 invariant that
     // every VM rootfs is byte-identical to canonical at start time.
-    let canonical_sha = sha256_file(Path::new(CANONICAL_EXT2))
-        .context("hash canonical .ext2")?;
-    println!("  canonical .ext2 sha256: {canonical_sha}");
+    let canonical_sha = sha256_file(Path::new(CANONICAL_BEAMFS))
+        .context("hash canonical .beamfs")?;
+    println!("  canonical .beamfs sha256: {canonical_sha}");
 
     for vm in VM_NAMES {
-        let dst = format!("{LIBVIRT_DIR}/{vm}.ext2");
+        let dst = format!("{LIBVIRT_DIR}/{vm}.beamfs");
         let st = Command::new("sudo")
-            .args(["cp", CANONICAL_EXT2, &dst])
-            .status().with_context(|| format!("cp ext2 -> {dst}"))?;
+            .args(["cp", CANONICAL_BEAMFS, &dst])
+            .status().with_context(|| format!("cp beamfs -> {dst}"))?;
         if !st.success() { bail!("cp failed for {dst}"); }
         let st = Command::new("sudo")
             .args(["chown", "qemu:qemu", &dst]).status()
@@ -285,7 +285,7 @@ pub fn redeploy_4_vms() -> Result<()> {
                 "redeploy verify FAIL for {dst}: deployed sha256={dst_sha} != canonical={canonical_sha} (R31: a stale VM held a FD on this file, or cp was interrupted; ensure no out-of-pipeline VM is running and rerun)"
             );
         }
-        println!("  {vm}.ext2 redeployed (sha256 verified)");
+        println!("  {vm}.beamfs redeployed (sha256 verified)");
     }
 
     crate::lifecycle::start_network()
@@ -378,7 +378,7 @@ pub fn build_initial_manifest() -> Result<PipelineManifest> {
         commit_yocto:  git_head_sha(YOCTO_REPO)?,
         commit_bench:  git_head_sha(BENCH_REPO)?,
         source_sha256: Vec::new(),
-        canonical_ext2_sha256: String::new(),
+        canonical_beamfs_sha256: String::new(),
         reference_ko_sha256:   String::new(),
         in_vm_ko_sha256:       Vec::new(),
         phases:                Vec::new(),

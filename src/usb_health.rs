@@ -593,7 +593,7 @@ mod tests {
               <devices>
                 <disk type='file' device='disk'>
                   <target dev='vda'/>
-                  <source file='/var/lib/libvirt/img.ext2'/>
+                  <source file='/var/lib/libvirt/img.beamfs'/>
                 </disk>
                 <disk type='block' device='disk'>
                   <target dev='vdc'/>
