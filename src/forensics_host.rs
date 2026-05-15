@@ -406,23 +406,91 @@ cd ~/yocto/poky 2>/dev/null &&   source oe-init-build-env build-qemu-arm64 >/dev
 
 /// Capture qemu-img info + sha256 for each VM rootfs .beamfs.
 /// Proves R31 step 4 (redeploy completeness) was respected.
+///
+/// Each VM's vda backing path is resolved dynamically via
+/// `crate::pipeline::resolve_vda_source` (parses live libvirt XML).
+/// This protects against a silent drift of the <VM>.beamfs naming
+/// convention (cf. Bug B 2026-05-15): if a future XML edit reroutes
+/// vda elsewhere, this capture follows the actual backing file
+/// instead of recording a stale path.
 fn capture_vm_rootfs_format(host_dir: &Path) {
     println!("[pre]    Host capture: VM rootfs format + sha256");
-    let cmd = r#"
-CANONICAL=~/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.beamfs
-echo "=== canonical ==="
-sudo qemu-img info "$(readlink -f "$CANONICAL")" 2>&1
-echo "canonical sha256: $(sudo sha256sum "$(readlink -f "$CANONICAL")" 2>&1 | awk '{print $1}')"
-echo
-for vm in beamfs-master beamfs-compute01 beamfs-compute02 beamfs-compute03; do
-    f=/var/lib/libvirt/images/hpc-arm64/$vm.beamfs
-    echo "=== $vm.beamfs ==="
-    sudo qemu-img info "$f" 2>&1 | head -5
-    echo "sha256: $(sudo sha256sum "$f" 2>&1 | awk '{print $1}')"
-    echo
-done
-"#;
-    capture_to(host_dir, "vm-rootfs-format.log", cmd);
+
+    let mut out = String::new();
+
+    // Canonical .beamfs (yocto deploy/images).
+    let canonical_link = "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.beamfs";
+    out.push_str("=== canonical ===\n");
+    let canonical_resolved = match std::fs::canonicalize(canonical_link) {
+        Ok(p) => p,
+        Err(e) => {
+            out.push_str(&format!("(readlink failed: {e})\n"));
+            std::path::PathBuf::from(canonical_link)
+        }
+    };
+    out.push_str(&format!("path: {}\n", canonical_resolved.display()));
+    match Command::new("sudo")
+        .args(["qemu-img", "info", canonical_resolved.to_str().unwrap_or(canonical_link)])
+        .output()
+    {
+        Ok(o) => out.push_str(&String::from_utf8_lossy(&o.stdout)),
+        Err(e) => out.push_str(&format!("(qemu-img failed: {e})\n")),
+    }
+    match Command::new("sudo")
+        .args(["sha256sum", canonical_resolved.to_str().unwrap_or(canonical_link)])
+        .output()
+    {
+        Ok(o) => {
+            let s = String::from_utf8_lossy(&o.stdout);
+            let sha = s.split_whitespace().next().unwrap_or("(none)");
+            out.push_str(&format!("canonical sha256: {sha}\n"));
+        }
+        Err(e) => out.push_str(&format!("(sha256sum failed: {e})\n")),
+    }
+    out.push('\n');
+
+    // Per-VM: resolve vda source via libvirt XML, then qemu-img info + sha256.
+    for vm in VM_NAMES {
+        out.push_str(&format!("=== {vm} (vda) ===\n"));
+        let path = match crate::pipeline::resolve_vda_source(vm) {
+            Ok(p) => p,
+            Err(e) => {
+                out.push_str(&format!("(resolve_vda_source failed: {e:#})\n\n"));
+                continue;
+            }
+        };
+        out.push_str(&format!("resolved path: {path}\n"));
+        match Command::new("sudo")
+            .args(["qemu-img", "info", &path])
+            .output()
+        {
+            Ok(o) => {
+                let info = String::from_utf8_lossy(&o.stdout);
+                for line in info.lines().take(5) {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            Err(e) => out.push_str(&format!("(qemu-img failed: {e})\n")),
+        }
+        match Command::new("sudo")
+            .args(["sha256sum", &path])
+            .output()
+        {
+            Ok(o) => {
+                let s = String::from_utf8_lossy(&o.stdout);
+                let sha = s.split_whitespace().next().unwrap_or("(none)");
+                out.push_str(&format!("sha256: {sha}\n"));
+            }
+            Err(e) => out.push_str(&format!("(sha256sum failed: {e})\n")),
+        }
+        out.push('\n');
+    }
+
+    let path = host_dir.join("vm-rootfs-format.log");
+    if let Err(e) = fs::write(&path, out) {
+        eprintln!("  host capture: write {} failed: {e:#}", path.display());
+    }
 }
 
 /// Capture per-node identity check artefacts: in-VM beamfs.ko sha256 +

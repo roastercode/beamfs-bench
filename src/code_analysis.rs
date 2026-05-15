@@ -1171,7 +1171,7 @@ fn run_emdash_r16_check(out: &Path) -> ToolReport {
 fn run_lockstep_r9_sha256(out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
     let yocto_dir = PathBuf::from(YOCTO_REPO)
-        .join("recipes-kernel/beamfs/files/beamfs-0.1.1");
+        .join("recipes-kernel/beamfs/files/beamfs-0.1.3");
     if !yocto_dir.is_dir() {
         return ToolReport {
             name: "lockstep_r9".to_string(),

@@ -26,7 +26,7 @@ use std::process::{Command, Stdio};
 const BEAMFS_REPO:        &str = "/home/aurelien/git/beamfs";
 const YOCTO_REPO:         &str = "/home/aurelien/git/yocto-beamfs";
 const BENCH_REPO:         &str = "/home/aurelien/git/beamfs-bench";
-const YOCTO_KERNEL_FILES: &str = "/home/aurelien/git/yocto-beamfs/recipes-kernel/beamfs/files/beamfs-0.1.1";
+const YOCTO_KERNEL_FILES: &str = "/home/aurelien/git/yocto-beamfs/recipes-kernel/beamfs/files/beamfs-0.1.3";
 const KERNEL_SOURCES: &[&str] = &[
     "alloc.c", "beamfs.h", "COPYING", "dir.c", "edac.c", "file.c",
     "file_inline.c", "inode.c", "Kconfig", "Makefile", "namei.c", "super.c",
