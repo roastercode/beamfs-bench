@@ -462,14 +462,29 @@ fn derive_verdict_beamfs(
     hash_pre: &str,
     hash_post: &str,
     rs_corrected: u32,
+    dmesg_uncorrectable: u32,
 ) -> &'static str {
     if mount_state == "FS_PANIC" {
         return "FS_PANIC";
     }
     if cat_rc != 0 {
+        // fail-closed taxonomy: beamfs detected corruption and refused
+        // the read. When the kernel logged an UNCORRECTABLE signal
+        // (or the bench-side equivalent regex match such as
+        // "corrupted (direct|indirect) pointer"), this is the intended
+        // behaviour of a fail-closed FEC filesystem under saturation;
+        // surface as RS_FAIL_CLOSED so R19 verdict_is_pass can accept it.
+        // Otherwise (no kernel signal), it stays RS_FAILED -- the path
+        // is broken but we cannot attribute it to a clean FEC detection.
+        if dmesg_uncorrectable > 0 {
+            return "RS_FAIL_CLOSED";
+        }
         return "RS_FAILED";
     }
     if hash_pre == "missing" || hash_post == "missing" || hash_post == "cat_failed" {
+        if dmesg_uncorrectable > 0 {
+            return "RS_FAIL_CLOSED";
+        }
         return "RS_FAILED";
     }
     if hash_post != hash_pre {
@@ -703,8 +718,11 @@ pub fn extract_cluster_verdict(records: &str, host: &str, prob: u32) -> Option<S
     let rs_corrected: u32 = extract_cluster_attack_field(records, host, prob, "RS_CORRECTED")
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
+    let dmesg_uncorrectable: u32 = extract_cluster_attack_field(records, host, prob, "DMESG_UNCORRECTABLE")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
 
-    Some(derive_verdict_beamfs(&mount_state, cat_rc, &hash_pre, &hash_post, rs_corrected).to_string())
+    Some(derive_verdict_beamfs(&mount_state, cat_rc, &hash_pre, &hash_post, rs_corrected, dmesg_uncorrectable).to_string())
 }
 
 /// Phase A.1: fine-grained cluster verdict. Same sources as
@@ -750,9 +768,12 @@ pub fn extract_verdict(records: &str, fs_name: &str, prob: u32) -> Option<String
     let rs_corrected: u32 = extract_attack_field(records, fs_name, prob, "RS_CORRECTED")
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
+    let dmesg_uncorrectable: u32 = extract_attack_field(records, fs_name, prob, "DMESG_UNCORRECTABLE")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
 
     let verdict = if fs_name == "beamfs" {
-        derive_verdict_beamfs(&mount_state, cat_rc, &hash_pre, &hash_post, rs_corrected)
+        derive_verdict_beamfs(&mount_state, cat_rc, &hash_pre, &hash_post, rs_corrected, dmesg_uncorrectable)
     } else {
         derive_verdict_legacy(&mount_state, cat_rc, &hash_pre, &hash_post)
     };
@@ -875,13 +896,17 @@ mod tests {
     }
 
     #[test]
-    fn beamfs_rs_failed_cat_eio() {
-        // CAT_RC != 0 -> RS_FAILED (uncorrectable, EIO returned)
+    fn beamfs_rs_fail_closed_cat_eio() {
+        // CAT_RC != 0 AND DMESG_UNCORRECTABLE > 0 -> RS_FAIL_CLOSED.
+        // beamfs detected the corruption (via RS uncorrectable, CRC32
+        // mismatch, or pointer-out-of-range) and refused the read.
+        // This is a clean fail-closed state and is accepted as pass
+        // by R19 verdict_is_pass.
         let r = rec(
             "ATTACK|FS=beamfs|PROB=1000000|CALL_DELTA=10|FLIP_DELTA=10|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=cat_failed|CAT_RC=1|RS_CORRECTED=0|DMESG_UNCORRECTABLE=1|DMESG_EIO=1",
             "VERIFY|fs=beamfs|prob=1000000|VERDICT=MOUNTED|DIFFS_PRE_POST=2|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=1|details=ok",
         );
-        assert_eq!(extract_verdict(&r, "beamfs", 1_000_000).as_deref(), Some("RS_FAILED"));
+        assert_eq!(extract_verdict(&r, "beamfs", 1_000_000).as_deref(), Some("RS_FAIL_CLOSED"));
     }
 
     #[test]
@@ -1016,8 +1041,10 @@ mod tests {
             "VERIFY|fs=beamfs|prob=1000000|VERDICT=MOUNTED|DIFFS_PRE_POST=2|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=1|details=ok",
         );
         assert_eq!(extract_verdict_detail(&r, "beamfs", 1_000_000).as_deref(), Some("DETECTED_FAIL_CLOSED"));
-        // legacy verdict says RS_FAILED (which agglomerates this case)
-        assert_eq!(extract_verdict(&r, "beamfs", 1_000_000).as_deref(), Some("RS_FAILED"));
+        // Legacy verdict now distinguishes detected fail-closed from
+        // unclassified fail: with DMESG_UNCORRECTABLE > 0 we surface
+        // RS_FAIL_CLOSED (accepted as pass).
+        assert_eq!(extract_verdict(&r, "beamfs", 1_000_000).as_deref(), Some("RS_FAIL_CLOSED"));
     }
 
     #[test]
@@ -1075,7 +1102,9 @@ mod tests {
             "VERIFY|prob=1000000|CLUSTER|HOST=beamfs-compute01|VERDICT=VERIFIED|DIFFS=0|N_FILES_CHANGED=0|details=ok",
         ].join("\n");
         assert_eq!(extract_cluster_verdict_detail(&r, "beamfs-compute01", 1_000_000).as_deref(), Some("DETECTED_FAIL_CLOSED"));
-        assert_eq!(extract_cluster_verdict(&r, "beamfs-compute01", 1_000_000).as_deref(), Some("RS_FAILED"));
+        // cluster legacy verdict now surfaces RS_FAIL_CLOSED with
+        // DMESG_UNCORRECTABLE > 0 (accepted as pass by R19).
+        assert_eq!(extract_cluster_verdict(&r, "beamfs-compute01", 1_000_000).as_deref(), Some("RS_FAIL_CLOSED"));
     }
 
     // ============================================================

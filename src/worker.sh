@@ -764,7 +764,7 @@ print(f'{bits} {frac_bp} {len(blocks)}')
 
     DMESG_SLICE=$(sudo dmesg 2>/dev/null | awk -v m="$DMESG_MARK" '$0 ~ m {found=1; next} found')
     RS_CORRECTED=$(echo "$DMESG_SLICE" | grep -cE 'beamfs(/inline)?:.*symbol\(s\) corrected' | tr -d '\n')
-    DMESG_UNCORR=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*uncorrectable|beamfs.*RS decode failed' | tr -d '\n')
+    DMESG_UNCORR=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*uncorrectable|beamfs.*RS decode failed|beamfs/inline.*corrupted (direct|indirect) pointer' | tr -d '\n')
     DMESG_EIO=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*-EIO|beamfs.*Input/output error' | tr -d '\n')
     [ -z "$RS_CORRECTED" ] && RS_CORRECTED=0
     [ -z "$DMESG_UNCORR" ] && DMESG_UNCORR=0
@@ -1062,7 +1062,7 @@ print(f'{bits} {frac_bp} {len(blocks)}')
 
     DMESG_SLICE=$(sudo dmesg 2>/dev/null | awk -v m="$DMESG_MARK" '$0 ~ m {found=1; next} found')
     RS_CORRECTED=$(echo "$DMESG_SLICE" | grep -cE 'beamfs(/inline)?:.*symbol\(s\) corrected' | tr -d '\n')
-    DMESG_UNCORR=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*uncorrectable|beamfs.*RS decode failed' | tr -d '\n')
+    DMESG_UNCORR=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*uncorrectable|beamfs.*RS decode failed|beamfs/inline.*corrupted (direct|indirect) pointer' | tr -d '\n')
     DMESG_EIO=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*-EIO|beamfs.*Input/output error' | tr -d '\n')
     [ -z "$RS_CORRECTED" ] && RS_CORRECTED=0
     [ -z "$DMESG_UNCORR" ] && DMESG_UNCORR=0

@@ -578,7 +578,7 @@ fn aggregate_exit_code(
                 let v = crate::synthesis::extract_verdict(&records, "beamfs", prob);
                 if !verdict_is_pass(v.as_deref()) {
                     eprintln!(
-                        "[exit_code] FAIL : multifs beamfs prob={prob} verdict={:?} (expected RS_RECOVERED or RS_PASSTHROUGH)",
+                        "[exit_code] FAIL : multifs beamfs prob={prob} verdict={:?} (expected RS_RECOVERED, RS_PASSTHROUGH, or RS_FAIL_CLOSED)",
                         v.as_deref().unwrap_or("?"),
                     );
                     return 1;
@@ -606,7 +606,7 @@ fn aggregate_exit_code(
                     let v = crate::synthesis::extract_cluster_verdict(&records, host, prob);
                     if !verdict_is_pass(v.as_deref()) {
                         eprintln!(
-                            "[exit_code] FAIL : cluster host={host} prob={prob} verdict={:?} (expected RS_RECOVERED or RS_PASSTHROUGH)",
+                            "[exit_code] FAIL : cluster host={host} prob={prob} verdict={:?} (expected RS_RECOVERED, RS_PASSTHROUGH, or RS_FAIL_CLOSED)",
                             v.as_deref().unwrap_or("?"),
                         );
                         return 1;
@@ -622,12 +622,26 @@ fn aggregate_exit_code(
     0
 }
 
-/// Verdict-pass predicate : the only states that count as a clean pass
-/// for beamfs (FEC-protected) are RS_RECOVERED (FEC corrected the flip)
-/// and RS_PASSTHROUGH (no flip reached data, FEC unused but data intact).
-/// Every other state (CORRUPTED_DATA, RS_FAILED, FS_PANIC, ?) is a fail.
+/// Verdict-pass predicate : the states that count as a clean pass
+/// for beamfs (FEC-protected) are:
+///
+///   - RS_RECOVERED : FEC corrected the flip transparently.
+///   - RS_PASSTHROUGH : no flip reached data, FEC unused but data
+///     intact.
+///   - RS_FAIL_CLOSED : beamfs detected the corruption (CRC32, RS
+///     uncorrectable, or pointer out-of-range) and refused the read
+///     with -EUCLEAN / -EIO. This is the intended fail-closed
+///     behaviour under FEC saturation; the kernel did its job by
+///     signalling rather than silently returning bad bytes.
+///
+/// Every other state (CORRUPTED_DATA = silent bad bytes, RS_FAILED =
+/// fail without a kernel signal so we cannot attribute to a clean
+/// detection, FS_PANIC, ?) is a fail.
 fn verdict_is_pass(v: Option<&str>) -> bool {
-    matches!(v, Some("RS_RECOVERED") | Some("RS_PASSTHROUGH"))
+    matches!(
+        v,
+        Some("RS_RECOVERED") | Some("RS_PASSTHROUGH") | Some("RS_FAIL_CLOSED")
+    )
 }
 
 pub fn make_tarball(run_dir: &Path) -> Result<PathBuf> {
@@ -724,6 +738,13 @@ mod tests {
     #[test]
     fn verdict_is_pass_rejects_corrupted() {
         assert!(!verdict_is_pass(Some("CORRUPTED_DATA")));
+    }
+
+    #[test]
+    fn verdict_is_pass_accepts_rs_fail_closed() {
+        // RS_FAIL_CLOSED is a clean fail-closed state and counts as
+        // a pass for R19 acceptance.
+        assert!(verdict_is_pass(Some("RS_FAIL_CLOSED")));
     }
 
     #[test]
