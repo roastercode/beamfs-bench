@@ -466,8 +466,11 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     pipeline::record(&mut manifest, "0.4_extract_ref", 0);
 
     // Phase 0.5
-    if let Err(e) = pipeline::redeploy_4_vms() {
-        return Err(pipeline::fail(&mut manifest, "0.5_redeploy", &e));
+    match pipeline::redeploy_4_vms() {
+        Ok(resolved) => {
+            manifest.resolved_vda_paths = resolved;
+        }
+        Err(e) => return Err(pipeline::fail(&mut manifest, "0.5_redeploy", &e)),
     }
     pipeline::record(&mut manifest, "0.5_redeploy", 0);
 

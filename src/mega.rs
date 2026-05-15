@@ -281,7 +281,8 @@ pub fn run(injector: &str) -> Result<i32> {
         manifest.reference_ko_sha256 = ref_ko.clone();
         manifest.canonical_beamfs_sha256 = beamfs_sha;
         pipeline::record(&mut manifest, "0.4_extract_ref", 0);
-        pipeline::redeploy_4_vms()?;
+        let resolved_vda = pipeline::redeploy_4_vms()?;
+        manifest.resolved_vda_paths = resolved_vda;
         pipeline::record(&mut manifest, "0.5_redeploy", 0);
         lifecycle::wait_ssh_ready_parallel()?;
         pipeline::record(&mut manifest, "0.6_ssh_ready", 0);

@@ -19,6 +19,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -36,7 +37,6 @@ const BUILD_DIR_NAME: &str = "build-qemu-arm64";
 const CANONICAL_BEAMFS: &str = "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.beamfs";
 const KO_BUILD_DIR:   &str = "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/work/qemuarm64-poky-linux/hpc-arm64-research-beamfs/1.0/rootfs/lib/modules";
 const KO_PATH_IN_FS:  &str = "lib/modules/7.0.3/updates/beamfs.ko";
-const LIBVIRT_DIR:    &str = "/var/lib/libvirt/images/hpc-arm64";
 
 const VM_NAMES: &[&str] = &["beamfs-master", "beamfs-compute01", "beamfs-compute02", "beamfs-compute03"];
 const VM_IPS:   &[&str] = &["192.168.56.10", "192.168.56.11", "192.168.56.12", "192.168.56.13"];
@@ -53,6 +53,8 @@ pub struct PipelineManifest {
     pub canonical_beamfs_sha256: String,
     pub reference_ko_sha256:   String,
     pub in_vm_ko_sha256:   Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub resolved_vda_paths: BTreeMap<String, String>,
     pub phases:            Vec<(String, String, i32)>,
     pub overall_rc:        i32,
 }
@@ -240,52 +242,118 @@ pub fn assert_isolation_r21() -> Result<()> {
 // those helpers remain in force; this function only adds the cp/chown
 // step between destroy and start.
 // ---------------------------------------------------------------------
-pub fn redeploy_4_vms() -> Result<()> {
+/// Resolve the actual host-side file path backing the vda device of `vm`
+/// by parsing `virsh dumpxml`. Protects against silent drift in the
+/// libvirt naming convention (cf. Bug B 2026-05-15: master.xml had vda
+/// pointing to beamfs-master-research.beamfs while the pipeline assumed
+/// beamfs-master.beamfs; Phase 0.5 cp landed in the void).
+///
+/// Looks specifically for: <disk type='file' device='disk'> with
+/// <target dev='vda' bus='virtio'/> and returns <source file='...'>.
+pub fn resolve_vda_source(vm_name: &str) -> Result<String> {
+    let output = Command::new("sudo")
+        .args(["virsh", "-c", "qemu:///system", "dumpxml", vm_name])
+        .output()
+        .with_context(|| format!("spawn sudo virsh dumpxml {vm_name}"))?;
+    if !output.status.success() {
+        bail!(
+            "sudo virsh dumpxml {vm_name} failed (exit {:?}): {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let xml = String::from_utf8(output.stdout)
+        .context("virsh dumpxml stdout is not UTF-8")?;
+    let doc = roxmltree::Document::parse(&xml)
+        .with_context(|| format!("parse virsh dumpxml output for {vm_name}"))?;
+
+    for disk in doc.descendants().filter(|n| n.has_tag_name("disk")) {
+        let disk_type   = disk.attribute("type").unwrap_or("");
+        let device_kind = disk.attribute("device").unwrap_or("");
+        if disk_type != "file" || device_kind != "disk" {
+            continue;
+        }
+        let target = disk.children().find(|n| n.has_tag_name("target"));
+        let source = disk.children().find(|n| n.has_tag_name("source"));
+        let (Some(target), Some(source)) = (target, source) else {
+            continue;
+        };
+        if target.attribute("dev").unwrap_or("") != "vda" {
+            continue;
+        }
+        if target.attribute("bus").unwrap_or("") != "virtio" {
+            continue;
+        }
+        let src_file = source.attribute("file")
+            .ok_or_else(|| anyhow::anyhow!("vm {vm_name}: <disk vda> has no <source file=>"))?;
+        return Ok(src_file.to_string());
+    }
+    bail!("vm {vm_name}: no <disk type='file' device='disk'> with vda target found in dumpxml")
+}
+
+pub fn redeploy_4_vms() -> Result<BTreeMap<String, String>> {
     println!("[pipeline 0.5] redeploy 4 VMs from canonical .beamfs");
 
     crate::lifecycle::define_missing_vms()
         .context("define missing VMs (cold-start safety)")?;
+
+    // R31 step 0.5a: resolve each VM's actual vda backing path from
+    // libvirt XML BEFORE destroy. Pins the cp target to whatever libvirt
+    // is actually configured to use, instead of assuming <vm>.beamfs.
+    let mut resolved: BTreeMap<String, String> = BTreeMap::new();
+    for vm in VM_NAMES {
+        let path = resolve_vda_source(vm)
+            .with_context(|| format!("resolve vda source for {vm}"))?;
+        println!("  {vm} : resolved vda source = {path}");
+        resolved.insert((*vm).to_string(), path);
+    }
+
     crate::lifecycle::destroy_all_vms()
         .context("destroy all VMs before redeploy")?;
 
-    // R31 step 4: ensure libvirt/QEMU has fully released file descriptors
-    // on .beamfs rootfs files before we overwrite them. virsh destroy is
-    // SIGKILL-level but QEMU buffer flush is best-effort; sync forces the
-    // host page cache + dirty pages to disk so subsequent cp lands on a
-    // quiesced filesystem state.
+    // R31 step 0.5b: confirm no qemu process is still holding a FD on
+    // any target file. `fuser -s <path>` returns 0 if any FD found, 1
+    // if none. We want rc=1 (none). exit 0 means a process still holds
+    // the FD, which would corrupt cp.
+    let _ = Command::new("sync").status();
+    for vm in VM_NAMES {
+        let path = &resolved[*vm];
+        let st = Command::new("sudo")
+            .args(["fuser", "-s", path])
+            .status()
+            .with_context(|| format!("fuser {path}"))?;
+        if st.success() {
+            bail!("redeploy: a process still holds a FD on {path} (virsh destroy did not release; check `sudo fuser {path}` manually)");
+        }
+        println!("  {vm} : FDs released on {path}");
+    }
+
     let _ = Command::new("sync").status();
 
-    // Reference sha256 of the canonical .beamfs -- computed once, used to
-    // verify each cp byte-for-byte. Establishes the R31 invariant that
-    // every VM rootfs is byte-identical to canonical at start time.
     let canonical_sha = sha256_file(Path::new(CANONICAL_BEAMFS))
         .context("hash canonical .beamfs")?;
     println!("  canonical .beamfs sha256: {canonical_sha}");
 
     for vm in VM_NAMES {
-        let dst = format!("{LIBVIRT_DIR}/{vm}.beamfs");
+        let dst = &resolved[*vm];
         let st = Command::new("sudo")
-            .args(["cp", CANONICAL_BEAMFS, &dst])
+            .args(["cp", CANONICAL_BEAMFS, dst])
             .status().with_context(|| format!("cp beamfs -> {dst}"))?;
         if !st.success() { bail!("cp failed for {dst}"); }
         let st = Command::new("sudo")
-            .args(["chown", "qemu:qemu", &dst]).status()
+            .args(["chown", "qemu:qemu", dst]).status()
             .with_context(|| format!("chown {dst}"))?;
         if !st.success() { bail!("chown failed for {dst}"); }
 
-        // R31 step 4: flush page cache + verify byte-identity vs canonical
-        // BEFORE start. This catches the case where a stale FD from a
-        // pre-existing VM (out-of-pipeline launch, crashed bench leftover,
-        // libvirt resource leak) caused cp to land on a non-quiesced file.
         let _ = Command::new("sync").status();
-        let dst_sha = sha256_file(Path::new(&dst))
+        let dst_sha = sha256_file(Path::new(dst))
             .with_context(|| format!("hash {dst}"))?;
         if dst_sha != canonical_sha {
             bail!(
                 "redeploy verify FAIL for {dst}: deployed sha256={dst_sha} != canonical={canonical_sha} (R31: a stale VM held a FD on this file, or cp was interrupted; ensure no out-of-pipeline VM is running and rerun)"
             );
         }
-        println!("  {vm}.beamfs redeployed (sha256 verified)");
+        println!("  {vm} -> {dst} sha256 verified");
     }
 
     crate::lifecycle::start_network()
@@ -293,7 +361,7 @@ pub fn redeploy_4_vms() -> Result<()> {
     crate::lifecycle::start_all_vms()
         .context("start all 4 VMs")?;
 
-    Ok(())
+    Ok(resolved)
 }
 
 // ---------------------------------------------------------------------
@@ -378,6 +446,7 @@ pub fn build_initial_manifest() -> Result<PipelineManifest> {
         commit_yocto:  git_head_sha(YOCTO_REPO)?,
         commit_bench:  git_head_sha(BENCH_REPO)?,
         source_sha256: Vec::new(),
+        resolved_vda_paths: BTreeMap::new(),
         canonical_beamfs_sha256: String::new(),
         reference_ko_sha256:   String::new(),
         in_vm_ko_sha256:       Vec::new(),
