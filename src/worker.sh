@@ -890,7 +890,31 @@ cluster_setup)
     done
     sudo sync
     sudo find "$SUBDIR" -type f -exec sha256sum {} \; 2>/dev/null | sort > "/tmp/pre-cluster-$TS_TAG.txt"
-    echo "CLUSTER|HOST=$(hostname)|SETUP=OK|SUBDIR=$SUBDIR|FILES=12"
+
+    # S3.1-cluster : compute target_block_range from filefrag on the
+    # canonical cluster target_file ($SUBDIR/dir-B/file-B2.bin). Same
+    # logic as the multifs setup path (worker.sh:355-382). The range
+    # is sector-units (= fs_block x 8), end exclusive. Emitted in the
+    # SETUP=OK record for the orchestrator to consume.
+    # Without this, cluster_attack pushed target_block=0 (whole device)
+    # to RadFI and flipped indiscriminately on SB / inode 1 / inode
+    # table, producing spurious RS_FAILED verdicts at prob=1M (cf.
+    # known-limitations.md scheme=2 no per-inode RS).
+    CL_TARGET_FILE="$SUBDIR/dir-B/file-B2.bin"
+    CL_TBR_START=0
+    CL_TBR_END=0
+    if command -v filefrag >/dev/null 2>&1 && [ -f "$CL_TARGET_FILE" ]; then
+        CL_FRAG=$(sudo filefrag -v -b4096 "$CL_TARGET_FILE" 2>/dev/null)
+        CL_EXTENTS=$(echo "$CL_FRAG" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $4); print $4}')
+        if [ -n "$CL_EXTENTS" ]; then
+            CL_RMIN=$(echo "$CL_EXTENTS" | sort -n | head -1)
+            CL_RMAX=$(echo "$CL_EXTENTS" | sort -n | tail -1)
+            CL_TBR_START=$((CL_RMIN * 8))
+            CL_TBR_END=$(((CL_RMAX + 1) * 8))
+        fi
+    fi
+
+    echo "CLUSTER|HOST=$(hostname)|SETUP=OK|SUBDIR=$SUBDIR|FILES=12|TARGET_BLOCK_RANGE_START=$CL_TBR_START|TARGET_BLOCK_RANGE_END=$CL_TBR_END"
     ;;
 
 cluster_attack)

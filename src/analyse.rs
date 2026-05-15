@@ -71,6 +71,64 @@ impl Default for AnalyseConfig {
     }
 }
 
+/// S3.1-cluster : parse cluster_setup_all outputs and compute the
+/// union of per-node target_block_range, in sector units. Each
+/// node may host the target_file at a different physical extent
+/// (4 independent beamfs instances), so we take min(start) and
+/// max(end) across reachable nodes to cover them all. RadFI then
+/// flips inside this union, never on SB / inode 1 / inode table.
+///
+/// Returns None if no node emitted a valid range (e.g. old worker.sh
+/// without the S3.1-cluster fields, or filefrag absent on the VM).
+/// In that case, the caller MUST remove the env vars so the worker
+/// falls back to whole-device injection (legacy, broadcast behaviour).
+fn compute_cluster_target_range(setup: &[cluster::ClusterActionResult]) -> Option<(u64, u64)> {
+    let mut min_start: Option<u64> = None;
+    let mut max_end: Option<u64> = None;
+    for r in setup {
+        let mut start: Option<u64> = None;
+        let mut end: Option<u64> = None;
+        for tok in r.raw_output.trim().split('|') {
+            if let Some((k, v)) = tok.split_once('=') {
+                match k {
+                    "TARGET_BLOCK_RANGE_START" => start = v.trim().parse().ok(),
+                    "TARGET_BLOCK_RANGE_END"   => end   = v.trim().parse().ok(),
+                    _ => {}
+                }
+            }
+        }
+        if let (Some(s), Some(e)) = (start, end) {
+            if e > s {
+                min_start = Some(min_start.map_or(s, |cur| cur.min(s)));
+                max_end   = Some(max_end.map_or(e, |cur| cur.max(e)));
+            }
+        }
+    }
+    match (min_start, max_end) {
+        (Some(s), Some(e)) if e > s => Some((s, e)),
+        _ => None,
+    }
+}
+
+/// S3.1-cluster : set or remove the TARGET_BLOCK_RANGE_* env vars
+/// according to the computed union. Mirrors the multifs.rs::Phase 3
+/// set/remove block. Must be called before each cluster_attack_all
+/// (the range may evolve across setup_again iterations between probs).
+fn apply_cluster_target_range(range: Option<(u64, u64)>) {
+    match range {
+        Some((s, e)) => {
+            std::env::set_var("TARGET_BLOCK_RANGE_START", s.to_string());
+            std::env::set_var("TARGET_BLOCK_RANGE_END",   e.to_string());
+            println!("  [S3.1-cluster] target_block_range = [{s}, {e}) sectors");
+        }
+        None => {
+            std::env::remove_var("TARGET_BLOCK_RANGE_START");
+            std::env::remove_var("TARGET_BLOCK_RANGE_END");
+            println!("  [S3.1-cluster] target_block_range UNAVAILABLE -- fallback to whole-device injection");
+        }
+    }
+}
+
 pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     let ts = Local::now();
     let ts_compact = ts.format("%Y%m%d-%H%M%S").to_string();
@@ -250,6 +308,17 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     // ----------------------------------------------------------------
     let mut cluster_records_path: Option<PathBuf> = None;
     if cfg.scope == Scope::Full {
+        // S3.1-cluster : union of per-node target_block_range, refreshed
+        // at every cluster_setup_all. Unconditionally assigned by both
+        // branches of the immediately-following setup-or-retry block;
+        // no initializer to keep the compiler enforcing that invariant.
+        // Subsequent re-assignments inside the prob loop are guarded by
+        // `if probs.last() != Some(&prob)` and are dead on the final
+        // iteration (intentional ; cluster_target_range is consumed at
+        // the TOP of each loop iter via apply_cluster_target_range).
+        #[allow(unused_assignments)]
+        let mut cluster_target_range: Option<(u64, u64)>;
+
         println!();
         println!("[cluster] cluster_setup on all reachable nodes...");
         let setup = cluster::cluster_setup_all(&nodes, &ts_compact, &cfg.injector)
@@ -282,6 +351,12 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
             for r in &setup_final {
                 println!("    {} : {}", r.host, r.raw_output);
             }
+            // S3.1-cluster : use the retried setup output as the
+            // authoritative source for target_block_range.
+            cluster_target_range = compute_cluster_target_range(&setup_final);
+        } else {
+            // S3.1-cluster : no retry needed, use initial setup output.
+            cluster_target_range = compute_cluster_target_range(&setup);
         }
 
         // Sweep the same probs as multifs for consistency. Probs come from
@@ -294,6 +369,11 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
         for &prob in &probs {
             println!();
             println!("[cluster] cluster_attack prob={prob} on all reachable nodes...");
+            // S3.1-cluster : apply env vars BEFORE attack so cluster.rs::worker_cmd
+            // forwards them via SSH and worker.sh::cluster_attack pushes them to
+            // debugfs (target_block_range_{start,end}). RadFI then narrows the
+            // injection to the target_file's physical extents, never SB nor inode 1.
+            apply_cluster_target_range(cluster_target_range);
             let atk = cluster::cluster_attack_all(&nodes, &ts_compact, prob, &cfg.injector)
                 .context("cluster_attack_all failed")?;
             for r in &atk {
@@ -350,6 +430,10 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
                 println!("[cluster] cluster_setup again for next prob...");
                 let setup_again = cluster::cluster_setup_all(&nodes, &ts_compact, &cfg.injector)
                     .context("cluster_setup_all retry failed")?;
+                // S3.1-cluster : refresh range from the new setup outputs.
+                // The target_file extent layout can change because cluster_verify
+                // unlinks the previous $SUBDIR and cluster_setup recreates it.
+                cluster_target_range = compute_cluster_target_range(&setup_again);
                 let any_error = setup_again.iter()
                     .any(|r| r.raw_output.contains("ERROR"));
                 if any_error {
@@ -368,9 +452,16 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
                     for r in &setup_final {
                         println!("    {} : {}", r.host, r.raw_output);
                     }
+                    // S3.1-cluster : range from the retried setup outputs.
+                    cluster_target_range = compute_cluster_target_range(&setup_final);
                 }
             }
         }
+
+        // S3.1-cluster : cleanup env vars after the cluster sweep is done.
+        std::env::remove_var("TARGET_BLOCK_RANGE_START");
+        std::env::remove_var("TARGET_BLOCK_RANGE_END");
+
         cluster_records_path = Some(cluster_log);
     }
 
