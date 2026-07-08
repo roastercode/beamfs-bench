@@ -36,7 +36,7 @@ const POKY_DIR:       &str = "/home/aurelien/yocto/poky";
 const BUILD_DIR_NAME: &str = "build-qemu-arm64";
 const CANONICAL_BEAMFS: &str = "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.beamfs";
 const KO_BUILD_DIR:   &str = "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/work/qemuarm64-poky-linux/hpc-arm64-research-beamfs/1.0/rootfs/lib/modules";
-const KO_PATH_IN_FS:  &str = "lib/modules/7.0.3/updates/beamfs.ko";
+const KO_PATH_IN_FS:  &str = "lib/modules/7.0.9/updates/beamfs.ko";
 
 const VM_NAMES: &[&str] = &["beamfs-master", "beamfs-compute01", "beamfs-compute02", "beamfs-compute03"];
 const VM_IPS:   &[&str] = &["192.168.56.10", "192.168.56.11", "192.168.56.12", "192.168.56.13"];
