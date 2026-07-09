@@ -956,6 +956,23 @@ cluster_attack)
     echo $PROB_VAL  | sudo tee ${INJECTOR_DBG}/probability  >/dev/null
     # v0.7.6 : push inject_on_read=1 unconditionally (see multifs site).
     echo 1          | sudo tee ${INJECTOR_DBG}/inject_on_read >/dev/null
+    # DATA_CSUM/S3.1-cluster fix : cluster_attack must POSE the target_block_range
+    # that cluster_setup computed. Without this the range stayed unset on /data,
+    # every bio was REJECT_BLOCK (skipped_filter), and emufi never injected
+    # (call_count=0). Recompute from filefrag on this node's own target file
+    # (no cross-SSH var propagation) and apply, mirroring the multifs site.
+    CL_TARGET_FILE="$SUBDIR/dir-B/file-B2.bin"
+    if command -v filefrag >/dev/null 2>&1 && [ -f "$CL_TARGET_FILE" ] \
+           && sudo test -e ${INJECTOR_DBG}/target_block_range_start; then
+        CA_FRAG=$(sudo filefrag -v -b4096 "$CL_TARGET_FILE" 2>/dev/null)
+        CA_EXTENTS=$(echo "$CA_FRAG" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $4); print $4}')
+        if [ -n "$CA_EXTENTS" ]; then
+            CA_RMIN=$(echo "$CA_EXTENTS" | sort -n | head -1)
+            CA_RMAX=$(echo "$CA_EXTENTS" | sort -n | tail -1)
+            echo $((CA_RMIN * 8))       | sudo tee ${INJECTOR_DBG}/target_block_range_start >/dev/null
+            echo $(((CA_RMAX + 1) * 8)) | sudo tee ${INJECTOR_DBG}/target_block_range_end   >/dev/null
+        fi
+    fi
 
     # v0.7.4 : emufi 0.3.0 envvars (no auto-compute on metadata site).
     if [ -n "${FLIP_LOCALITY:-}" ] && sudo test -e ${INJECTOR_DBG}/flip_locality; then
