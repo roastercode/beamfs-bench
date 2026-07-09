@@ -69,8 +69,15 @@ BEAMFS_INODE_COUNT="${BEAMFS_INODE_COUNT:-0}"
 # Centralises the -s / -O / -N flag composition so every invocation
 # site stays in lockstep. -N is omitted when BEAMFS_INODE_COUNT=0,
 # letting mkfs apply its built-in default (back-compat).
+# BEAMFS_DATA_CSUM: when 1, format with --data-csum (format-v6 RO_COMPAT
+# bit 4). Off by default so the canonical path stays byte-identical to v5.
+BEAMFS_DATA_CSUM="${BEAMFS_DATA_CSUM:-0}"
+
 mkfs_beamfs_args() {
     local args="-s $BEAMFS_SCHEME -O per_inode_rs"
+    if [ "$BEAMFS_DATA_CSUM" = "1" ]; then
+        args="$args --data-csum"
+    fi
     if [ "$BEAMFS_INODE_COUNT" -gt 0 ] 2>/dev/null; then
         args="$args -N $BEAMFS_INODE_COUNT"
     fi
@@ -764,7 +771,7 @@ print(f'{bits} {frac_bp} {len(blocks)}')
 
     DMESG_SLICE=$(sudo dmesg 2>/dev/null | awk -v m="$DMESG_MARK" '$0 ~ m {found=1; next} found')
     RS_CORRECTED=$(echo "$DMESG_SLICE" | grep -cE 'beamfs(/inline)?:.*symbol\(s\) corrected' | tr -d '\n')
-    DMESG_UNCORR=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*uncorrectable|beamfs.*RS decode failed|beamfs/inline.*corrupted (direct|indirect) pointer' | tr -d '\n')
+    DMESG_UNCORR=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*uncorrectable|beamfs.*RS decode failed|beamfs/inline.*corrupted (direct|indirect) pointer|beamfs/inline.*data_csum mismatch' | tr -d '\n')
     DMESG_EIO=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*-EIO|beamfs.*Input/output error' | tr -d '\n')
     [ -z "$RS_CORRECTED" ] && RS_CORRECTED=0
     [ -z "$DMESG_UNCORR" ] && DMESG_UNCORR=0
@@ -1062,7 +1069,7 @@ print(f'{bits} {frac_bp} {len(blocks)}')
 
     DMESG_SLICE=$(sudo dmesg 2>/dev/null | awk -v m="$DMESG_MARK" '$0 ~ m {found=1; next} found')
     RS_CORRECTED=$(echo "$DMESG_SLICE" | grep -cE 'beamfs(/inline)?:.*symbol\(s\) corrected' | tr -d '\n')
-    DMESG_UNCORR=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*uncorrectable|beamfs.*RS decode failed|beamfs/inline.*corrupted (direct|indirect) pointer' | tr -d '\n')
+    DMESG_UNCORR=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*uncorrectable|beamfs.*RS decode failed|beamfs/inline.*corrupted (direct|indirect) pointer|beamfs/inline.*data_csum mismatch' | tr -d '\n')
     DMESG_EIO=$(echo "$DMESG_SLICE" | grep -ciE 'beamfs.*-EIO|beamfs.*Input/output error' | tr -d '\n')
     [ -z "$RS_CORRECTED" ] && RS_CORRECTED=0
     [ -z "$DMESG_UNCORR" ] && DMESG_UNCORR=0
