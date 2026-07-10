@@ -1113,7 +1113,17 @@ fn run_naming_r17_check(out: &Path) -> ToolReport {
 
 fn run_emdash_r16_check(out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
-    let emdash: char = '\u{2014}';
+    // R16 forbidden Unicode punctuation: em-dash, en-dash, right arrow,
+    // curly single/double quotes. Named emdash_r16 for baseline continuity.
+    const FORBIDDEN_R16: &[(char, &str)] = &[
+        ('\u{2014}', "em-dash U+2014"),
+        ('\u{2013}', "en-dash U+2013"),
+        ('\u{2192}', "arrow U+2192"),
+        ('\u{2018}', "left-single-quote U+2018"),
+        ('\u{2019}', "right-single-quote U+2019"),
+        ('\u{201C}', "left-double-quote U+201C"),
+        ('\u{201D}', "right-double-quote U+201D"),
+    ];
     let mut hits: Vec<String> = Vec::new();
     for repo in &[BEAMFS_REPO, BENCH_REPO] {
         let walker = walkdir::WalkDir::new(repo).into_iter()
@@ -1143,8 +1153,11 @@ fn run_emdash_r16_check(out: &Path) -> ToolReport {
                 Err(_) => continue,
             };
             for (lineno, line) in content.lines().enumerate() {
-                if line.contains(emdash) {
-                    hits.push(format!("{}:{}: {}", s, lineno + 1, line.trim()));
+                for &(ch, label) in FORBIDDEN_R16 {
+                    if line.contains(ch) {
+                        hits.push(format!("{}:{}: [{}] {}",
+                                          s, lineno + 1, label, line.trim()));
+                    }
                 }
             }
         }

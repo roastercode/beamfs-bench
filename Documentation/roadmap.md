@@ -164,7 +164,7 @@ cross-correlation with dmesg RS corrected events.
   dmesg via timestamp.
 
 **Coupling note :** Stage 3 must align with EMUFI rename
-(`debugfs root /sys/kernel/debug/radfi/` → `/sys/kernel/debug/emufi/`).
+(`debugfs root /sys/kernel/debug/radfi/` -> `/sys/kernel/debug/emufi/`).
 See `~/git/emufi/ROADMAP.md` section 7 (Migration plan).
 
 ---
@@ -213,7 +213,7 @@ manifest.
 - Worker filefrag + per-FS block-list derivation (ext4 + beamfs
   first via filefrag/FIEMAP ; btrfs and squashfs deferred to M2.5
   if scientifically useful).
-- RadFI ebuild bump 0.1.3 → 0.1.4 (or EMUFI bump to v0.2.x).
+- RadFI ebuild bump 0.1.3 -> 0.1.4 (or EMUFI bump to v0.2.x).
 - beamfs-bench bump to v1.0.0 (architectural change).
 - Coupled with **beamfs Stage 4 deliverable on FIEMAP support**
   (cf. beamfs-roadmap stage 4 `iomap_iter` path).
@@ -385,7 +385,7 @@ to N-FS parallel attack :
 
 #### S3 - worker.sh refactor (6h)
 
-The current worker.sh has linear setup→attack→verify per-FS. v1.0
+The current worker.sh has linear setup->attack->verify per-FS. v1.0
 restructures the action flow :
 
   - `setup` action loops over the FS list
