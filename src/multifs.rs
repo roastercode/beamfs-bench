@@ -318,8 +318,8 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
     // Phase 3: per-FS, per-prob attacks
     // ----------------------------------------------------------------
     let n_runs = validated.len() * cfg.probs.len();
-    blue(&format!("[3/5] RadFI attacks: {} FS x {} probs = {} runs",
-                  validated.len(), cfg.probs.len(), n_runs));
+    blue(&format!("[3/5] {} attacks: {} FS x {} probs = {} runs",
+                  cfg.injector, validated.len(), cfg.probs.len(), n_runs));
 
     let all_records_path = run_dir.join("all-records.txt");
     let mut all_records = fs::File::create(&all_records_path)
