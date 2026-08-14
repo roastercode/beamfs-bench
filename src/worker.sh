@@ -956,6 +956,23 @@ cluster_attack)
     echo $PROB_VAL  | sudo tee ${INJECTOR_DBG}/probability  >/dev/null
     # v0.7.6 : push inject_on_read=1 unconditionally (see multifs site).
     echo 1          | sudo tee ${INJECTOR_DBG}/inject_on_read >/dev/null
+    # MBU/multi-chip realism fix : cluster_attack never posed FLIP_WIDTH,
+    # MULTI_CHIP, CHIP_COUNT, WIDTH_MODE, unlike the multifs site (worker.sh
+    # ~464-539). Without this, cluster injections always fell back to
+    # flip_width=1 SEU regardless of the caller-requested MBU intensity.
+    FLIP_WIDTH_VAL=${FLIP_WIDTH:-1}
+    if sudo test -e ${INJECTOR_DBG}/flip_width; then
+        echo $FLIP_WIDTH_VAL | sudo tee ${INJECTOR_DBG}/flip_width >/dev/null
+    fi
+    if [ -n "${MULTI_CHIP:-}" ] && sudo test -e ${INJECTOR_DBG}/multi_chip; then
+        echo ${MULTI_CHIP} | sudo tee ${INJECTOR_DBG}/multi_chip >/dev/null
+    fi
+    if [ -n "${CHIP_COUNT:-}" ] && sudo test -e ${INJECTOR_DBG}/chip_count; then
+        echo ${CHIP_COUNT} | sudo tee ${INJECTOR_DBG}/chip_count >/dev/null
+    fi
+    if [ -n "${WIDTH_MODE:-}" ] && sudo test -e ${INJECTOR_DBG}/width_mode; then
+        echo ${WIDTH_MODE} | sudo tee ${INJECTOR_DBG}/width_mode >/dev/null
+    fi
     # DATA_CSUM/S3.1-cluster fix : cluster_attack must POSE the target_block_range
     # that cluster_setup computed. Without this the range stayed unset on /data,
     # every bio was REJECT_BLOCK (skipped_filter), and emufi never injected
