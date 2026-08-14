@@ -393,7 +393,41 @@ setup)
         fi
         [ -z "$TARGET_BLOCK" ] && TARGET_BLOCK=0
 
-        echo "FS=$FS|VD=$VD|MNT=$MNT|TARGET_FILE=$TARGET_FILE|TARGET_BLOCK=$TARGET_BLOCK|TARGET_BLOCK_RANGE_START=$TARGET_BLOCK_RANGE_START|TARGET_BLOCK_RANGE_END=$TARGET_BLOCK_RANGE_END"
+        # Reachability probe (v0.12.3). A CALL_DELTA of 0 is ambiguous on its
+        # own: the filesystem may have resisted, or may simply never have been
+        # attacked. Measured 2026-08-14: erofs and vfat served the 256 KiB
+        # target entirely from cache after drop_caches + umount/mount, emitting
+        # zero bios on their own device (all traffic was on 254,0 = rootfs from
+        # cat itself), so no injection was possible regardless of targeting.
+        # Count bios issued on THIS filesystem device during a cold read and
+        # publish the result, so synthesis can separate "resisted" from
+        # "never exercised". Requires tracing_on=1: it defaults to 0 and a
+        # disabled tracer silently reports zero events.
+        REACHABLE=unknown
+        REACH_BIOS=0
+        TRACE_DIR=/sys/kernel/debug/tracing
+        if sudo test -e ${TRACE_DIR}/events/block/block_bio_queue/enable; then
+            DEV_MAJ_R=$((0x$(stat -c '%t' /dev/$VD 2>/dev/null)))
+            DEV_MIN_R=$((0x$(stat -c '%T' /dev/$VD 2>/dev/null)))
+            sudo sync
+            echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
+            sudo umount $MNT 2>/dev/null
+            sudo mount /dev/$VD $MNT 2>/dev/null
+            sudo bash -c "echo 1 > ${TRACE_DIR}/tracing_on"
+            sudo bash -c "echo > ${TRACE_DIR}/trace"
+            sudo bash -c "echo 1 > ${TRACE_DIR}/events/block/block_bio_queue/enable"
+            sudo cat "$TARGET_FILE" > /dev/null 2>&1
+            sudo bash -c "echo 0 > ${TRACE_DIR}/events/block/block_bio_queue/enable"
+            REACH_BIOS=$(sudo grep -v '^#' ${TRACE_DIR}/trace 2>/dev/null \
+                         | grep -c "${DEV_MAJ_R},${DEV_MIN_R} " || true)
+            [ -z "$REACH_BIOS" ] && REACH_BIOS=0
+            if [ "$REACH_BIOS" -gt 0 ] 2>/dev/null; then
+                REACHABLE=yes
+            else
+                REACHABLE=no
+            fi
+        fi
+        echo "FS=$FS|VD=$VD|MNT=$MNT|TARGET_FILE=$TARGET_FILE|TARGET_BLOCK=$TARGET_BLOCK|TARGET_BLOCK_RANGE_START=$TARGET_BLOCK_RANGE_START|TARGET_BLOCK_RANGE_END=$TARGET_BLOCK_RANGE_END|REACHABLE=$REACHABLE|REACH_BIOS=$REACH_BIOS"
         sudo find $MNT -type f -exec sha256sum {} \; | sort > /tmp/pre-attack-$FS.txt
     else
         # Phase B.1: read-only FS branch covers squashfs and erofs uniformly.
