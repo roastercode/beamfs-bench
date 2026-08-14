@@ -35,6 +35,10 @@ use std::collections::HashMap;
 struct SetupParse {
     target_block_range_start: u64,
     target_block_range_end: u64,
+    /// v0.12.3: "yes" if a cold read of the target emitted bios on the
+    /// filesystem's own device, "no" if it was served entirely from cache
+    /// (erofs, vfat), "unknown" if the probe could not run.
+    reachable: String,
 }
 
 /// Parse a key=value| pipe-delimited setup record into SetupParse.
@@ -50,6 +54,9 @@ fn parse_setup_record(out: &str) -> SetupParse {
                 }
                 "TARGET_BLOCK_RANGE_END" => {
                     parsed.target_block_range_end = v.trim().parse().unwrap_or(0);
+                }
+                "REACHABLE" => {
+                    parsed.reachable = v.trim().to_string();
                 }
                 _ => {}
             }

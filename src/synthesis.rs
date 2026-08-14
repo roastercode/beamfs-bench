@@ -503,9 +503,19 @@ fn derive_verdict_legacy(
     cat_rc: i32,
     hash_pre: &str,
     hash_post: &str,
+    call_delta: u32,
+    flip_delta: u32,
 ) -> &'static str {
     if mount_state == "FS_PANIC" {
         return "FS_PANIC";
+    }
+    // v0.12.3: no injection reached this filesystem, so nothing about its
+    // resilience was measured. Reporting RECOVERED here would make a
+    // never-attacked filesystem indistinguishable from one that withstood
+    // the campaign; erofs and vfat served the target from cache and would
+    // otherwise have been tabulated as survivors.
+    if call_delta == 0 && flip_delta == 0 {
+        return "NOT_EXERCISED";
     }
     if cat_rc != 0 {
         return "FS_PANIC";
@@ -771,11 +781,19 @@ pub fn extract_verdict(records: &str, fs_name: &str, prob: u32) -> Option<String
     let dmesg_uncorrectable: u32 = extract_attack_field(records, fs_name, prob, "DMESG_UNCORRECTABLE")
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
+    // v0.12.3: injection volume, used to flag a filesystem the campaign
+    // never actually attacked (see derive_verdict_legacy).
+    let call_delta: u32 = extract_attack_field(records, fs_name, prob, "CALL_DELTA")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let flip_delta: u32 = extract_attack_field(records, fs_name, prob, "FLIP_DELTA")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
 
     let verdict = if fs_name == "beamfs" {
         derive_verdict_beamfs(&mount_state, cat_rc, &hash_pre, &hash_post, rs_corrected, dmesg_uncorrectable)
     } else {
-        derive_verdict_legacy(&mount_state, cat_rc, &hash_pre, &hash_post)
+        derive_verdict_legacy(&mount_state, cat_rc, &hash_pre, &hash_post, call_delta, flip_delta)
     };
     Some(verdict.to_string())
 }
