@@ -376,10 +376,17 @@ setup)
             TARGET_BLOCK=$(echo "$FRAG_OUT" | awk '/^ +0:/ {gsub(/[.:]/, "", $4); print $4; exit}')
             # S3.1: extract ALL physical block numbers, find min and max,
             # convert to sectors (×8), apply exclusive upper bound (+1 then ×8).
-            EXTENTS=$(echo "$FRAG_OUT" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $4); print $4}')
+            # v0.12.2 : read BOTH physical_offset columns ($4=start, $5=end).
+            # Reading only $4 gave RMIN==RMAX on unfragmented files (ext4,
+            # btrfs: 1 extent), yielding an 8-sector range = 1 block out of 64,
+            # so injection almost never hit them while fragmented FS (beamfs,
+            # ext3) got full coverage. That biased every head-to-head run.
+            EXT_STARTS=$(echo "$FRAG_OUT" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $4); print $4}')
+            EXT_ENDS=$(echo "$FRAG_OUT" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $5); print $5}')
+            EXTENTS="$EXT_STARTS"
             if [ -n "$EXTENTS" ]; then
-                RMIN=$(echo "$EXTENTS" | sort -n | head -1)
-                RMAX=$(echo "$EXTENTS" | sort -n | tail -1)
+                RMIN=$(echo "$EXT_STARTS" | sort -n | head -1)
+                RMAX=$(echo "$EXT_ENDS" | sort -n | tail -1)
                 TARGET_BLOCK_RANGE_START=$((RMIN * 8))
                 TARGET_BLOCK_RANGE_END=$(((RMAX + 1) * 8))
             fi
@@ -912,10 +919,12 @@ cluster_setup)
     CL_TBR_END=0
     if command -v filefrag >/dev/null 2>&1 && [ -f "$CL_TARGET_FILE" ]; then
         CL_FRAG=$(sudo filefrag -v -b4096 "$CL_TARGET_FILE" 2>/dev/null)
-        CL_EXTENTS=$(echo "$CL_FRAG" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $4); print $4}')
+        CL_STARTS=$(echo "$CL_FRAG" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $4); print $4}')
+        CL_ENDS=$(echo "$CL_FRAG" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $5); print $5}')
+        CL_EXTENTS="$CL_STARTS"
         if [ -n "$CL_EXTENTS" ]; then
-            CL_RMIN=$(echo "$CL_EXTENTS" | sort -n | head -1)
-            CL_RMAX=$(echo "$CL_EXTENTS" | sort -n | tail -1)
+            CL_RMIN=$(echo "$CL_STARTS" | sort -n | head -1)
+            CL_RMAX=$(echo "$CL_ENDS" | sort -n | tail -1)
             CL_TBR_START=$((CL_RMIN * 8))
             CL_TBR_END=$(((CL_RMAX + 1) * 8))
         fi
@@ -982,10 +991,12 @@ cluster_attack)
     if command -v filefrag >/dev/null 2>&1 && [ -f "$CL_TARGET_FILE" ] \
            && sudo test -e ${INJECTOR_DBG}/target_block_range_start; then
         CA_FRAG=$(sudo filefrag -v -b4096 "$CL_TARGET_FILE" 2>/dev/null)
-        CA_EXTENTS=$(echo "$CA_FRAG" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $4); print $4}')
+        CA_STARTS=$(echo "$CA_FRAG" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $4); print $4}')
+        CA_ENDS=$(echo "$CA_FRAG" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $5); print $5}')
+        CA_EXTENTS="$CA_STARTS"
         if [ -n "$CA_EXTENTS" ]; then
-            CA_RMIN=$(echo "$CA_EXTENTS" | sort -n | head -1)
-            CA_RMAX=$(echo "$CA_EXTENTS" | sort -n | tail -1)
+            CA_RMIN=$(echo "$CA_STARTS" | sort -n | head -1)
+            CA_RMAX=$(echo "$CA_ENDS" | sort -n | tail -1)
             echo $((CA_RMIN * 8))       | sudo tee ${INJECTOR_DBG}/target_block_range_start >/dev/null
             echo $(((CA_RMAX + 1) * 8)) | sudo tee ${INJECTOR_DBG}/target_block_range_end   >/dev/null
         fi
