@@ -509,6 +509,14 @@ attack)
     if sudo test -e ${INJECTOR_DBG}/flip_width; then
         echo $FLIP_WIDTH_VAL | sudo tee ${INJECTOR_DBG}/flip_width >/dev/null
     fi
+    # v0.12.5 : dose control (emufi 0.6.0+). Posing the same MAX_FLIPS for
+    # every filesystem makes the campaign a controlled experiment: without
+    # it the injector fires once per filtered bio, so a filesystem issuing
+    # many small bios (beamfs: 72 for a 256 KiB read) receives far more
+    # flips than one issuing a single merged readahead (ext4: 4).
+    if [ -n "${MAX_FLIPS:-}" ] && sudo test -e ${INJECTOR_DBG}/max_flips; then
+        echo ${MAX_FLIPS} | sudo tee ${INJECTOR_DBG}/max_flips >/dev/null
+    fi
     # v0.2.1 : LET_CLASS high-level intensity (overrides PROB/FLIP_WIDTH).
     # 0=LOW 1=MEDIUM 2=HIGH 3=EXTREME (Baumann 2005 / JEDEC JEP89 calibrated).
     if [ -n "${LET_CLASS:-}" ] && sudo test -e ${INJECTOR_DBG}/let_class; then
@@ -1017,6 +1025,14 @@ cluster_attack)
     FLIP_WIDTH_VAL=${FLIP_WIDTH:-1}
     if sudo test -e ${INJECTOR_DBG}/flip_width; then
         echo $FLIP_WIDTH_VAL | sudo tee ${INJECTOR_DBG}/flip_width >/dev/null
+    fi
+    # v0.12.5 : dose control (emufi 0.6.0+). Posing the same MAX_FLIPS for
+    # every filesystem makes the campaign a controlled experiment: without
+    # it the injector fires once per filtered bio, so a filesystem issuing
+    # many small bios (beamfs: 72 for a 256 KiB read) receives far more
+    # flips than one issuing a single merged readahead (ext4: 4).
+    if [ -n "${MAX_FLIPS:-}" ] && sudo test -e ${INJECTOR_DBG}/max_flips; then
+        echo ${MAX_FLIPS} | sudo tee ${INJECTOR_DBG}/max_flips >/dev/null
     fi
     if [ -n "${MULTI_CHIP:-}" ] && sudo test -e ${INJECTOR_DBG}/multi_chip; then
         echo ${MULTI_CHIP} | sudo tee ${INJECTOR_DBG}/multi_chip >/dev/null
