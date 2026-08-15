@@ -390,6 +390,17 @@ setup)
                 TARGET_BLOCK_RANGE_START=$((RMIN * 8))
                 TARGET_BLOCK_RANGE_END=$(((RMAX + 1) * 8))
             fi
+            # v0.12.6 : per-extent list (emufi 0.7.0+). The min/max interval
+            # above spans everything between the first and last block, which
+            # on a fragmented layout is mostly foreign: ext3 placed 16 blocks
+            # near 3277377 and 48 near 18160, giving an interval 10000x the
+            # file size, and the injections never reached the data. Emit each
+            # extent as start:end in sectors so the injector targets the
+            # file's own blocks.
+            TARGET_RANGES=$(echo "$FRAG_OUT" | awk '/^ +[0-9]+:/ {
+                s=$4; e=$5; gsub(/[.:]/, "", s); gsub(/[.:]/, "", e);
+                printf "%s%d:%d", (NR_OUT++ ? "," : ""), s*8, (e+1)*8
+            }')
         fi
         [ -z "$TARGET_BLOCK" ] && TARGET_BLOCK=0
 
@@ -427,7 +438,7 @@ setup)
                 REACHABLE=no
             fi
         fi
-        echo "FS=$FS|VD=$VD|MNT=$MNT|TARGET_FILE=$TARGET_FILE|TARGET_BLOCK=$TARGET_BLOCK|TARGET_BLOCK_RANGE_START=$TARGET_BLOCK_RANGE_START|TARGET_BLOCK_RANGE_END=$TARGET_BLOCK_RANGE_END|REACHABLE=$REACHABLE|REACH_BIOS=$REACH_BIOS"
+        echo "FS=$FS|VD=$VD|MNT=$MNT|TARGET_FILE=$TARGET_FILE|TARGET_BLOCK=$TARGET_BLOCK|TARGET_BLOCK_RANGE_START=$TARGET_BLOCK_RANGE_START|TARGET_BLOCK_RANGE_END=$TARGET_BLOCK_RANGE_END|REACHABLE=$REACHABLE|REACH_BIOS=$REACH_BIOS|TARGET_RANGES=$TARGET_RANGES"
         sudo find $MNT -type f -exec sha256sum {} \; | sort > /tmp/pre-attack-$FS.txt
     else
         # Phase B.1: read-only FS branch covers squashfs and erofs uniformly.
@@ -494,6 +505,10 @@ attack)
        && sudo test -e ${INJECTOR_DBG}/target_block_range_start; then
         echo ${TARGET_BLOCK_RANGE_START} | sudo tee ${INJECTOR_DBG}/target_block_range_start >/dev/null
         echo ${TARGET_BLOCK_RANGE_END}   | sudo tee ${INJECTOR_DBG}/target_block_range_end   >/dev/null
+    fi
+    # v0.12.6 : per-extent list takes precedence over the interval above.
+    if [ -n "${TARGET_RANGES:-}" ] && sudo test -e ${INJECTOR_DBG}/target_ranges; then
+        printf '%s' "${TARGET_RANGES}" | sudo tee ${INJECTOR_DBG}/target_ranges >/dev/null
     fi
     echo $PROB    | sudo tee ${INJECTOR_DBG}/probability  >/dev/null
     # v0.7.6 : push inject_on_read=1 unconditionally. emufi v0.3.0
