@@ -62,6 +62,7 @@ pub fn worker_cmd(injector: &str, action_args: &str) -> String {
     for var in &[
         // v0.7.x baseline (kept verbatim):
         "FLIP_WIDTH",
+        "MAX_FLIPS",                 // u64, injection budget (emufi 0.6.0+)
         "LET_CLASS",
         "FLIP_LOCALITY",
         "BURST_SYMBOLS",
