@@ -675,6 +675,17 @@ attack)
     echo 0 | sudo tee ${INJECTOR_DBG}/enabled >/dev/null
     sudo cat "$TARGET_FILE" > /tmp/pre-cat-$FS.bin 2>/dev/null
     PRE_SIZE=$(stat -c '%s' /tmp/pre-cat-$FS.bin 2>/dev/null || echo 0)
+    # v0.12.4 : hash the disarmed read as well. BITS_DIFF only compares
+    # pre-cat against post-cat, so it reports 0 whenever both reads return
+    # the same bytes -- including when both are already wrong. Comparing
+    # HASH_PRECAT against HASH_PRE (the setup-time sha256 of the written
+    # content) tells whether the file was still pristine when the attack
+    # window opened. Without it, a run where corruption predates the attack
+    # is indistinguishable from a run where the filesystem protected the
+    # data, which is exactly the ambiguity found in the N=5 campaign
+    # (beamfs iterations 2, 4, 5: BITS_DIFF=0 but HASH_POST != HASH_PRE).
+    HASH_PRECAT=$(sha256sum /tmp/pre-cat-$FS.bin 2>/dev/null | awk '{print $1}')
+    [ -z "$HASH_PRECAT" ] && HASH_PRECAT=missing
     echo 1 | sudo tee ${INJECTOR_DBG}/enabled >/dev/null
 
     if is_readonly_fs "$FS"; then
@@ -846,7 +857,7 @@ print(f'{bits} {frac_bp} {len(blocks)}')
 
     sudo rm -f /tmp/pre-cat-$FS.bin /tmp/post-cat-$FS.bin /tmp/cat-err-$FS.log 2>/dev/null || true
 
-    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|FRAG_PRE_PHYS=$FRAG_PRE_PHYS|FRAG_POST_PHYS=$FRAG_POST_PHYS|FRAG_RELOCATED=$FRAG_RELOCATED|WORKLOAD_MODE=$WORKLOAD_MODE_VAL|WORKLOAD_DURATION=$WORKLOAD_DURATION_VAL|ATTACKED_BYTES_UNIQUE=$ATTACKED_BYTES_UNIQUE"
+    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_PRECAT=$HASH_PRECAT|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|FRAG_PRE_PHYS=$FRAG_PRE_PHYS|FRAG_POST_PHYS=$FRAG_POST_PHYS|FRAG_RELOCATED=$FRAG_RELOCATED|WORKLOAD_MODE=$WORKLOAD_MODE_VAL|WORKLOAD_DURATION=$WORKLOAD_DURATION_VAL|ATTACKED_BYTES_UNIQUE=$ATTACKED_BYTES_UNIQUE"
     ;;
 
 verify)
@@ -1076,6 +1087,10 @@ cluster_attack)
     echo 0 | sudo tee ${INJECTOR_DBG}/enabled >/dev/null
     sudo cat "$TARGET_FILE" > /tmp/pre-cat-cluster-$$.bin 2>/dev/null
     PRE_SIZE=$(stat -c '%s' /tmp/pre-cat-cluster-$$.bin 2>/dev/null || echo 0)
+    # v0.12.4 : see the multifs site -- distinguishes "protected" from
+    # "already corrupt before the attack window".
+    HASH_PRECAT=$(sha256sum /tmp/pre-cat-cluster-$$.bin 2>/dev/null | awk '{print $1}')
+    [ -z "$HASH_PRECAT" ] && HASH_PRECAT=missing
     echo 1 | sudo tee ${INJECTOR_DBG}/enabled >/dev/null
 
     # B.2 (M1 C1) : umount + drop_caches + mount cycle for /data (beamfs).
@@ -1156,7 +1171,7 @@ print(f'{bits} {frac_bp} {len(blocks)}')
 
     sudo rm -f /tmp/pre-cat-cluster-$$.bin /tmp/post-cat-cluster-$$.bin /tmp/cat-err-cluster-$$.log 2>/dev/null || true
 
-    echo "CLUSTER|HOST=$(hostname)|PROB=$PROB_VAL|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE"
+    echo "CLUSTER|HOST=$(hostname)|PROB=$PROB_VAL|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_PRECAT=$HASH_PRECAT|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE"
     ;;
 
 cluster_verify)
