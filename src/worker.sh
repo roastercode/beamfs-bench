@@ -1058,6 +1058,36 @@ cluster_attack)
     if [ -n "${WIDTH_MODE:-}" ] && sudo test -e ${INJECTOR_DBG}/width_mode; then
         echo ${WIDTH_MODE} | sudo tee ${INJECTOR_DBG}/width_mode >/dev/null
     fi
+    # v0.12.7 : parameters that were posed only at the multifs site. All of
+    # them already crossed SSH through the cluster.rs whitelist, so an
+    # invocation setting any of them looked like it applied everywhere while
+    # the four cluster nodes silently ran a different configuration.
+    # target_ranges is the consequential one: without it the cluster path
+    # kept using the enclosing interval that the per-extent fix replaced.
+    if [ -n "${TARGET_RANGES:-}" ] && sudo test -e ${INJECTOR_DBG}/target_ranges; then
+        printf '%s' "${TARGET_RANGES}" | sudo tee ${INJECTOR_DBG}/target_ranges >/dev/null
+    fi
+    if [ -n "${LET_CLASS:-}" ] && sudo test -e ${INJECTOR_DBG}/let_class; then
+        echo ${LET_CLASS} | sudo tee ${INJECTOR_DBG}/let_class >/dev/null
+    fi
+    if [ -n "${FLIP_STRIDE_BITS:-}" ] && sudo test -e ${INJECTOR_DBG}/flip_stride_bits; then
+        echo ${FLIP_STRIDE_BITS} | sudo tee ${INJECTOR_DBG}/flip_stride_bits >/dev/null
+    fi
+    if [ -n "${CODEWORD_SIZE_BYTES:-}" ] && sudo test -e ${INJECTOR_DBG}/codeword_size_bytes; then
+        echo ${CODEWORD_SIZE_BYTES} | sudo tee ${INJECTOR_DBG}/codeword_size_bytes >/dev/null
+    fi
+    if [ -n "${CODEWORD_ALIGN_BYTES:-}" ] && sudo test -e ${INJECTOR_DBG}/codeword_align_bytes; then
+        echo ${CODEWORD_ALIGN_BYTES} | sudo tee ${INJECTOR_DBG}/codeword_align_bytes >/dev/null
+    fi
+    if [ -n "${MULTI_SEGMENT:-}" ] && sudo test -e ${INJECTOR_DBG}/multi_segment; then
+        echo ${MULTI_SEGMENT} | sudo tee ${INJECTOR_DBG}/multi_segment >/dev/null
+    fi
+    if [ -n "${TARGET_STRUCT_OFFSET:-}" ] && sudo test -e ${INJECTOR_DBG}/target_struct_offset; then
+        echo ${TARGET_STRUCT_OFFSET} | sudo tee ${INJECTOR_DBG}/target_struct_offset >/dev/null
+    fi
+    if [ -n "${RESEED:-}" ] && sudo test -e ${INJECTOR_DBG}/reseed; then
+        echo ${RESEED} | sudo tee ${INJECTOR_DBG}/reseed >/dev/null
+    fi
     # DATA_CSUM/S3.1-cluster fix : cluster_attack must POSE the target_block_range
     # that cluster_setup computed. Without this the range stayed unset on /data,
     # every bio was REJECT_BLOCK (skipped_filter), and emufi never injected
