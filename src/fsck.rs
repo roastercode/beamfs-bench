@@ -5,9 +5,10 @@
 //! Runs fsck.<fs> on each victim filesystem and emits the result as
 //! a factual observation.
 //!
-//! For beamfs: fsck.beamfs is not yet implemented (planned Phase 1.5
-//! mainline-prep). The bench emits an explicit NOT_IMPLEMENTED record
-//! rather than skip silently.
+//! For beamfs: runs fsck.beamfs --repair --verbose. Test D is a
+//! post-FS_PANIC recovery scenario, so repair mode is the point;
+//! check-only would merely report. Exit codes follow fsck(8):
+//! 0 clean, 1 errors corrected, 4 errors left uncorrected.
 //!
 //! For squashfs: read-only filesystem, no fsck applicable; SKIP.
 //!
@@ -19,7 +20,6 @@
 //! ## Format
 //!
 //!   FSCK|HOST=...|FS=...|FSCK_RC=N|FSCK_SUMMARY=<first 20 lines, semicolon-joined>
-//!   FSCK|HOST=...|FS=beamfs|CHECK=NOT_IMPLEMENTED|reason=fsck_beamfs_pending_phase_1_5
 //!   FSCK|HOST=...|FS=squashfs|CHECK=SKIP|reason=read_only_filesystem_no_fsck
 //!
 //! Topology: compute01 (R-isolation).
@@ -62,9 +62,12 @@ fn run_scenario(fs: &str, vd: &str, injector: &str) -> Result<FsckObservation> {
     let cmd = crate::cluster::worker_cmd(injector, &format!("fsck_check {tag} {fs} {vd}"));
     let raw_check = ssh.exec_lenient(&cmd)
         .with_context(|| format!("fsck_check ({fs})"))?;
+    // NOT_IMPLEMENTED is deliberately no longer accepted: fsck.beamfs
+    // exists and is packaged (yocto-beamfs 5c5e665), so that record
+    // would now mean the binary failed to reach the node, which is a
+    // failure to surface rather than a state to tolerate.
     let phase_ok = raw_check.contains("CHECK=OK")
-        || raw_check.contains("CHECK=SKIP")
-        || raw_check.contains("CHECK=NOT_IMPLEMENTED");
+        || raw_check.contains("CHECK=SKIP");
 
     Ok(FsckObservation {
         fs: fs.to_string(),
@@ -84,7 +87,7 @@ fn write_synthesis(run_dir: &Path, observations: &[FsckObservation]) -> Result<(
     s.push_str("- compute01 holds the 5 USB FS victims\n");
     s.push_str("- master is orchestrator (R-isolation)\n");
     s.push_str("- squashfs: SKIP (read-only, no fsck)\n");
-    s.push_str("- beamfs: NOT_IMPLEMENTED (fsck.beamfs is Phase 1.5 mainline-prep)\n\n");
+    s.push_str("- beamfs: fsck.beamfs --repair --verbose (five passes)\n\n");
     s.push_str("## Observation matrix (5 FS x 1 scenario = 5 records)\n\n");
     s.push_str("| FS | VD | Phase | Raw check (truncated) |\n");
     s.push_str("|----|-----|-------|----------------------|\n");
@@ -96,8 +99,9 @@ fn write_synthesis(run_dir: &Path, observations: &[FsckObservation]) -> Result<(
     s.push_str("\n## Notes for analysis\n\n");
     s.push_str("- fsck_rc=0 generally means clean; rc=1 means errors corrected;\n");
     s.push_str("  rc>=4 means manual intervention required (per fsck conventions).\n");
-    s.push_str("- For beamfs: NOT_IMPLEMENTED is a deliberate signal; once Phase 1.5\n");
-    s.push_str("  delivers fsck.beamfs, this row will produce real fsck observations.\n");
+    s.push_str("- For beamfs the same fsck(8) codes apply. A CHECK=ERROR row with\n");
+    s.push_str("  reason=fsck_binary_missing means fsck.beamfs did not reach the\n");
+    s.push_str("  node, not that the filesystem is uncheckable.\n");
     fs::write(&synth_path, s).context("write synthesis.md")?;
 
     let records_path = run_dir.join("all-records.txt");
