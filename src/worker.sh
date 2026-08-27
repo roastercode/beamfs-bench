@@ -1803,9 +1803,12 @@ fsck_check)
             FSCK_ARGS="check"
             ;;
         beamfs)
-            # fsck.beamfs not yet implemented (Phase 1.5 mainline-prep)
-            echo "FSCK|HOST=$(hostname)|CHECK=NOT_IMPLEMENTED|fs=beamfs|reason=fsck_beamfs_pending_phase_1_5"
-            exit 0
+            # fsck.beamfs landed 2026-08-25 (beamfs.git e73926d): five
+            # passes, indirection-tree walk, RS encoder. --repair is what
+            # Test D exercises: check-only would only report, and the
+            # point here is post-FS_PANIC recovery.
+            FSCK_BIN="fsck.beamfs"
+            FSCK_ARGS="--repair --verbose"
             ;;
         *) echo "FSCK|HOST=$(hostname)|CHECK=ERROR|reason=unknown_fs|fs=$FS"; exit 1 ;;
     esac
@@ -1818,13 +1821,14 @@ fsck_check)
     # Make sure the fs is unmounted before fsck
     sudo umount "/dev/$VD" 2>/dev/null || true
 
-    if [ "$FS" = "btrfs" ]; then
-        FSCK_OUT=$(sudo "$FSCK_BIN" $FSCK_ARGS "$DEV" 2>&1 | head -20 | tr '\n' ';')
-        FSCK_RC=$?
-    else
-        FSCK_OUT=$(sudo "$FSCK_BIN" $FSCK_ARGS "$DEV" 2>&1 | head -20 | tr '\n' ';')
-        FSCK_RC=$?
-    fi
+    # Capture the fsck exit code, not the exit code of the pipeline tail.
+    # $? after a pipe reports tr(1), which is always 0, so every fsck run
+    # previously recorded fsck_rc=0 regardless of what fsck actually
+    # returned -- including the fsck(8) codes Test D exists to check
+    # (1 = errors corrected, 4 = errors left uncorrected).
+    FSCK_RAW=$(sudo "$FSCK_BIN" $FSCK_ARGS "$DEV" 2>&1)
+    FSCK_RC=$?
+    FSCK_OUT=$(printf '%s' "$FSCK_RAW" | head -20 | tr '\n' ';')
 
     echo "FSCK|HOST=$(hostname)|CHECK=OK|fs=$FS|dev=$DEV|fsck_rc=$FSCK_RC|fsck_summary=$FSCK_OUT"
     ;;
