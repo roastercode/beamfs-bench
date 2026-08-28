@@ -922,13 +922,52 @@ print(f'{bits} {frac_bp} {len(blocks)}')
             | sort -u \
             | wc -l)
         [ -z "$ATTACKED_BYTES_UNIQUE" ] && ATTACKED_BYTES_UNIQUE=0
+
+        # Keep the raw log, not just the count. Under INJECT_SCOPE=uniform
+        # flips land anywhere on the device -- superblock, inode table,
+        # bitmap, journal, data -- so a hash mismatch on its own does not
+        # say whether the filesystem failed to protect the file or failed
+        # to survive a metadata hit. The sector column is what separates
+        # those two, and without it the cross-filesystem comparison rests
+        # on an assumption about where the flips happened rather than on
+        # a measurement. Classification into on-disk zones is done at
+        # analysis time, where each filesystem's geometry is known.
+        sudo cat ${INJECTOR_DBG}/flip_log 2>/dev/null \
+            > /tmp/flip-log-$FS-$PROB.csv || true
+
+        # How many flips actually landed in the blocks of the file whose
+        # hash we then compare. Under uniform scope a flip can land
+        # anywhere -- superblock, inode table, bitmap, journal, unrelated
+        # data -- so "hash unchanged" may mean the filesystem protected
+        # the file, or merely that nothing hit it. Without this figure the
+        # comparison rests on an assumption about where flips fell rather
+        # than on a measurement, which is the first thing a reviewer will
+        # press on.
+        #
+        # Units differ and must be reconciled: filefrag -b4096 reports
+        # 4096-byte blocks, the flip_log records 512-byte sectors, hence
+        # the /8. Getting this wrong yields a silent zero -- plausible
+        # looking and entirely false.
+        if [ -n "$FRAG_PRE_PHYS" ] && [ "$FRAG_PRE_PHYS" != "na" ] \
+           && [ "$FRAG_PRE_PHYS" != "missing" ] \
+           && [ "$FRAG_PRE_PHYS" != "filefrag_failed" ]; then
+            FLIPS_ON_TARGET=$(sudo cat ${INJECTOR_DBG}/flip_log 2>/dev/null \
+                | awk -F',' -v blocks="$FRAG_PRE_PHYS" '
+                    BEGIN { n = split(blocks, b, ","); for (i = 1; i <= n; i++) want[b[i]] = 1 }
+                    NR > 1 && $2 != "0" { if (int($3 / 8) in want) c++ }
+                    END { print c + 0 }')
+            [ -z "$FLIPS_ON_TARGET" ] && FLIPS_ON_TARGET=0
+        else
+            FLIPS_ON_TARGET=na
+        fi
     else
         ATTACKED_BYTES_UNIQUE=na
+        FLIPS_ON_TARGET=na
     fi
 
     sudo rm -f /tmp/pre-cat-$FS.bin /tmp/post-cat-$FS.bin /tmp/cat-err-$FS.log 2>/dev/null || true
 
-    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_PRECAT=$HASH_PRECAT|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|FRAG_PRE_PHYS=$FRAG_PRE_PHYS|FRAG_POST_PHYS=$FRAG_POST_PHYS|FRAG_RELOCATED=$FRAG_RELOCATED|WORKLOAD_MODE=$WORKLOAD_MODE_VAL|WORKLOAD_DURATION=$WORKLOAD_DURATION_VAL|ATTACKED_BYTES_UNIQUE=$ATTACKED_BYTES_UNIQUE"
+    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_PRECAT=$HASH_PRECAT|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|FRAG_PRE_PHYS=$FRAG_PRE_PHYS|FRAG_POST_PHYS=$FRAG_POST_PHYS|FRAG_RELOCATED=$FRAG_RELOCATED|WORKLOAD_MODE=$WORKLOAD_MODE_VAL|WORKLOAD_DURATION=$WORKLOAD_DURATION_VAL|ATTACKED_BYTES_UNIQUE=$ATTACKED_BYTES_UNIQUE|FLIPS_ON_TARGET=$FLIPS_ON_TARGET"
     ;;
 
 verify)
