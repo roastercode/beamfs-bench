@@ -496,19 +496,49 @@ attack)
 
     echo $DEV_NUM | sudo tee ${INJECTOR_DBG}/target_dev   >/dev/null
     echo 0        | sudo tee ${INJECTOR_DBG}/target_block >/dev/null
-    # S3.1: file-precise targeting via target_block_range (emufi v0.3.4+).
-    # Both env vars must be set (>0 and end>start) to activate. Falls back
-    # silently to broadcast (target_block=0) on older modules without these
-    # debugfs entries.
-    if [ -n "${TARGET_BLOCK_RANGE_START:-}" ] && [ -n "${TARGET_BLOCK_RANGE_END:-}" ] \
-       && [ "${TARGET_BLOCK_RANGE_END}" -gt "${TARGET_BLOCK_RANGE_START:-0}" ] \
-       && sudo test -e ${INJECTOR_DBG}/target_block_range_start; then
-        echo ${TARGET_BLOCK_RANGE_START} | sudo tee ${INJECTOR_DBG}/target_block_range_start >/dev/null
-        echo ${TARGET_BLOCK_RANGE_END}   | sudo tee ${INJECTOR_DBG}/target_block_range_end   >/dev/null
-    fi
-    # v0.12.6 : per-extent list takes precedence over the interval above.
-    if [ -n "${TARGET_RANGES:-}" ] && sudo test -e ${INJECTOR_DBG}/target_ranges; then
-        printf '%s' "${TARGET_RANGES}" | sudo tee ${INJECTOR_DBG}/target_ranges >/dev/null
+    # INJECT_SCOPE selects the spatial model of the attack.
+    #
+    #   targeted (default) -- flips confined to the blocks of the file whose
+    #     integrity is then verified. Answers "does this file survive", and
+    #     is the right shape for directed tests.
+    #
+    #   uniform -- no block filter at all: every bio on the device is a
+    #     candidate. This is the physically faithful model. A particle
+    #     strike, a mechanical shock or an EM transient does not know where
+    #     the inode table ends and the data begins; it hits whatever silicon
+    #     is in its path. Confining flips to one file's extents both flatters
+    #     a filesystem whose FEC covers exactly those blocks, and makes
+    #     cross-filesystem comparison meaningless, since each filesystem's
+    #     target range has a different size (512 sectors for btrfs against
+    #     ~14 GiB for ext3 in the 2026-08-28 campaign, so ext4 and btrfs saw
+    #     1-2 filtered bios while beamfs and ext3 saw hundreds).
+    #
+    # The three targeting mechanisms must be cleared explicitly: the module
+    # keeps its previous values between runs, so leaving the env vars unset
+    # is not enough to widen the scope.
+    if [ "${INJECT_SCOPE:-targeted}" = "uniform" ]; then
+        if sudo test -e ${INJECTOR_DBG}/target_block_range_start; then
+            echo 0 | sudo tee ${INJECTOR_DBG}/target_block_range_start >/dev/null
+            echo 0 | sudo tee ${INJECTOR_DBG}/target_block_range_end   >/dev/null
+        fi
+        if sudo test -e ${INJECTOR_DBG}/target_ranges; then
+            printf '' | sudo tee ${INJECTOR_DBG}/target_ranges >/dev/null
+        fi
+    else
+        # S3.1: file-precise targeting via target_block_range (emufi v0.3.4+).
+        # Both env vars must be set (>0 and end>start) to activate. Falls back
+        # silently to broadcast (target_block=0) on older modules without these
+        # debugfs entries.
+        if [ -n "${TARGET_BLOCK_RANGE_START:-}" ] && [ -n "${TARGET_BLOCK_RANGE_END:-}" ] \
+           && [ "${TARGET_BLOCK_RANGE_END}" -gt "${TARGET_BLOCK_RANGE_START:-0}" ] \
+           && sudo test -e ${INJECTOR_DBG}/target_block_range_start; then
+            echo ${TARGET_BLOCK_RANGE_START} | sudo tee ${INJECTOR_DBG}/target_block_range_start >/dev/null
+            echo ${TARGET_BLOCK_RANGE_END}   | sudo tee ${INJECTOR_DBG}/target_block_range_end   >/dev/null
+        fi
+        # v0.12.6 : per-extent list takes precedence over the interval above.
+        if [ -n "${TARGET_RANGES:-}" ] && sudo test -e ${INJECTOR_DBG}/target_ranges; then
+            printf '%s' "${TARGET_RANGES}" | sudo tee ${INJECTOR_DBG}/target_ranges >/dev/null
+        fi
     fi
     echo $PROB    | sudo tee ${INJECTOR_DBG}/probability  >/dev/null
     # v0.7.6 : push inject_on_read=1 unconditionally. emufi v0.3.0
@@ -679,7 +709,7 @@ attack)
                      --time_based=1 \
                      --runtime=${WORKLOAD_DURATION_VAL} \
                      --ioengine=psync \
-                     --direct=0 \
+                     --direct=1 \
                      --output-format=terse \
                      >/tmp/fio-workload-$FS.log 2>&1 &
             WORKLOAD_PID=$!

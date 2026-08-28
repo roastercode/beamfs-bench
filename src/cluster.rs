@@ -63,6 +63,7 @@ pub fn worker_cmd(injector: &str, action_args: &str) -> String {
         // v0.7.x baseline (kept verbatim):
         "FLIP_WIDTH",
         "MAX_FLIPS",                 // u64, injection budget (emufi 0.6.0+)
+        "INJECT_SCOPE",              // "targeted" (default) or "uniform"
         "TARGET_RANGES",             // "s:e,s:e" sectors (emufi 0.7.0+)
         "LET_CLASS",
         "FLIP_LOCALITY",
