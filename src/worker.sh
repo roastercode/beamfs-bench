@@ -637,6 +637,17 @@ attack)
         done
     fi
 
+    # TARGET_REL must be set before the workload dispatch below: the
+    # write-active branch builds TARGET_FULLPATH from it, but the
+    # original assignment sat 28 lines further down, so the variable was
+    # empty there. TARGET_FULLPATH then resolved to "$MNT/" -- a
+    # directory, which passes [ -e ] -- and fio was handed a directory as
+    # --filename. The whole worker branch failed silently, emitting an
+    # empty record for every writable FS while squashfs (skipped by
+    # is_readonly_fs) reported normally. Latent since write-active was
+    # written; first exercised by the 2026-08-28 multi-FS campaign.
+    TARGET_REL="dir-B/file-B2.bin"
+
     # Phase A.3 -- workload mode dispatch.
     # Default "static" matches legacy behavior (FS quiescent during attack).
     # "write-active" launches a background fio randwrite on TARGET_FILE for
@@ -647,17 +658,24 @@ attack)
     WORKLOAD_DURATION_VAL=${WORKLOAD_DURATION:-15}
     WORKLOAD_PID=""
     if [ "$WORKLOAD_MODE_VAL" = "write-active" ] && ! is_readonly_fs "$FS"; then
-        # fio target only the attack file ; --time_based + --runtime bound
-        # the write loop, so the bg job self-terminates after the window.
-        # --size= bounds the file growth ; we keep it at PRE_SIZE to overwrite
-        # in place (or CoW-relocate, depending on FS) without growing the file.
-        TARGET_FULLPATH="$MNT/$TARGET_REL"
-        if command -v fio >/dev/null 2>&1 && [ -e "$TARGET_FULLPATH" ]; then
+        # --time_based + --runtime bound the write loop, so the background
+        # job self-terminates at the end of the attack window.
+        # Write to a scratch file, NOT to the attack target. The integrity
+        # verdict compares HASH_PRE (frozen in HASHES.sha256 at setup)
+        # against HASH_POST; writing randwrite over the target would make
+        # them differ by construction, so every FS would look corrupted and
+        # the measurement would mean nothing. HASHES.sha256 lists exactly
+        # file-{A,B,C}{1,2,3}.bin, so a file under any other name is outside
+        # the 12 verified files and safe to churn. What matters for exposure
+        # is that the device sees real bios during the attack window, which
+        # this delivers on every FS.
+        WORKLOAD_FILE="$MNT/dir-A/workload-active.bin"
+        if command -v fio >/dev/null 2>&1 && [ -d "$MNT/dir-A" ]; then
             sudo fio --name=workload-active \
-                     --filename="$TARGET_FULLPATH" \
+                     --filename="$WORKLOAD_FILE" \
                      --rw=randwrite \
                      --bs=4k \
-                     --size=$(stat -c '%s' "$TARGET_FULLPATH" 2>/dev/null || echo 262144) \
+                     --size=4M \
                      --time_based=1 \
                      --runtime=${WORKLOAD_DURATION_VAL} \
                      --ioengine=psync \
