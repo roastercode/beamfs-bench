@@ -45,6 +45,7 @@ mod analyse;
 mod bitrot;
 mod bootstrap;
 mod cluster;
+mod db;
 mod code_analysis;
 mod crash;
 mod devices;
@@ -204,6 +205,27 @@ impl EmufiAttackArgs {
 }
 
 #[derive(Subcommand)]
+enum DbAction {
+    /// Ingest every archived run directory not already recorded.
+    Ingest {
+        /// Root holding beamfs-bench-multifs-* directories.
+        #[arg(long)]
+        runs_dir: Option<String>,
+    },
+    /// Dose-response over usable measurements only.
+    DoseResponse,
+    /// Exposure actually achieved per filesystem, with validity verdict.
+    Exposure,
+    /// Why measurements were rejected, and how many.
+    Validity,
+    /// Drop runs older than N days, keeping their aggregates.
+    Purge {
+        #[arg(long, default_value = "90")]
+        older_than_days: u32,
+    },
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// Print version and build info, then exit.
     Version,
@@ -323,6 +345,13 @@ enum Command {
 
     /// Test D - fsck recovery post-FS_PANIC.
     /// New scope, not in legacy harness.
+    /// Measurement database: retroactive ingest of archived runs, and
+    /// queries over the accumulated series.
+    Db {
+        #[command(subcommand)]
+        action: DbAction,
+    },
+
     Fsck {
         /// Fault injector to use: "radfi" or "emufi".
         #[arg(long, default_value = "radfi")]
@@ -692,6 +721,19 @@ fn main() {
                     eprintln!("beamfs-bench: bitrot failed: {e:#}");
                     1
                 }
+            }
+        }
+        Command::Db { action } => {
+            let rc = match action {
+                DbAction::Ingest { runs_dir } => db::cmd_ingest(runs_dir.as_deref()),
+                DbAction::DoseResponse => db::cmd_query(db::Query::DoseResponse),
+                DbAction::Exposure => db::cmd_query(db::Query::Exposure),
+                DbAction::Validity => db::cmd_query(db::Query::Validity),
+                DbAction::Purge { older_than_days } => db::cmd_purge(older_than_days),
+            };
+            match rc {
+                Ok(c) => c,
+                Err(e) => { eprintln!("beamfs-bench: db: {e:#}"); 1 }
             }
         }
         Command::Fsck { injector } => {

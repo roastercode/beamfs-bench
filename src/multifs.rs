@@ -39,6 +39,13 @@ struct SetupParse {
     /// filesystem's own device, "no" if it was served entirely from cache
     /// (erofs, vfat), "unknown" if the probe could not run.
     reachable: String,
+    /// Per-extent "start:end,start:end" sector intervals covering the whole
+    /// target file. Needed by the attack phase to count how many flips
+    /// landed inside the file, which the single interval above cannot do:
+    /// a fragmented file spans several disjoint extents and the interval
+    /// spans everything between the first and the last, most of which
+    /// belongs to other files.
+    target_ranges: String,
 }
 
 /// Parse a key=value| pipe-delimited setup record into SetupParse.
@@ -57,6 +64,9 @@ fn parse_setup_record(out: &str) -> SetupParse {
                 }
                 "REACHABLE" => {
                     parsed.reachable = v.trim().to_string();
+                }
+                "TARGET_RANGES" => {
+                    parsed.target_ranges = v.trim().to_string();
                 }
                 _ => {}
             }
@@ -352,6 +362,17 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
             std::env::remove_var("TARGET_BLOCK_RANGE_START");
             std::env::remove_var("TARGET_BLOCK_RANGE_END");
         }
+        // TARGET_RANGES was forwarded by worker_cmd but never set on this
+        // path, so the attack phase saw it empty and reported
+        // FLIPS_ON_TARGET=na for every filesystem. It carries the whole
+        // extent list, which is what tells apart "the filesystem protected
+        // the file" from "nothing hit the file" -- the distinction the
+        // cross-filesystem comparison rests on.
+        if setup_p.target_ranges.is_empty() {
+            std::env::remove_var("TARGET_RANGES");
+        } else {
+            std::env::set_var("TARGET_RANGES", &setup_p.target_ranges);
+        }
         for &prob in &cfg.probs {
             let attack_cmd = crate::cluster::worker_cmd(&cfg.injector,
                 &format!("attack {} {} {prob}", m.fs_name, m.disk.guest_dev));
@@ -413,6 +434,19 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
     println!("Synthesis: {}", run_dir.join("synthesis.md").display());
     println!("JSON:      {}", run_dir.join("synthesis.json").display());
     println!("Records:   {}", run_dir.join("all-records.txt").display());
+
+    // Ingest into the measurement database. A failure here must not fail
+    // the run: the records on disk remain the source of truth and can be
+    // ingested later with `beamfs-bench db ingest`.
+    {
+        let db_path = crate::db::default_db_path();
+        match crate::db::init(&db_path)
+            .and_then(|_| crate::db::ingest_run_dir(&db_path, &run_dir, None))
+        {
+            Ok(id) => println!("DB:        run #{id} -> {}", db_path.display()),
+            Err(e) => eprintln!("[multifs] WARN : database ingest skipped: {e:#}"),
+        }
+    }
 
     Ok(MultifsResult {
         run_dir,
