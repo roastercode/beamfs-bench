@@ -91,7 +91,7 @@ pub fn worker_sh() -> &'static str {
 }
 
 /// Default probabilities (matches Tir-multifs.sh line 54).
-pub const DEFAULT_PROBS: &[u32] = &[1000, 100000, 1000000];
+pub const DEFAULT_PROBS: &[u32] = &[1_000, 100_000, 1_000_000];
 
 /// v3 campaign : read `BEAMFS_BENCH_PROBS` env var and parse as comma-separated
 /// list of u32 ppm values. Fallback to `DEFAULT_PROBS` if env var is unset or

@@ -491,9 +491,9 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     // Step 9: Crash report if anything failed
     // ----------------------------------------------------------------
     let exit_code = aggregate_exit_code(
-        &multifs_result,
+        multifs_result.as_ref(),
         &run_dir,
-        &cluster_records_path,
+        cluster_records_path.as_ref(),
         &multifs_cfg.probs,
         &nodes,
     );
@@ -556,9 +556,9 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
 ///     and non-blocking ; only beamfs must RECOVERED 3/3").
 ///   - else -> 0
 fn aggregate_exit_code(
-    multifs_result: &Option<crate::multifs::MultifsResult>,
+    multifs_result: Option<&crate::multifs::MultifsResult>,
     run_dir: &Path,
-    cluster_records_path: &Option<PathBuf>,
+    cluster_records_path: Option<&PathBuf>,
     multifs_probs: &[u32],
     cluster_nodes: &[crate::cluster::ClusterNode],
 ) -> i32 {

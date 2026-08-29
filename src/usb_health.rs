@@ -92,8 +92,7 @@ impl SlotVerdict {
     #[allow(dead_code)]
     pub fn slot(&self) -> &str {
         match self {
-            SlotVerdict::Healthy { slot, .. } => slot,
-            SlotVerdict::Dead { slot, .. } => slot,
+            SlotVerdict::Healthy { slot, .. } | SlotVerdict::Dead { slot, .. } => slot,
         }
     }
 }

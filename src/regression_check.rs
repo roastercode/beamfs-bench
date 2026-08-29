@@ -227,7 +227,7 @@ fn resolve_baseline() -> Result<Option<Baseline>> {
             Ok(m) if m.commit_beamfs == upstream_sha && m.overall_rc == 0 => {
                 candidates.push((p, m));
             }
-            _ => continue,
+            _ => {}
         }
     }
     candidates.sort_by(|a, b| b.1.started_at.cmp(&a.1.started_at));

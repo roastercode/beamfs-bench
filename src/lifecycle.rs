@@ -195,8 +195,7 @@ pub fn wait_ssh_ready_parallel() -> Result<()> {
     for h in handles {
         match h.join().map_err(|_| anyhow!("ssh-wait thread panicked")) {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => errors.push(e),
-            Err(e) => errors.push(e),
+            Ok(Err(e)) | Err(e) => errors.push(e),
         }
     }
 
