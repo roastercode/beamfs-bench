@@ -399,18 +399,16 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
             let buf = std::fs::read_to_string(&cluster_log)
                 .context("re-read cluster_log for verdict derivation")?;
             for r in &atk {
-                if let Some(v) = crate::synthesis::extract_cluster_verdict(&buf, &r.host, prob) {
-                    writeln!(cf, "DERIVED|prob={prob}|host={}|verdict={}", r.host, v)?;
-                }
+                let v = crate::synthesis::extract_cluster_verdict(&buf, &r.host, prob);
+                writeln!(cf, "DERIVED|prob={prob}|host={}|verdict={}", r.host, v)?;
                 // Phase A.1: companion verdict_detail line. Same input,
                 // additionally exploits DMESG_UNCORRECTABLE and DMESG_EIO
                 // signals to distinguish KERNEL_PANIC / DETECTED_FAIL_CLOSED /
                 // INACCESSIBLE / SILENT_CORRUPTION from the legacy 5-class
                 // taxonomy. Downstream tooling that does not know this line
                 // can safely ignore it.
-                if let Some(vd) = crate::synthesis::extract_cluster_verdict_detail(&buf, &r.host, prob) {
-                    writeln!(cf, "DERIVED|prob={prob}|host={}|verdict_detail={}", r.host, vd)?;
-                }
+                let vd = crate::synthesis::extract_cluster_verdict_detail(&buf, &r.host, prob);
+                writeln!(cf, "DERIVED|prob={prob}|host={}|verdict_detail={}", r.host, vd)?;
             }
 
             // Re-create the test layout for the next probability iteration
@@ -601,10 +599,9 @@ fn aggregate_exit_code(
                 let host = &n.expected_hostname;
                 for &prob in multifs_probs {
                     let v = crate::synthesis::extract_cluster_verdict(&records, host, prob);
-                    if !verdict_is_pass(v.as_deref()) {
+                    if !verdict_is_pass(Some(v.as_str())) {
                         eprintln!(
-                            "[exit_code] FAIL : cluster host={host} prob={prob} verdict={:?} (expected RS_RECOVERED, RS_PASSTHROUGH, or RS_FAIL_CLOSED)",
-                            v.as_deref().unwrap_or("?"),
+                            "[exit_code] FAIL : cluster host={host} prob={prob} verdict={v:?} (expected RS_RECOVERED, RS_PASSTHROUGH, or RS_FAIL_CLOSED)"
                         );
                         return 1;
                     }

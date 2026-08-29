@@ -722,7 +722,7 @@ fn extract_cluster_verify_state(records: &str, host: &str, prob: u32) -> Option<
 ///
 /// Returns one of : "`RS_RECOVERED`", "`RS_PASSTHROUGH`", "`RS_FAILED`",
 /// "`FS_PANIC`", "`CORRUPTED_DATA`", "?" (insufficient data).
-pub fn extract_cluster_verdict(records: &str, host: &str, prob: u32) -> Option<String> {
+pub fn extract_cluster_verdict(records: &str, host: &str, prob: u32) -> String {
     let mount_state = extract_cluster_verify_state(records, host, prob)
         .unwrap_or_else(|| "MOUNTED".to_string());
     // cluster_verify emits VERIFIED on success ; remap to MOUNTED for the
@@ -742,14 +742,14 @@ pub fn extract_cluster_verdict(records: &str, host: &str, prob: u32) -> Option<S
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    Some(derive_verdict_beamfs(&mount_state, cat_rc, &hash_pre, &hash_post, rs_corrected, dmesg_uncorrectable).to_string())
+    derive_verdict_beamfs(&mount_state, cat_rc, &hash_pre, &hash_post, rs_corrected, dmesg_uncorrectable).to_string()
 }
 
 /// Phase A.1: fine-grained cluster verdict. Same sources as
 /// `extract_cluster_verdict`, but additionally reads `DMESG_UNCORRECTABLE` and
 /// `DMESG_EIO` to distinguish `DETECTED_FAIL_CLOSED` / INACCESSIBLE /
 /// `SILENT_CORRUPTION` / `KERNEL_PANIC`. Cluster /data is always beamfs (FEC).
-pub fn extract_cluster_verdict_detail(records: &str, host: &str, prob: u32) -> Option<String> {
+pub fn extract_cluster_verdict_detail(records: &str, host: &str, prob: u32) -> String {
     let mount_state = extract_cluster_verify_state(records, host, prob)
         .unwrap_or_else(|| "MOUNTED".to_string());
     let mount_state = if mount_state == "VERIFIED" { "MOUNTED".to_string() } else { mount_state };
@@ -770,10 +770,10 @@ pub fn extract_cluster_verdict_detail(records: &str, host: &str, prob: u32) -> O
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    Some(derive_verdict_detail_beamfs(
+    derive_verdict_detail_beamfs(
         &mount_state, cat_rc, &hash_pre, &hash_post,
         rs_corrected, dmesg_uncorrectable, dmesg_eio,
-    ).to_string())
+    ).to_string()
 }
 
 pub fn extract_verdict(records: &str, fs_name: &str, prob: u32) -> Option<String> {
@@ -1015,7 +1015,7 @@ mod tests {
             "ATTACK|prob=1000000|CLUSTER|HOST=beamfs-master|PROB=1000000|CALL_DELTA=28|FLIP_DELTA=28|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=4|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
             "VERIFY|prob=1000000|CLUSTER|HOST=beamfs-master|VERDICT=VERIFIED|DIFFS=0|N_FILES_CHANGED=0|details=ok",
         ].join("\n");
-        assert_eq!(extract_cluster_verdict(&r, "beamfs-master", 1_000_000).as_deref(), Some("RS_RECOVERED"));
+        assert_eq!(extract_cluster_verdict(&r, "beamfs-master", 1_000_000), "RS_RECOVERED");
     }
 
     #[test]
@@ -1024,7 +1024,7 @@ mod tests {
             "ATTACK|prob=1000|CLUSTER|HOST=beamfs-master|PROB=1000|CALL_DELTA=28|FLIP_DELTA=0|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
             "VERIFY|prob=1000|CLUSTER|HOST=beamfs-master|VERDICT=VERIFIED|DIFFS=0|N_FILES_CHANGED=0|details=ok",
         ].join("\n");
-        assert_eq!(extract_cluster_verdict(&r, "beamfs-master", 1000).as_deref(), Some("RS_PASSTHROUGH"));
+        assert_eq!(extract_cluster_verdict(&r, "beamfs-master", 1000), "RS_PASSTHROUGH");
     }
 
     #[test]
@@ -1033,7 +1033,7 @@ mod tests {
             "ATTACK|prob=1000000|CLUSTER|HOST=beamfs-master|PROB=1000000|CALL_DELTA=28|FLIP_DELTA=28|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=def|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
             "VERIFY|prob=1000000|CLUSTER|HOST=beamfs-master|VERDICT=VERIFIED|DIFFS=2|N_FILES_CHANGED=1|details=ok",
         ].join("\n");
-        assert_eq!(extract_cluster_verdict(&r, "beamfs-master", 1_000_000).as_deref(), Some("CORRUPTED_DATA"));
+        assert_eq!(extract_cluster_verdict(&r, "beamfs-master", 1_000_000), "CORRUPTED_DATA");
     }
 
     #[test]
@@ -1042,7 +1042,7 @@ mod tests {
             "ATTACK|prob=1000000|CLUSTER|HOST=beamfs-master|PROB=1000000|CALL_DELTA=28|FLIP_DELTA=28|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=cat_failed|CAT_RC=1|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
             "VERIFY|prob=1000000|CLUSTER|HOST=beamfs-master|VERDICT=VERIFIED|DIFFS=0|N_FILES_CHANGED=0|details=ok",
         ].join("\n");
-        assert_eq!(extract_cluster_verdict(&r, "beamfs-master", 1_000_000).as_deref(), Some("RS_FAILED"));
+        assert_eq!(extract_cluster_verdict(&r, "beamfs-master", 1_000_000), "RS_FAILED");
     }
 
     // ============================================================
@@ -1129,10 +1129,10 @@ mod tests {
             "ATTACK|prob=1000000|CLUSTER|HOST=beamfs-compute01|PROB=1000000|CALL_DELTA=28|FLIP_DELTA=4|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=mount_failed|CAT_RC=1|RS_CORRECTED=0|DMESG_UNCORRECTABLE=1|DMESG_EIO=1",
             "VERIFY|prob=1000000|CLUSTER|HOST=beamfs-compute01|VERDICT=VERIFIED|DIFFS=0|N_FILES_CHANGED=0|details=ok",
         ].join("\n");
-        assert_eq!(extract_cluster_verdict_detail(&r, "beamfs-compute01", 1_000_000).as_deref(), Some("DETECTED_FAIL_CLOSED"));
+        assert_eq!(extract_cluster_verdict_detail(&r, "beamfs-compute01", 1_000_000), "DETECTED_FAIL_CLOSED");
         // cluster legacy verdict now surfaces RS_FAIL_CLOSED with
         // DMESG_UNCORRECTABLE > 0 (accepted as pass by R19).
-        assert_eq!(extract_cluster_verdict(&r, "beamfs-compute01", 1_000_000).as_deref(), Some("RS_FAIL_CLOSED"));
+        assert_eq!(extract_cluster_verdict(&r, "beamfs-compute01", 1_000_000), "RS_FAIL_CLOSED");
     }
 
     // ============================================================

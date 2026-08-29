@@ -260,8 +260,9 @@ pub fn ingest_run(
         let sql = format!(
             "INSERT INTO measurement (run_id, fs, call_delta, flip_delta, \
              flips_on_target, target_ranges, cat_rc, hash_pre, hash_post, intact, \
-             rs_corrected, dmesg_uncorrectable, dmesg_eio, bits_diff, file_size) \
-             VALUES ({run_id}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}); \
+             rs_corrected, dmesg_uncorrectable, dmesg_eio, bits_diff, file_size, \
+             flip_log_sha256) \
+             VALUES ({run_id}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}); \
              INSERT INTO validity (run_id, fs, verdict, reason) \
              VALUES ({run_id}, {}, {}, {});",
             sql_str(Some(&r.fs)),
@@ -278,6 +279,7 @@ pub fn ingest_run(
             sql_num(r.dmesg_eio),
             sql_num(r.bits_diff),
             sql_num(r.file_size),
+            sql_str(r.flip_log_sha256.as_deref()),
             sql_str(Some(&r.fs)),
             sql_str(Some(&v)),
             sql_str(reason.as_deref()),
