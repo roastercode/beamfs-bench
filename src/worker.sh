@@ -565,6 +565,27 @@ attack)
             echo 0 | sudo tee ${INJECTOR_DBG}/fixed_dose >/dev/null
         fi
     fi
+
+    # PHYSICS_DRIVEN (emufi 0.8.0+): placement comes from a campaign the
+    # physics model generated on the host, pushed here as a binary blob
+    # and loaded into the module's queue.
+    #
+    # The generator runs host-side because emufi-physics is x86_64 and
+    # the nodes are aarch64; nothing about the campaign depends on where
+    # it was computed, the events being absolute byte offsets on the
+    # device under test. Determinism comes from the seed, not the
+    # architecture.
+    #
+    # Written explicitly either way: the flag persists in the module
+    # between runs, so leaving the variable unset does not turn it off.
+    if sudo test -e ${INJECTOR_DBG}/physics_driven; then
+        if [ "${PHYSICS_DRIVEN:-0}" = "1" ] && [ -f /tmp/emufi-campaign.bin ]; then
+            sudo sh -c "cat /tmp/emufi-campaign.bin > ${INJECTOR_DBG}/flip_queue"
+            echo 1 | sudo tee ${INJECTOR_DBG}/physics_driven >/dev/null
+        else
+            echo 0 | sudo tee ${INJECTOR_DBG}/physics_driven >/dev/null
+        fi
+    fi
     # v0.2.1 : LET_CLASS high-level intensity (overrides PROB/FLIP_WIDTH).
     # 0=LOW 1=MEDIUM 2=HIGH 3=EXTREME (Baumann 2005 / JEDEC JEP89 calibrated).
     if [ -n "${LET_CLASS:-}" ] && sudo test -e ${INJECTOR_DBG}/let_class; then
@@ -1242,6 +1263,27 @@ cluster_attack)
             echo 1 | sudo tee ${INJECTOR_DBG}/fixed_dose >/dev/null
         else
             echo 0 | sudo tee ${INJECTOR_DBG}/fixed_dose >/dev/null
+        fi
+    fi
+
+    # PHYSICS_DRIVEN (emufi 0.8.0+): placement comes from a campaign the
+    # physics model generated on the host, pushed here as a binary blob
+    # and loaded into the module's queue.
+    #
+    # The generator runs host-side because emufi-physics is x86_64 and
+    # the nodes are aarch64; nothing about the campaign depends on where
+    # it was computed, the events being absolute byte offsets on the
+    # device under test. Determinism comes from the seed, not the
+    # architecture.
+    #
+    # Written explicitly either way: the flag persists in the module
+    # between runs, so leaving the variable unset does not turn it off.
+    if sudo test -e ${INJECTOR_DBG}/physics_driven; then
+        if [ "${PHYSICS_DRIVEN:-0}" = "1" ] && [ -f /tmp/emufi-campaign.bin ]; then
+            sudo sh -c "cat /tmp/emufi-campaign.bin > ${INJECTOR_DBG}/flip_queue"
+            echo 1 | sudo tee ${INJECTOR_DBG}/physics_driven >/dev/null
+        else
+            echo 0 | sudo tee ${INJECTOR_DBG}/physics_driven >/dev/null
         fi
     fi
     if [ -n "${MULTI_CHIP:-}" ] && sudo test -e ${INJECTOR_DBG}/multi_chip; then

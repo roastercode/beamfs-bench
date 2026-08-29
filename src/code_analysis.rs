@@ -481,6 +481,15 @@ fn kernel_check_flags(
         args.push(format!("-I{}/include/generated/uapi", kb.display()));
     }
 
+    // kconfig.h defines IS_ENABLED(). It ships with the sources, not
+    // the build tree. The kernel Makefile force-includes it alongside
+    // autoconf.h; with only autoconf.h, every IS_ENABLED() in a kernel
+    // header reads as a call to an undeclared function and its CONFIG_
+    // argument as an unknown identifier -- which is where hundreds of
+    // errors against untouched kernel headers were coming from.
+    args.push("-include".to_string());
+    args.push(ksrc.join("include/linux/kconfig.h").display().to_string());
+
     // Source headers (always, after build to allow build-side overrides)
     args.push(format!("-I{}/arch/{}/include", ksrc.display(), arch));
     args.push(format!("-I{}/arch/{}/include/uapi", ksrc.display(), arch));
@@ -522,6 +531,16 @@ fn beamfs_source_basenames() -> Vec<String> {
                 Some(n) => n.to_string(),
                 None => continue,
             };
+            // Skip kernel build artefacts. <module>.mod.c is generated
+            // by modpost during a build and is gitignored; it has no
+            // SPDX tag and references KBUILD_MODNAME, which is only
+            // defined while the kernel build defines it, so sparse and
+            // clang both fail on it. Whether it is present depends on
+            // whether someone happened to run make in the tree, which
+            // is not a property the analysis should depend on.
+            if name.ends_with(".mod.c") {
+                continue;
+            }
             if name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")) || name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("h")) {
                 out.push(name);
             }

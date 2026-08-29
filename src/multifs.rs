@@ -246,6 +246,56 @@ pub fn run_with_mapping(
 }
 
 /// Full API used by analyse.rs.
+/// Path to the campaign generator, built from the emufi-physics crate
+/// that lives alongside the injector it feeds.
+const RADSIM: &str =
+    "/home/aurelien/git/emufi/userspace/emufi-physics/target/release/emufi-radsim";
+
+/// Where the node expects the campaign blob.
+const CAMPAIGN_REMOTE: &str = "/tmp/emufi-campaign.bin";
+
+/// Generate a physics campaign over the target file's extents and push
+/// it to the node.
+///
+/// Event count, incident energy and seed come from the environment
+/// (PHYSICS_EVENTS, PHYSICS_ENERGY_MEV, PHYSICS_SEED) so a campaign can
+/// be varied without rebuilding.
+///
+/// Returns the number of events generated.
+fn generate_campaign(ranges: &str, ssh: &SshTarget) -> Result<usize> {
+    let n = std::env::var("PHYSICS_EVENTS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(64);
+    let energy = std::env::var("PHYSICS_ENERGY_MEV").unwrap_or_else(|_| "14.0".into());
+    let seed = std::env::var("PHYSICS_SEED").unwrap_or_else(|_| "3735928559".into());
+
+    let local = "/tmp/emufi-campaign.bin";
+    let out = std::process::Command::new(RADSIM)
+        .args([
+            "--seed", &seed,
+            "campaign",
+            "--ranges", ranges,
+            "--n", &n.to_string(),
+            "--energy-mev", &energy,
+        ])
+        .output()
+        .with_context(|| format!("spawn {RADSIM}"))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "emufi-radsim failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    std::fs::write(local, &out.stdout)
+        .with_context(|| format!("write {local}"))?;
+
+    ssh.scp_to(local, CAMPAIGN_REMOTE)
+        .with_context(|| format!("push campaign to {CAMPAIGN_REMOTE}"))?;
+
+    Ok(out.stdout.len() / 16)
+}
+
 pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
     let ts = Local::now();
     let ts_compact = ts.format("%Y%m%d-%H%M%S").to_string();
@@ -368,6 +418,25 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
         } else {
             std::env::set_var("TARGET_RANGES", &setup_p.target_ranges);
         }
+
+        // PHYSICS_DRIVEN: generate the campaign here, where the target
+        // file's extents are known, and push it to the node. The
+        // generator is x86_64 and the nodes are aarch64, but a campaign
+        // is a list of absolute byte offsets on the device under test --
+        // where it was computed does not enter into it, and determinism
+        // comes from the seed.
+        //
+        // A generation failure is not fatal: the worker falls back to
+        // probabilistic placement when the blob is absent.
+        if std::env::var("PHYSICS_DRIVEN").as_deref() == Ok("1")
+            && !setup_p.target_ranges.is_empty()
+        {
+            match generate_campaign(&setup_p.target_ranges, &ssh) {
+                Ok(n) => println!("  {} : campaign of {n} events pushed", m.fs_name),
+                Err(e) => eprintln!("  {} : campaign generation failed: {e:#}", m.fs_name),
+            }
+        }
+
         for &prob in &cfg.probs {
             let attack_cmd = crate::cluster::worker_cmd(&cfg.injector,
                 &format!("attack {} {} {prob}", m.fs_name, m.disk.guest_dev));

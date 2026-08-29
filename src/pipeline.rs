@@ -36,7 +36,12 @@ const POKY_DIR:       &str = "/home/aurelien/yocto/poky";
 const BUILD_DIR_NAME: &str = "build-qemu-arm64";
 const CANONICAL_BEAMFS: &str = "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.beamfs";
 const KO_BUILD_DIR:   &str = "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/work/qemuarm64-poky-linux/hpc-arm64-research-beamfs/1.0/rootfs/lib/modules";
-const KO_PATH_IN_FS:  &str = "lib/modules/7.0.9/updates/beamfs.ko";
+/// Where beamfs.ko sits inside a node, relative to the modules
+/// directory for the running kernel. The kernel version is resolved on
+/// the node with `uname -r` rather than pinned here: it was pinned to
+/// 7.0.9 and silently broke the identity check the moment the target
+/// moved to 7.1.3, reporting a missing file instead of a version skew.
+const KO_NAME_IN_FS:  &str = "updates/beamfs.ko";
 
 const VM_NAMES: &[&str] = &["beamfs-master", "beamfs-compute01", "beamfs-compute02", "beamfs-compute03"];
 const VM_IPS:   &[&str] = &["192.168.56.10", "192.168.56.11", "192.168.56.12", "192.168.56.13"];
@@ -370,7 +375,7 @@ pub fn verify_module_identity_in_vm(reference_ko_sha: &str) -> Result<Vec<(Strin
     println!("[pipeline 0.7] verify in-VM beamfs.ko sha256 == reference on 4 nodes");
     let mut shas = Vec::new();
     for (i, ip) in VM_IPS.iter().enumerate() {
-        let cmd = format!("sudo sha256sum /{KO_PATH_IN_FS}");
+        let cmd = format!("sudo sha256sum /lib/modules/$(uname -r)/{KO_NAME_IN_FS}");
         let out = ssh_exec(ip, &cmd).with_context(|| format!("ssh {ip} sha256"))?;
         let sha = out.split_whitespace().next().unwrap_or("").to_string();
         if sha != reference_ko_sha {

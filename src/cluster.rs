@@ -66,6 +66,8 @@ pub fn worker_cmd(injector: &str, action_args: &str) -> String {
         "MAX_FLIPS",                 // u64, injection budget (emufi 0.6.0+)
         "INJECT_SCOPE",              // "targeted" (default) or "uniform"
         "FIXED_DOSE",                // 1 = every filtered bio injected until
+        "PHYSICS_DRIVEN",            // 1 = placement from the generated
+                                     // campaign in /tmp/emufi-campaign.bin
                                      // the budget runs out (emufi 0.8.0+)
         "TARGET_RANGES",             // "s:e,s:e" sectors (emufi 0.7.0+)
         "LET_CLASS",
