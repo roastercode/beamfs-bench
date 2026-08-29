@@ -176,6 +176,7 @@ fn query_size_human(path: &std::path::Path) -> Option<String> {
     Some(format_iec(n))
 }
 
+#[allow(clippy::cast_precision_loss)] // display only: exact below 2^53 bytes
 fn format_iec(n: u64) -> String {
     const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
     let mut size = n as f64;

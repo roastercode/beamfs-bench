@@ -552,6 +552,7 @@ fn print_table(verdicts: &[SlotVerdict]) {
     println!();
 }
 
+#[allow(clippy::cast_precision_loss)] // display only: exact below 2^53 bytes
 fn format_size(bytes: u64) -> String {
     let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
     format!("{gib:.1} GiB")

@@ -125,7 +125,7 @@ fi
     );
 
     if bpftrace_enabled {
-        start_bpftrace_host()?;
+        start_bpftrace_host();
     }
 
     // ---- 0.1 enrichments (R31 audit trail) ----
@@ -167,7 +167,7 @@ pub fn post_capture_host(
 /// Start bpftrace in background as root via `sudo -n` (NOPASSWD required).
 /// If sudo prompts for a password, we fail fast and skip bpftrace
 /// (best-effort : the rest of the run proceeds without bpftrace data).
-fn start_bpftrace_host() -> Result<()> {
+fn start_bpftrace_host() {
     // Probe sudo non-interactively first ; if it would prompt, skip.
     let probe = Command::new("sudo")
         .arg("-n")
@@ -180,7 +180,7 @@ fn start_bpftrace_host() -> Result<()> {
             eprintln!(
                 "[pre]    bpftrace skipped: `sudo -n bpftrace` requires                  NOPASSWD entry. Add bpftrace to /etc/sudoers.d/beamfs-bench                  if you want host bpftrace probes during the run."
             );
-            return Ok(());
+            return;
         }
     }
 
@@ -197,7 +197,7 @@ END { printf("bpftrace: ended %s\n", strftime("%Y-%m-%d %H:%M:%S", nsecs)); }
     let script_path = "/tmp/beamfs-bench-bpftrace.bt";
     if let Err(e) = fs::write(script_path, probe_script) {
         eprintln!("[pre]    bpftrace skipped: failed to write probe script: {e:#}");
-        return Ok(());
+        return;
     }
 
     // Launch bpftrace detached, capturing PID into a sidecar file
@@ -220,7 +220,6 @@ END { printf("bpftrace: ended %s\n", strftime("%Y-%m-%d %H:%M:%S", nsecs)); }
             eprintln!("[pre]    bpftrace launch failed: {e:#}");
         }
     }
-    Ok(())
 }
 
 /// Stop bpftrace via SIGINT to its PID, wait for the log to be flushed,

@@ -81,7 +81,7 @@ pub fn prime_session() -> Result<()> {
 
     // 4. spawn keep-alive thread
     let alive = Arc::new(AtomicBool::new(true));
-    spawn_keepalive(alive);
+    spawn_keepalive(&alive);
 
     println!("[priming] credentials primed, keep-alive thread spawned");
     println!();
@@ -213,8 +213,8 @@ fn prime_ssh() -> Result<()> {
     Ok(())
 }
 
-fn spawn_keepalive(alive: Arc<AtomicBool>) {
-    let alive2 = Arc::clone(&alive);
+fn spawn_keepalive(alive: &Arc<AtomicBool>) {
+    let alive2 = Arc::clone(alive);
     thread::spawn(move || {
         let mut last_sudo = std::time::Instant::now();
         let mut last_gpg  = std::time::Instant::now();
