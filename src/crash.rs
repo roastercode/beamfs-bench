@@ -5,7 +5,7 @@
 //! Tests filesystem recovery after a brutal power loss while a write
 //! is in flight. Simulates the standard fsdevel "crash recovery" test:
 //!
-//!   1. Setup FS, populate stable baseline files, capture hash_pre
+//!   1. Setup FS, populate stable baseline files, capture `hash_pre`
 //!   2. Start a background dd writer (urandom -> file)
 //!   3. virsh destroy compute01 (kill QEMU process, no graceful shutdown)
 //!   4. virsh start compute01, wait SSH
@@ -16,11 +16,11 @@
 //!
 //! Measurement instrument, no judgment. For each FS, one observation:
 //!
-//!   CRASH|HOST=...|FS=...|SCHEME=N|MOUNT_RC=0/N|MOUNTED=0/1
-//!        |STABLE_FILES_OK=K|HASH_STABLE=<sha>
-//!        |CRASH_FILE_PRESENT=0/1
-//!        |DMESG_JOURNAL_REPLAY=N|DMESG_EIO=N
-//!        |DMESG_FSCK_NEEDED=N|DMESG_PANIC=N
+//!   `CRASH|HOST=...|FS=...|SCHEME=N|MOUNT_RC=0/N|MOUNTED=0/1`
+//!        |`STABLE_FILES_OK=K|HASH_STABLE`=<sha>
+//!        |`CRASH_FILE_PRESENT=0/1`
+//!        |`DMESG_JOURNAL_REPLAY=N|DMESG_EIO=N`
+//!        |`DMESG_FSCK_NEEDED=N|DMESG_PANIC=N`
 //!
 //! Topology (R-isolation): compute01 holds the 5 USB victims.
 //! squashfs is RO, automatically skipped.
@@ -34,6 +34,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::bitrot::ssh_target;
 use crate::cluster::{ClusterNode, NodeState};
 use crate::lifecycle::{ssh_probe, virsh_sudo_lenient};
+use std::fmt::Write;
 
 #[derive(Debug, Clone)]
 pub struct CrashObservation {
@@ -191,7 +192,7 @@ fn write_synthesis(run_dir: &Path, observations: &[CrashObservation]) -> Result<
     for o in observations {
         let phase = if o.phase_ok { "OK" } else { "FAIL" };
         let v: String = o.raw_verify.lines().next().unwrap_or("").chars().take(150).collect();
-        s.push_str(&format!("| {} | {} | {} | `{}` |\n", o.fs, o.vd, phase, v));
+        writeln!(s, "| {} | {} | {} | `{}` |", o.fs, o.vd, phase, v).unwrap();
     }
     s.push_str("\n## Notes for analysis\n\n");
     s.push_str("- Verdict interpretation (clean recovery / journal replay / data loss / corruption)\n");
@@ -206,10 +207,10 @@ fn write_synthesis(run_dir: &Path, observations: &[CrashObservation]) -> Result<
     let records_path = run_dir.join("all-records.txt");
     let mut r = String::new();
     for o in observations {
-        r.push_str(&format!("--- {} / {} ---\n", o.fs, o.vd));
-        r.push_str(&format!("setup  : {}\n", o.raw_setup.trim()));
-        r.push_str(&format!("writer : {}\n", o.raw_writer.trim()));
-        r.push_str(&format!("verify : {}\n", o.raw_verify.trim()));
+        writeln!(r, "--- {} / {} ---", o.fs, o.vd).unwrap();
+        writeln!(r, "setup  : {}", o.raw_setup.trim()).unwrap();
+        writeln!(r, "writer : {}", o.raw_writer.trim()).unwrap();
+        writeln!(r, "verify : {}", o.raw_verify.trim()).unwrap();
         r.push('\n');
     }
     fs::write(&records_path, r).context("write all-records.txt")?;
@@ -227,7 +228,7 @@ pub fn run(injector: &str) -> Result<i32> {
     let stamp = now.format("%Y%m%d-%H%M%S").to_string();
     let started_inst = Instant::now();
     let started_epoch = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs()).unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let run_dir = PathBuf::from(format!(
         "/home/aurelien/git/yocto-beamfs/Documentation/runs/beamfs-bench-crash-{stamp}"
     ));
@@ -269,27 +270,27 @@ pub fn run(injector: &str) -> Result<i32> {
 
     // Manifest + tarball
     let ended_epoch = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs()).unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let duration_secs = started_inst.elapsed().as_secs();
     let mut manifest = String::new();
     manifest.push_str("================================================================\n");
     manifest.push_str(" beamfs-bench crash manifest\n");
     manifest.push_str("================================================================\n");
-    manifest.push_str(&format!("Run dir         : {}\n", run_dir.display()));
-    manifest.push_str(&format!("Started (epoch) : {started_epoch}\n"));
-    manifest.push_str(&format!("Ended   (epoch) : {ended_epoch}\n"));
-    manifest.push_str(&format!("Duration (s)    : {duration_secs}\n"));
-    manifest.push_str(&format!("EXPECTED PHASES : {}\n", observations.len()));
-    manifest.push_str(&format!("EXECUTED PHASES : {}\n", observations.len()));
-    manifest.push_str(&format!("PASSED          : {n_ok}\n"));
-    manifest.push_str(&format!("FAILED          : {n_fail}\n"));
+    writeln!(manifest, "Run dir         : {}", run_dir.display()).unwrap();
+    writeln!(manifest, "Started (epoch) : {started_epoch}").unwrap();
+    writeln!(manifest, "Ended   (epoch) : {ended_epoch}").unwrap();
+    writeln!(manifest, "Duration (s)    : {duration_secs}").unwrap();
+    writeln!(manifest, "EXPECTED PHASES : {}", observations.len()).unwrap();
+    writeln!(manifest, "EXECUTED PHASES : {}", observations.len()).unwrap();
+    writeln!(manifest, "PASSED          : {n_ok}").unwrap();
+    writeln!(manifest, "FAILED          : {n_fail}").unwrap();
     manifest.push_str("\n================================================================\n");
     manifest.push_str(" PHASE-BY-PHASE\n");
     manifest.push_str("================================================================\n");
     for o in &observations {
         let tag = if o.phase_ok { "[OK]  " } else { "[FAIL]" };
         let summary = o.raw_verify.trim().chars().take(140).collect::<String>();
-        manifest.push_str(&format!("{tag} {} : {summary}\n", o.fs));
+        writeln!(manifest, "{tag} {} : {summary}", o.fs).unwrap();
     }
     manifest.push_str("\n================================================================\n");
     manifest.push_str(" ARTIFACTS IN RUN DIR\n");
@@ -297,8 +298,8 @@ pub fn run(injector: &str) -> Result<i32> {
     if let Ok(rd) = fs::read_dir(&run_dir) {
         for entry in rd.flatten() {
             if let Ok(meta) = entry.metadata() {
-                manifest.push_str(&format!("{:<40} : {} bytes\n",
-                    entry.file_name().to_string_lossy(), meta.len()));
+                writeln!(manifest, "{:<40} : {} bytes",
+                    entry.file_name().to_string_lossy(), meta.len()).unwrap();
             }
         }
     }

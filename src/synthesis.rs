@@ -7,7 +7,7 @@
 //!   - synthesis.md table headers, column widths, padding match bash printf.
 //!   - The Topology table keeps "BEAMFS" UPPERCASE (matches bash; will be
 //!     normalized in a separate lowercase pass per beamfs-devel TODO 1).
-//!   - The Head-to-head table row labels are lowercase fs names from FS_LIST.
+//!   - The Head-to-head table row labels are lowercase fs names from `FS_LIST`.
 //!   - synthesis.json keeps the leading empty string element matching the
 //!     `echo "" > all-records.txt` blank line in bash.
 
@@ -25,7 +25,7 @@ pub fn write_synthesis_md(
 ) -> Result<()> {
     let synth_path = run_dir.join("synthesis.md");
     let mut f = fs::File::create(&synth_path)
-        .with_context(|| format!("create {:?}", synth_path))?;
+        .with_context(|| format!("create {}", synth_path.display()))?;
 
     writeln!(f, "# beamfs-bench-multifs head-to-head report")?;
     writeln!(f)?;
@@ -53,7 +53,7 @@ pub fn write_synthesis_md(
     // Parse all-records.txt to extract VERDICT and FLIP_DELTA per (fs, prob).
     let all_records_path = run_dir.join("all-records.txt");
     let records = fs::read_to_string(&all_records_path)
-        .with_context(|| format!("read {:?}", all_records_path))?;
+        .with_context(|| format!("read {}", all_records_path.display()))?;
 
     // Build the table data first, then compute column widths, then render.
     // This makes the head-to-head table self-aligning: the column widths
@@ -91,7 +91,7 @@ pub fn write_synthesis_md(
 
     // Compute per-column max width (header vs all rows)
     let fs_w = std::cmp::max(2, rows.iter().map(|r| r.fs.len()).max().unwrap_or(2));
-    let mut prob_w: Vec<usize> = prob_headers.iter().map(|h| h.len()).collect();
+    let mut prob_w: Vec<usize> = prob_headers.iter().map(std::string::String::len).collect();
     for r in &rows {
         for (i, c) in r.cells.iter().enumerate() {
             if i < prob_w.len() && c.len() > prob_w[i] {
@@ -165,7 +165,7 @@ pub fn write_synthesis_md(
     }
 
     let dfs_w = std::cmp::max(2, detail_rows.iter().map(|r| r.fs.len()).max().unwrap_or(2));
-    let mut dprob_w: Vec<usize> = prob_headers.iter().map(|h| h.len()).collect();
+    let mut dprob_w: Vec<usize> = prob_headers.iter().map(std::string::String::len).collect();
     for r in &detail_rows {
         for (i, c) in r.cells.iter().enumerate() {
             if i < dprob_w.len() && c.len() > dprob_w[i] {
@@ -264,7 +264,7 @@ pub fn write_synthesis_md(
     }
 
     let cfs_w = std::cmp::max(2, cow_rows.iter().map(|r| r.fs.len()).max().unwrap_or(2));
-    let mut cprob_w: Vec<usize> = prob_headers.iter().map(|h| h.len()).collect();
+    let mut cprob_w: Vec<usize> = prob_headers.iter().map(std::string::String::len).collect();
     for r in &cow_rows {
         for (i, c) in r.cells.iter().enumerate() {
             if i < cprob_w.len() && c.len() > cprob_w[i] {
@@ -327,7 +327,7 @@ pub fn write_synthesis_json(
 ) -> Result<()> {
     let synth_path = run_dir.join("synthesis.json");
     let mut f = fs::File::create(&synth_path)
-        .with_context(|| format!("create {:?}", synth_path))?;
+        .with_context(|| format!("create {}", synth_path.display()))?;
 
     writeln!(f, "{{")?;
     writeln!(f, "  \"timestamp\": \"{ts_human}\",")?;
@@ -336,7 +336,7 @@ pub fn write_synthesis_json(
     writeln!(f, "  \"records\": [")?;
 
     let records = fs::read_to_string(all_records_path)
-        .with_context(|| format!("read {:?}", all_records_path))?;
+        .with_context(|| format!("read {}", all_records_path.display()))?;
     // Mirror bash: read line-by-line, escape `"` to `\"`, emit
     //   `    "<line>"` separated by `,\n`. The first line in
     // all-records.txt is empty (from `echo "" > ...`), so the first
@@ -353,10 +353,10 @@ pub fn write_synthesis_json(
 
     let mut first = true;
     for line in lines {
-        if !first {
-            writeln!(f, ",")?;
-        } else {
+        if first {
             first = false;
+        } else {
+            writeln!(f, ",")?;
         }
         let escaped = line.replace('\\', "\\\\").replace('"', "\\\"");
         write!(f, "    \"{escaped}\"")?;
@@ -430,7 +430,7 @@ fn extract_attack_field(
 }
 
 /// Extract the raw VERDICT field from a VERIFY record matching (fs, prob).
-/// Returns the worker.sh mount-state sentinel: "MOUNTED" or "FS_PANIC".
+/// Returns the worker.sh mount-state sentinel: "MOUNTED" or "`FS_PANIC`".
 fn extract_verify_state(records: &str, fs_name: &str, prob: u32) -> Option<String> {
     let needle_fs = format!("fs={fs_name}");
     let needle_prob = format!("prob={prob}");
@@ -523,10 +523,10 @@ fn derive_verdict_legacy(
     if hash_pre == "missing" || hash_post == "missing" || hash_post == "cat_failed" {
         return "FS_PANIC";
     }
-    if hash_post != hash_pre {
-        "CORRUPTED_DATA"
-    } else {
+    if hash_post == hash_pre {
         "RECOVERED"
+    } else {
+        "CORRUPTED_DATA"
     }
 }
 
@@ -680,8 +680,8 @@ fn extract_cluster_attack_field(
 }
 
 /// Bench-2 cluster scope : extract VERDICT (mount-state sentinel) from a
-/// VERIFY record matching (host, prob). cluster_verify currently emits only
-/// VERDICT=VERIFIED ; FS_PANIC is not yet emitted by the worker but the
+/// VERIFY record matching (host, prob). `cluster_verify` currently emits only
+/// VERDICT=VERIFIED ; `FS_PANIC` is not yet emitted by the worker but the
 /// extractor handles both cases for forward compatibility.
 fn extract_cluster_verify_state(records: &str, host: &str, prob: u32) -> Option<String> {
     let needle_prefix = format!("VERIFY|prob={prob}|CLUSTER|");
@@ -708,10 +708,10 @@ fn extract_cluster_verify_state(records: &str, host: &str, prob: u32) -> Option<
 
 /// Derive a 5-class verdict for a single (host, prob) cluster observation.
 /// Cluster /data is always beamfs (Reed-Solomon FEC inline), so always
-/// uses derive_verdict_beamfs ; legacy FS variant is multifs-only.
+/// uses `derive_verdict_beamfs` ; legacy FS variant is multifs-only.
 ///
-/// Returns one of : "RS_RECOVERED", "RS_PASSTHROUGH", "RS_FAILED",
-/// "FS_PANIC", "CORRUPTED_DATA", "?" (insufficient data).
+/// Returns one of : "`RS_RECOVERED`", "`RS_PASSTHROUGH`", "`RS_FAILED`",
+/// "`FS_PANIC`", "`CORRUPTED_DATA`", "?" (insufficient data).
 pub fn extract_cluster_verdict(records: &str, host: &str, prob: u32) -> Option<String> {
     let mount_state = extract_cluster_verify_state(records, host, prob)
         .unwrap_or_else(|| "MOUNTED".to_string());
@@ -736,9 +736,9 @@ pub fn extract_cluster_verdict(records: &str, host: &str, prob: u32) -> Option<S
 }
 
 /// Phase A.1: fine-grained cluster verdict. Same sources as
-/// extract_cluster_verdict, but additionally reads DMESG_UNCORRECTABLE and
-/// DMESG_EIO to distinguish DETECTED_FAIL_CLOSED / INACCESSIBLE /
-/// SILENT_CORRUPTION / KERNEL_PANIC. Cluster /data is always beamfs (FEC).
+/// `extract_cluster_verdict`, but additionally reads `DMESG_UNCORRECTABLE` and
+/// `DMESG_EIO` to distinguish `DETECTED_FAIL_CLOSED` / INACCESSIBLE /
+/// `SILENT_CORRUPTION` / `KERNEL_PANIC`. Cluster /data is always beamfs (FEC).
 pub fn extract_cluster_verdict_detail(records: &str, host: &str, prob: u32) -> Option<String> {
     let mount_state = extract_cluster_verify_state(records, host, prob)
         .unwrap_or_else(|| "MOUNTED".to_string());
@@ -799,8 +799,8 @@ pub fn extract_verdict(records: &str, fs_name: &str, prob: u32) -> Option<String
 }
 
 /// Phase A.1: fine-grained verdict (multifs scope). Companion to
-/// extract_verdict, exploits dmesg signals to distinguish KERNEL_PANIC,
-/// DETECTED_FAIL_CLOSED, INACCESSIBLE, SILENT_CORRUPTION from the legacy
+/// `extract_verdict`, exploits dmesg signals to distinguish `KERNEL_PANIC`,
+/// `DETECTED_FAIL_CLOSED`, INACCESSIBLE, `SILENT_CORRUPTION` from the legacy
 /// 5-class taxonomy.
 pub fn extract_verdict_detail(records: &str, fs_name: &str, prob: u32) -> Option<String> {
     let mount_state = extract_verify_state(records, fs_name, prob)?;
@@ -835,45 +835,45 @@ pub fn extract_verdict_detail(records: &str, fs_name: &str, prob: u32) -> Option
     Some(verdict.to_string())
 }
 
-/// Phase A.2: extract the FRAG_RELOCATED field from the ATTACK record
+/// Phase A.2: extract the `FRAG_RELOCATED` field from the ATTACK record
 /// matching (fs, prob). Returns one of:
 ///   "0"  : in-place update, physical extent unchanged
-///   "1"  : CoW relocation, physical extent moved
+///   "1"  : `CoW` relocation, physical extent moved
 ///   "na" : filefrag unsupported (beamfs / squashfs), or any error path
 /// Returns None if the record is absent or the field is missing.
 ///
-/// Companion to extract_verdict_detail; the CoW relocation is a mechanism,
+/// Companion to `extract_verdict_detail`; the `CoW` relocation is a mechanism,
 /// not a verdict, so it is reported alongside but not folded into the
-/// verdict_detail enum.
+/// `verdict_detail` enum.
 pub fn extract_frag_relocated(records: &str, fs_name: &str, prob: u32) -> Option<String> {
     extract_attack_field(records, fs_name, prob, "FRAG_RELOCATED")
 }
 
-/// Phase A.3: extract the WORKLOAD_MODE field from the ATTACK record.
+/// Phase A.3: extract the `WORKLOAD_MODE` field from the ATTACK record.
 /// Returns the workload mode under which the attack was performed:
 ///   "static"        : default, FS quiescent during attack
-///   "write-active"  : continuous fio randwrite on TARGET_FILE during attack
+///   "write-active"  : continuous fio randwrite on `TARGET_FILE` during attack
 /// Returns None if the field is absent (legacy records pre-A.3).
 pub fn extract_workload_mode(records: &str, fs_name: &str, prob: u32) -> Option<String> {
     extract_attack_field(records, fs_name, prob, "WORKLOAD_MODE")
 }
 
-/// Phase A.4: extract the ATTACKED_BYTES_UNIQUE field from the ATTACK
-/// record. This is the count of unique (sector, byte_offset) tuples
-/// touched during the attack window, derived from the EMUFI flip_log
+/// Phase A.4: extract the `ATTACKED_BYTES_UNIQUE` field from the ATTACK
+/// record. This is the count of unique (sector, `byte_offset`) tuples
+/// touched during the attack window, derived from the EMUFI `flip_log`
 /// ring buffer.
 ///
 /// This metric is the recommended denominator for fair cross-FS
 /// comparison. It normalizes attack dose by physical bytes touched
 /// rather than by bios issued (which varies by 5x between ext4 and
-/// btrfs at identical probability_ppm).
+/// btrfs at identical `probability_ppm`).
 ///
-/// Limitation : the flip_log ring buffer is 4096 entries ; under
+/// Limitation : the `flip_log` ring buffer is 4096 entries ; under
 /// saturation (probability=10^6 + workload-active) the ring wraps
-/// and ATTACKED_BYTES_UNIQUE becomes a lower bound. EMUFI v1 §VII.C.a
+/// and `ATTACKED_BYTES_UNIQUE` becomes a lower bound. EMUFI v1 §VII.C.a
 /// documents this regime explicitly.
 ///
-/// Returns "na" for FS where the flip_log is unavailable, or None
+/// Returns "na" for FS where the `flip_log` is unavailable, or None
 /// if the field is absent (legacy records pre-A.4).
 pub fn extract_attacked_bytes_unique(records: &str, fs_name: &str, prob: u32) -> Option<String> {
     extract_attack_field(records, fs_name, prob, "ATTACKED_BYTES_UNIQUE")

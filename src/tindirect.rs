@@ -5,7 +5,7 @@
 //! dindirect on iomap path'). The test creates a sparse beamfs
 //! volume image on tmpfs, writes 16 KiB slices at carefully chosen
 //! iblocks that exercise the dindirect->tindirect frontier and
-//! several tindirect L2 slots, then sync + drop_caches + remount,
+//! several tindirect L2 slots, then sync + `drop_caches` + remount,
 //! and re-reads the same slices to verify byte-for-byte identity.
 //!
 //! No fault injection. Validates the addressing math + bounds checks
@@ -14,14 +14,14 @@
 //!
 //! ## Scenarios
 //!
-//!   T0_dindirect_max    : iblock 262 667 (last dindirect, ~956 MiB-eq)
-//!   T1_tindirect_entry  : iblock 262 668 (first tindirect)
-//!   T2_tindirect_l2_jmp : iblock 524 812 (262 668 + 512^2, l2_slot=1)
-//!   T3_tindirect_deep   : iblock 549 247 (mid-volume, l1=0, l2=559,
+//!   `T0_dindirect_max`    : iblock 262 667 (last dindirect, ~956 MiB-eq)
+//!   `T1_tindirect_entry`  : iblock 262 668 (first tindirect)
+//!   `T2_tindirect_l2_jmp` : iblock 524 812 (262 668 + 512^2, `l2_slot=1`)
+//!   `T3_tindirect_deep`   : iblock 549 247 (mid-volume, l1=0, l2=559,
 //!                          well into tindirect address space)
 //!
 //! Each scenario: write 16 KiB slice (4 disk blocks) at the iblock,
-//! sync, sha256, drop_caches, umount, mount, sha256 again, compare.
+//! sync, sha256, `drop_caches`, umount, mount, sha256 again, compare.
 //! All iblocks between direct[0] and the tested iblock remain HOLE
 //! (sparse writes via `dd seek=...`). This is the whole point: tests
 //! the addressing without paying terabytes of writes.
@@ -45,6 +45,7 @@ use std::path::PathBuf;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::ssh::SshTarget;
+use std::fmt::Write;
 
 #[derive(Debug, Clone)]
 pub struct TindirectObservation {
@@ -121,7 +122,7 @@ pub fn run(injector: &str) -> Result<i32> {
 
     let started_inst = Instant::now();
     let started_epoch = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs()).unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let ts_compact = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let run_dir = PathBuf::from(format!(
         "/home/aurelien/git/yocto-beamfs/Documentation/runs/beamfs-bench-tindirect-{ts_compact}"
@@ -202,10 +203,10 @@ pub fn run(injector: &str) -> Result<i32> {
 
     let mut records = String::new();
     for o in &observations {
-        records.push_str(&format!("--- {} (iblock={}) ---\n", o.scenario, o.iblock));
-        records.push_str(&format!("setup    : {}\n", o.raw_setup.trim()));
-        records.push_str(&format!("test     : {}\n", o.raw_test.trim()));
-        records.push_str(&format!("cleanup  : {}\n", o.raw_cleanup.trim()));
+        writeln!(records, "--- {} (iblock={}) ---", o.scenario, o.iblock).unwrap();
+        writeln!(records, "setup    : {}", o.raw_setup.trim()).unwrap();
+        writeln!(records, "test     : {}", o.raw_test.trim()).unwrap();
+        writeln!(records, "cleanup  : {}", o.raw_cleanup.trim()).unwrap();
         records.push('\n');
     }
     fs::write(run_dir.join("all-records.txt"), &records)
@@ -213,43 +214,43 @@ pub fn run(injector: &str) -> Result<i32> {
 
     let mut synth = String::new();
     synth.push_str("# tindirect synthesis\n\n");
-    synth.push_str(&format!("- Started (epoch) : {started_epoch}\n"));
-    synth.push_str(&format!("- Scenarios run   : {}\n", observations.len()));
-    synth.push_str(&format!("- Phases MATCH    : {n_phase_ok}\n"));
-    synth.push_str(&format!("- Phases FAIL     : {n_phase_fail}\n"));
+    writeln!(synth, "- Started (epoch) : {started_epoch}").unwrap();
+    writeln!(synth, "- Scenarios run   : {}", observations.len()).unwrap();
+    writeln!(synth, "- Phases MATCH    : {n_phase_ok}").unwrap();
+    writeln!(synth, "- Phases FAIL     : {n_phase_fail}").unwrap();
     synth.push_str("\nbeamfs-bench is a measurement instrument; this file lists raw observations.\n");
     synth.push_str("MATCH = sha256(write_slice) == sha256(read_slice after drop_caches + remount).\n\n");
     synth.push_str("## Per-scenario\n\n");
     for o in &observations {
         let mark = if o.phase_ok { "MATCH" } else { "FAIL" };
-        synth.push_str(&format!("- [{mark}] {} (iblock={})\n", o.scenario, o.iblock));
+        writeln!(synth, "- [{mark}] {} (iblock={})", o.scenario, o.iblock).unwrap();
     }
     fs::write(run_dir.join("synthesis.md"), &synth)
         .context("write tindirect synthesis.md")?;
 
     let ended_epoch = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs()).unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let duration_secs = started_inst.elapsed().as_secs();
     let mut manifest = String::new();
     manifest.push_str("================================================================\n");
     manifest.push_str(" beamfs-bench tindirect manifest\n");
     manifest.push_str("================================================================\n");
-    manifest.push_str(&format!("Run dir         : {}\n", run_dir.display()));
-    manifest.push_str(&format!("Started (epoch) : {started_epoch}\n"));
-    manifest.push_str(&format!("Ended   (epoch) : {ended_epoch}\n"));
-    manifest.push_str(&format!("Duration (s)    : {duration_secs}\n"));
-    manifest.push_str(&format!("EXPECTED PHASES : {}\n", observations.len()));
-    manifest.push_str(&format!("EXECUTED PHASES : {}\n", observations.len()));
-    manifest.push_str(&format!("MATCH           : {n_phase_ok}\n"));
-    manifest.push_str(&format!("FAIL            : {n_phase_fail}\n"));
+    writeln!(manifest, "Run dir         : {}", run_dir.display()).unwrap();
+    writeln!(manifest, "Started (epoch) : {started_epoch}").unwrap();
+    writeln!(manifest, "Ended   (epoch) : {ended_epoch}").unwrap();
+    writeln!(manifest, "Duration (s)    : {duration_secs}").unwrap();
+    writeln!(manifest, "EXPECTED PHASES : {}", observations.len()).unwrap();
+    writeln!(manifest, "EXECUTED PHASES : {}", observations.len()).unwrap();
+    writeln!(manifest, "MATCH           : {n_phase_ok}").unwrap();
+    writeln!(manifest, "FAIL            : {n_phase_fail}").unwrap();
     manifest.push_str("\n================================================================\n");
     manifest.push_str(" PHASE-BY-PHASE\n");
     manifest.push_str("================================================================\n");
     for o in &observations {
         let tag = if o.phase_ok { "[MATCH]" } else { "[FAIL] " };
         let summary = o.raw_test.trim().chars().take(140).collect::<String>();
-        manifest.push_str(&format!("{tag} {} (iblock={}) : {summary}\n",
-                                   o.scenario, o.iblock));
+        writeln!(manifest, "{tag} {} (iblock={}) : {summary}",
+                                   o.scenario, o.iblock).unwrap();
     }
     fs::write(run_dir.join("manifest.txt"), &manifest)
         .context("write tindirect manifest.txt")?;

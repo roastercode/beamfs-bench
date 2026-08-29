@@ -5,7 +5,7 @@
 //! kernel coding standard validation before the bench burns 8+ minutes
 //! on a build that will never be merged.
 //!
-//! ## Stratification (R8 + DoD Phase 7 mainline-scope)
+//! ## Stratification (R8 + `DoD` Phase 7 mainline-scope)
 //!
 //! Three tiers, ordered by reviewer authority:
 //!
@@ -41,6 +41,7 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::fmt::Write;
 
 const BEAMFS_REPO: &str = "/home/aurelien/git/beamfs";
 const YOCTO_REPO:  &str = "/home/aurelien/git/yocto-beamfs";
@@ -88,8 +89,8 @@ pub enum AnalysisMode {
     Full,           // full module re-analysis (--full-code-analysis)
 }
 
-/// Public entry. Called from `cmd_full` between 0.0_isolation_r21 and
-/// 0.1_clean_trees. Errors propagate to bail!() in main, which emits
+/// Public entry. Called from `cmd_full` between `0.0_isolation_r21` and
+/// `0.1_clean_trees`. Errors propagate to bail!() in main, which emits
 /// rc=3 and tarballs the partial report.
 pub fn run(mode: AnalysisMode, run_dir: &Path) -> Result<CodeAnalysisReport> {
     println!("[pipeline 0.0bis] code analysis (tier 1/2/3, mode={mode:?})");
@@ -234,7 +235,7 @@ fn files_in_scope(mode: AnalysisMode, diff_base: &str) -> Result<Vec<PathBuf>> {
             ]).output().context("git diff name-only")?;
             let raw = String::from_utf8_lossy(&out.stdout);
             Ok(raw.lines()
-                .filter(|f| f.ends_with(".c") || f.ends_with(".h") || f.ends_with(".rs"))
+                .filter(|f| f.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")) || f.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("h")) || f.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("rs")))
                 .map(|f| PathBuf::from(BEAMFS_REPO).join(f))
                 .filter(|p| p.exists())
                 .collect())
@@ -245,7 +246,7 @@ fn files_in_scope(mode: AnalysisMode, diff_base: &str) -> Result<Vec<PathBuf>> {
                 for entry in walkdir::WalkDir::new(repo).max_depth(4) {
                     let entry = entry?;
                     if let Some(ext) = entry.path().extension() {
-                        if matches!(ext.to_str(), Some("c") | Some("h") | Some("rs")) {
+                        if matches!(ext.to_str(), Some("c" | "h" | "rs")) {
                             v.push(entry.path().to_path_buf());
                         }
                     }
@@ -293,23 +294,22 @@ fn dump_to_tmp_tarball(analysis_dir: &Path) -> Result<PathBuf> {
 
 fn run_checkpatch_strict(files: &[PathBuf], out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
-    let checkpatch = match locate_checkpatch() {
-        Some(p) => p,
-        None => return ToolReport {
+    let Some(checkpatch) = locate_checkpatch() else {
+        return ToolReport {
             name: "checkpatch_strict".to_string(),
             tier: 1,
             outcome: ToolOutcome::Skip {
                 reason: "checkpatch.pl not found in /usr/src/linux*/scripts/".to_string()
             },
-            duration_ms: t0.elapsed().as_millis() as u64,
-        },
+            duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
+        }
     };
     let log_path = out.join("checkpatch.log");
     let mut errors: u32 = 0;
     let mut log_buf = String::new();
     for f in files {
         let f_str = f.display().to_string();
-        if !(f_str.ends_with(".c") || f_str.ends_with(".h")) { continue; }
+        if !(f_str.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")) || f_str.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("h"))) { continue; }
         if !f_str.contains("/git/beamfs/") { continue; }
         if f_str.contains("/recipes-kernel/") { continue; }
         let res = match Command::new(&checkpatch)
@@ -320,7 +320,7 @@ fn run_checkpatch_strict(files: &[PathBuf], out: &Path) -> ToolReport {
             Err(_) => continue,
         };
         let s = String::from_utf8_lossy(&res.stdout);
-        log_buf.push_str(&format!("=== {f_str} ===\n"));
+        writeln!(log_buf, "=== {f_str} ===").unwrap();
         log_buf.push_str(&s);
         log_buf.push('\n');
         for line in s.lines() {
@@ -341,7 +341,7 @@ fn run_checkpatch_strict(files: &[PathBuf], out: &Path) -> ToolReport {
         name: "checkpatch_strict".to_string(),
         tier: 1,
         outcome,
-        duration_ms: t0.elapsed().as_millis() as u64,
+        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 
@@ -376,9 +376,9 @@ fn which_tool(name: &str) -> Option<PathBuf> {
 
 /// Detect kernel source context for static analysis.
 ///
-/// Returns Some((ksrc, kbuild_opt, arch)) where :
+/// Returns Some((ksrc, `kbuild_opt`, arch)) where :
 ///   - ksrc       : kernel source directory (contains Makefile + include/)
-///   - kbuild_opt : Some(build_dir) if generated headers are present
+///   - `kbuild_opt` : `Some(build_dir)` if generated headers are present
 ///     (autoconf.h, asm-offsets.h, arch generated dirs), None otherwise
 ///   - arch       : "arm64" or "x86" -- target arch matching the kernel source
 ///
@@ -443,7 +443,7 @@ fn which_kernel_source() -> Option<(PathBuf, Option<PathBuf>, &'static str)> {
 /// Build the include + define flags equivalent to a Kbuild compile invocation.
 ///
 /// Usable with sparse, clang, gcc -fsyntax-only.
-/// When kbuild_dir is Some(...), generated headers (autoconf.h, asm-offsets.h,
+/// When `kbuild_dir` is Some(...), generated headers (autoconf.h, asm-offsets.h,
 /// arch/<arch>/include/generated/) are added explicitly.
 fn kernel_check_flags(
     ksrc: &Path,
@@ -481,7 +481,7 @@ fn kernel_check_flags(
 
 /// Count diagnostics in stderr that originate from a beamfs source file
 /// (filename pattern <name>.c:<line>:<col>: -- when sparse/clang/gcc are
-/// invoked with current_dir = BEAMFS_REPO, paths are relative).
+/// invoked with `current_dir` = `BEAMFS_REPO`, paths are relative).
 fn count_beamfs_diagnostics(stderr: &str, beamfs_files: &[String]) -> (u32, u32) {
     let mut errors: u32 = 0;
     let mut warnings: u32 = 0;
@@ -511,7 +511,7 @@ fn beamfs_source_basenames() -> Vec<String> {
                 Some(n) => n.to_string(),
                 None => continue,
             };
-            if name.ends_with(".c") || name.ends_with(".h") {
+            if name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")) || name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("h")) {
                 out.push(name);
             }
         }
@@ -521,16 +521,15 @@ fn beamfs_source_basenames() -> Vec<String> {
 
 fn run_sparse(out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
-    let bin = match which_tool("sparse") {
-        Some(p) => p,
-        None => return ToolReport {
+    let Some(bin) = which_tool("sparse") else {
+        return ToolReport {
             name: "sparse".to_string(),
             tier: 1,
             outcome: ToolOutcome::Skip {
                 reason: "sparse not in PATH ; emerge dev-util/sparse".to_string()
             },
-            duration_ms: t0.elapsed().as_millis() as u64,
-        },
+            duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
+        }
     };
     let (ksrc, kbuild, arch) = match which_kernel_source() {
         Some(t) => t,
@@ -540,19 +539,19 @@ fn run_sparse(out: &Path) -> ToolReport {
             outcome: ToolOutcome::Skip {
                 reason: "no kernel source found (Yocto build dir or /usr/src/linux)".to_string()
             },
-            duration_ms: t0.elapsed().as_millis() as u64,
+            duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         },
     };
     let beamfs_dir = PathBuf::from(BEAMFS_REPO);
     let basenames = beamfs_source_basenames();
     let c_files: Vec<String> = basenames.iter()
-        .filter(|n| n.ends_with(".c"))
+        .filter(|n| n.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")))
         .cloned()
         .collect();
     let mut log_buf = format!(
         "kernel source : {}\nkbuild dir    : {}\narch          : {}\n\n",
         ksrc.display(),
-        kbuild.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(none)".to_string()),
+        kbuild.as_ref().map_or_else(|| "(none)".to_string(), |p| p.display().to_string()),
         arch,
     );
     let mut errors: u32 = 0;
@@ -571,7 +570,7 @@ fn run_sparse(out: &Path) -> ToolReport {
             Err(_) => continue,
         };
         let s = String::from_utf8_lossy(&res.stderr);
-        log_buf.push_str(&format!("=== {cf} ===\n"));
+        writeln!(log_buf, "=== {cf} ===").unwrap();
         log_buf.push_str(&s);
         let (e, w) = count_beamfs_diagnostics(&s, &basenames);
         errors += e;
@@ -599,7 +598,7 @@ fn run_sparse(out: &Path) -> ToolReport {
         name: "sparse".to_string(),
         tier: 1,
         outcome,
-        duration_ms: t0.elapsed().as_millis() as u64,
+        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 
@@ -617,7 +616,7 @@ fn run_smatch(out: &Path) -> ToolReport {
         outcome: ToolOutcome::Skip {
             reason: "out-of-scope decision (Phase Y) ; needs Yocto recipe integration".to_string()
         },
-        duration_ms: t0.elapsed().as_millis() as u64,
+        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 
@@ -635,22 +634,21 @@ fn run_coccinelle(out: &Path) -> ToolReport {
         outcome: ToolOutcome::Skip {
             reason: "out-of-scope decision (Phase Y) ; spatch not installed".to_string()
         },
-        duration_ms: t0.elapsed().as_millis() as u64,
+        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 
 fn run_clang_werror(_files: &[PathBuf], out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
-    let bin = match which_tool("clang") {
-        Some(p) => p,
-        None => return ToolReport {
+    let Some(bin) = which_tool("clang") else {
+        return ToolReport {
             name: "clang_werror".to_string(),
             tier: 1,
             outcome: ToolOutcome::Skip {
                 reason: "clang not in PATH ; emerge sys-devel/clang".to_string()
             },
-            duration_ms: t0.elapsed().as_millis() as u64,
-        },
+            duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
+        }
     };
     let (ksrc, kbuild, arch) = match which_kernel_source() {
         Some(t) => t,
@@ -660,13 +658,13 @@ fn run_clang_werror(_files: &[PathBuf], out: &Path) -> ToolReport {
             outcome: ToolOutcome::Skip {
                 reason: "no kernel source found".to_string()
             },
-            duration_ms: t0.elapsed().as_millis() as u64,
+            duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         },
     };
     let beamfs_dir = PathBuf::from(BEAMFS_REPO);
     let basenames = beamfs_source_basenames();
     let c_files: Vec<String> = basenames.iter()
-        .filter(|n| n.ends_with(".c"))
+        .filter(|n| n.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")))
         .cloned()
         .collect();
     // Map kernel arch to clang target triple.
@@ -678,7 +676,7 @@ fn run_clang_werror(_files: &[PathBuf], out: &Path) -> ToolReport {
     let mut log_buf = format!(
         "kernel source : {}\nkbuild dir    : {}\narch / target : {} / {}\n\n",
         ksrc.display(),
-        kbuild.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "(none)".to_string()),
+        kbuild.as_ref().map_or_else(|| "(none)".to_string(), |p| p.display().to_string()),
         arch, target,
     );
     let mut errors: u32 = 0;
@@ -705,7 +703,7 @@ fn run_clang_werror(_files: &[PathBuf], out: &Path) -> ToolReport {
             Err(_) => continue,
         };
         let s = String::from_utf8_lossy(&res.stderr);
-        log_buf.push_str(&format!("=== {cf} ===\n"));
+        writeln!(log_buf, "=== {cf} ===").unwrap();
         log_buf.push_str(&s);
         let (e, w) = count_beamfs_diagnostics(&s, &basenames);
         errors += e;
@@ -732,7 +730,7 @@ fn run_clang_werror(_files: &[PathBuf], out: &Path) -> ToolReport {
         name: "clang_werror".to_string(),
         tier: 1,
         outcome,
-        duration_ms: t0.elapsed().as_millis() as u64,
+        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 
@@ -754,7 +752,7 @@ fn run_gcc_fanalyzer(_files: &[PathBuf], out: &Path) -> ToolReport {
         outcome: ToolOutcome::Skip {
             reason: "needs aarch64 cross-toolchain (Yocto SDK not installed)".to_string()
         },
-        duration_ms: t0.elapsed().as_millis() as u64,
+        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 
@@ -773,7 +771,7 @@ fn run_gitleaks(out: &Path) -> ToolReport {
         outcome: ToolOutcome::Skip {
             reason: "out-of-scope decision (Phase Y) ; gitleaks not installed".to_string()
         },
-        duration_ms: t0.elapsed().as_millis() as u64,
+        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 
@@ -792,7 +790,7 @@ fn run_cargo_audit_high(out: &Path) -> ToolReport {
         outcome: ToolOutcome::Skip {
             reason: "out-of-scope decision (Phase Y) ; cargo-audit not installed".to_string()
         },
-        duration_ms: t0.elapsed().as_millis() as u64,
+        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 
@@ -809,7 +807,7 @@ fn run_cargo_clippy_pedantic(out: &Path) -> ToolReport {
             outcome: ToolOutcome::Skip {
                 reason: "cargo clippy not installed ; rustup component add clippy".to_string()
             },
-            duration_ms: t0.elapsed().as_millis() as u64,
+            duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         };
     }
     let res = Command::new("cargo")
@@ -854,7 +852,7 @@ fn run_cargo_clippy_pedantic(out: &Path) -> ToolReport {
         name: "cargo_clippy_pedantic".to_string(),
         tier: 1,
         outcome,
-        duration_ms: t0.elapsed().as_millis() as u64,
+        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 
@@ -868,7 +866,7 @@ fn run_kernel_doc_validate(_files: &[PathBuf], out: &Path) -> ToolReport {
             outcome: ToolOutcome::Skip {
                 reason: format!("kernel-doc not at {}", kdoc.display())
             },
-            duration_ms: t0.elapsed().as_millis() as u64,
+            duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         };
     }
     let mut log_buf = String::new();
@@ -881,7 +879,7 @@ fn run_kernel_doc_validate(_files: &[PathBuf], out: &Path) -> ToolReport {
                 Some(n) => n.to_string(),
                 None => continue,
             };
-            if !(name.ends_with(".c") || name.ends_with(".h")) { continue; }
+            if !(name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")) || name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("h"))) { continue; }
             let res = match Command::new(&kdoc)
                 .args(["-none", &name])
                 .current_dir(&beamfs_dir)
@@ -892,7 +890,7 @@ fn run_kernel_doc_validate(_files: &[PathBuf], out: &Path) -> ToolReport {
             };
             let s = String::from_utf8_lossy(&res.stderr);
             if !s.trim().is_empty() {
-                log_buf.push_str(&format!("=== {name} ===\n"));
+                writeln!(log_buf, "=== {name} ===").unwrap();
                 log_buf.push_str(&s);
                 for line in s.lines() {
                     if line.contains("warning:") { findings += 1; }
@@ -915,7 +913,7 @@ fn run_kernel_doc_validate(_files: &[PathBuf], out: &Path) -> ToolReport {
         name: "kernel_doc".to_string(),
         tier: 1,
         outcome,
-        duration_ms: t0.elapsed().as_millis() as u64,
+        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 
@@ -966,7 +964,7 @@ fn run_gpg_verify_commits(out: &Path) -> ToolReport {
         ToolOutcome::Pass
     } else {
         ToolOutcome::Findings {
-            count: bad.len() as u32,
+            count: u32::try_from(bad.len()).unwrap_or(u32::MAX),
             severity: "error".to_string(),
             log_path: log_path.display().to_string(),
         }
@@ -975,7 +973,7 @@ fn run_gpg_verify_commits(out: &Path) -> ToolReport {
         name: "gpg_verify".to_string(),
         tier: 1,
         outcome,
-        duration_ms: t0.elapsed().as_millis() as u64,
+        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 
@@ -990,7 +988,7 @@ fn run_gpg_verify_commits(out: &Path) -> ToolReport {
 /// Determine if a substring at `pat_start..pat_end` in `line` is enclosed
 /// in a backtick code-span (`...`) or in a double-quoted string ("...").
 ///
-/// Used by run_naming_r17_check on .md files to skip matches that appear
+/// Used by `run_naming_r17_check` on .md files to skip matches that appear
 /// as citations rather than authoritative naming. On non-.md files
 /// (source code), this filter is NOT applied -- forbidden names in code
 /// comments or string literals must still be flagged.
@@ -1066,16 +1064,16 @@ fn run_naming_r17_check(out: &Path) -> ToolReport {
             let path = entry.path();
             if !path.is_file() { continue; }
             let s = path.to_string_lossy();
-            if !(s.ends_with(".c") || s.ends_with(".h") || s.ends_with(".md")
+            if !(s.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")) || s.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("h")) || s.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("md"))
                  || s.ends_with(".bb") || s.ends_with(".bbappend")
-                 || s.ends_with(".rs")) {
+                 || s.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("rs"))) {
                 continue;
             }
             let content = match std::fs::read_to_string(path) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
-            let is_md = s.ends_with(".md");
+            let is_md = s.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("md"));
             for (lineno, line) in content.lines().enumerate() {
                 for pat in &forbidden {
                     if let Some(start) = line.find(pat) {
@@ -1098,7 +1096,7 @@ fn run_naming_r17_check(out: &Path) -> ToolReport {
         ToolOutcome::Pass
     } else {
         ToolOutcome::Findings {
-            count: hits.len() as u32,
+            count: u32::try_from(hits.len()).unwrap_or(u32::MAX),
             severity: "error".to_string(),
             log_path: log_path.display().to_string(),
         }
@@ -1107,7 +1105,7 @@ fn run_naming_r17_check(out: &Path) -> ToolReport {
         name: "naming_r17".to_string(),
         tier: 1,
         outcome,
-        duration_ms: t0.elapsed().as_millis() as u64,
+        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 
@@ -1143,9 +1141,9 @@ fn run_emdash_r16_check(out: &Path) -> ToolReport {
             let path = entry.path();
             if !path.is_file() { continue; }
             let s = path.to_string_lossy();
-            if !(s.ends_with(".c") || s.ends_with(".h") || s.ends_with(".md")
+            if !(s.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")) || s.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("h")) || s.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("md"))
                  || s.ends_with(".bb") || s.ends_with(".bbappend")
-                 || s.ends_with(".rs")) {
+                 || s.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("rs"))) {
                 continue;
             }
             let content = match std::fs::read_to_string(path) {
@@ -1168,7 +1166,7 @@ fn run_emdash_r16_check(out: &Path) -> ToolReport {
         ToolOutcome::Pass
     } else {
         ToolOutcome::Findings {
-            count: hits.len() as u32,
+            count: u32::try_from(hits.len()).unwrap_or(u32::MAX),
             severity: "error".to_string(),
             log_path: log_path.display().to_string(),
         }
@@ -1177,7 +1175,7 @@ fn run_emdash_r16_check(out: &Path) -> ToolReport {
         name: "emdash_r16".to_string(),
         tier: 1,
         outcome,
-        duration_ms: t0.elapsed().as_millis() as u64,
+        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 
@@ -1192,7 +1190,7 @@ fn run_lockstep_r9_sha256(out: &Path) -> ToolReport {
             outcome: ToolOutcome::Skip {
                 reason: format!("yocto recipe dir {} not found", yocto_dir.display())
             },
-            duration_ms: t0.elapsed().as_millis() as u64,
+            duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         };
     }
     let beamfs_dir = PathBuf::from(BEAMFS_REPO);
@@ -1202,11 +1200,10 @@ fn run_lockstep_r9_sha256(out: &Path) -> ToolReport {
         for entry in entries.flatten() {
             let p = entry.path();
             if !p.is_file() { continue; }
-            let name = match p.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n,
-                None => continue,
+            let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+                continue
             };
-            if !(name.ends_with(".c") || name.ends_with(".h")) { continue; }
+            if !(name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")) || name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("h"))) { continue; }
             let yocto_p = yocto_dir.join(name);
             if !yocto_p.is_file() { continue; }
             let beamfs_bytes = match std::fs::read(&p) {
@@ -1238,7 +1235,7 @@ fn run_lockstep_r9_sha256(out: &Path) -> ToolReport {
         ToolOutcome::Pass
     } else {
         ToolOutcome::Findings {
-            count: divergences.len() as u32,
+            count: u32::try_from(divergences.len()).unwrap_or(u32::MAX),
             severity: "error".to_string(),
             log_path: log_path.display().to_string(),
         }
@@ -1247,7 +1244,7 @@ fn run_lockstep_r9_sha256(out: &Path) -> ToolReport {
         name: "lockstep_r9".to_string(),
         tier: 1,
         outcome,
-        duration_ms: t0.elapsed().as_millis() as u64,
+        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 

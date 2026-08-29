@@ -9,26 +9,26 @@
 //!
 //! `beamfs-bench full` rc=0 means "no panic, no DIFFS, dmesg clean" --
 //! a structural floor. It does NOT distinguish "RECOVERED 12/12 cluster"
-//! from "VERIFIED 11/12 + 1 subdir_missing", because both produce the
+//! from "VERIFIED 11/12 + 1 `subdir_missing`", because both produce the
 //! same `overall_rc=0`. R7 declares the bench canonical pre-push, so
 //! we promote the comparative semantics to first-class.
 //!
 //! ## Comparators (all R0/R7-grade)
 //!
 //! Tier R - REGRESSION (FATAL, blocks push)
-//!   R-1 cluster_verdict_count    : count(VERIFIED) per prob must not drop
-//!   R-2 verify_error_zero        : VERIFY=ERROR count must not increase
-//!   R-3 multifs_class_no_downgrade: RS_RECOVERED -> RS_PASSTHROUGH ok;
-//!                                   anything -> RS_FAILED|FS_PANIC|
-//!                                   CORRUPTED_DATA = REGRESSION
-//!   R-4 dmesg_pathology_zero     : BUG/Oops/WARN/panic count must not
+//!   R-1 `cluster_verdict_count`    : count(VERIFIED) per prob must not drop
+//!   R-2 `verify_error_zero`        : VERIFY=ERROR count must not increase
+//!   R-3 `multifs_class_no_downgrade`: `RS_RECOVERED` -> `RS_PASSTHROUGH` ok;
+//!                                   anything -> `RS_FAILED|FS_PANIC`|
+//!                                   `CORRUPTED_DATA` = REGRESSION
+//!   R-4 `dmesg_pathology_zero`     : BUG/Oops/WARN/panic count must not
 //!                                   increase
-//!   R-5 inode_uncorrected_count  : "CRC32 mismatch (no RS)" must not
+//!   R-5 `inode_uncorrected_count`  : "CRC32 mismatch (no RS)" must not
 //!                                   increase unless baseline already > 0
 //!
 //! Tier I - INFORMATIONAL (logged, never blocks)
-//!   I-1 cat_failed_at_prob_1M    : stochastic noise, log only
-//!   I-2 rs_corrected_count       : higher is better, surface in report
+//!   I-1 `cat_failed_at_prob_1M`    : stochastic noise, log only
+//!   I-2 `rs_corrected_count`       : higher is better, surface in report
 //!   I-3 timing per phase         : drift > 50% => log
 //!
 //! ## Bypass
@@ -96,7 +96,7 @@ struct ManifestSnapshot {
     pub phases:        serde_json::Value,
 }
 
-/// Public entry. Called from `cmd_full` after Phase 8.2 emit_manifest.
+/// Public entry. Called from `cmd_full` after Phase 8.2 `emit_manifest`.
 /// Returns Ok if no fatal regression OR if `accept_reason` is Some.
 /// Returns Err otherwise (rc=4 propagated by caller).
 pub fn run(
@@ -219,7 +219,7 @@ fn resolve_baseline() -> Result<Option<Baseline>> {
         let entry = entry?;
         let p = entry.path();
         let fname = match p.file_name().and_then(|s| s.to_str()) {
-            Some(n) if n.starts_with("manifest-") && n.ends_with(".json") => n,
+            Some(n) if n.starts_with("manifest-") && n.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("json")) => n,
             _ => continue,
         };
         let _ = fname;  // pattern check only
@@ -323,7 +323,7 @@ mod tests {
     fn empty_acceptance_rejected() {
         // verifier que reason vide bail!()
         let tmpd = tempfile::tempdir().unwrap();
-        let r = run(tmpd.path(), Some("".to_string()));
+        let r = run(tmpd.path(), Some(String::new()));
         // can't easily test without a baseline; structural test only:
         // we expect run() to either pass (no baseline) or fail with
         // empty-reason bail. Both are acceptable; this test just checks

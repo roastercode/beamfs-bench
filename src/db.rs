@@ -1,4 +1,4 @@
-//! db.rs -- measurement database (SQLite).
+//! db.rs -- measurement database (`SQLite`).
 //!
 //! ## Why this exists
 //!
@@ -29,8 +29,11 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::io::Write as IoWrite;
+use std::process::Stdio;
 
 /// Where the database lives. Alongside the run archives it indexes.
 pub fn default_db_path() -> PathBuf {
@@ -45,8 +48,6 @@ pub fn default_db_path() -> PathBuf {
 /// dashes in an argument as options, so a script containing `-- comment`
 /// lines is read as a garbled command line rather than as SQL.
 fn exec(db: &Path, sql: &str) -> Result<String> {
-    use std::io::Write;
-    use std::process::Stdio;
 
     let mut child = Command::new("sqlite3")
         .arg(db)
@@ -76,7 +77,7 @@ fn exec(db: &Path, sql: &str) -> Result<String> {
 }
 
 /// Single-quote a value for SQL, or emit NULL for None.
-/// Doubling the quote is SQLite's escape; values here come from our own
+/// Doubling the quote is `SQLite`'s escape; values here come from our own
 /// worker output, but a hash or a dmesg excerpt can still contain one.
 fn sql_str(v: Option<&str>) -> String {
     match v {
@@ -86,14 +87,14 @@ fn sql_str(v: Option<&str>) -> String {
 }
 
 fn sql_num(v: Option<i64>) -> String {
-    v.map(|n| n.to_string()).unwrap_or_else(|| "NULL".into())
+    v.map_or_else(|| "NULL".into(), |n| n.to_string())
 }
 
 /// Apply the schema. Idempotent: every statement is CREATE ... IF NOT EXISTS.
 pub fn init(db: &Path) -> Result<()> {
     let schema = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema/beamfs-bench.sql");
     let sql = std::fs::read_to_string(&schema)
-        .with_context(|| format!("read schema {:?}", schema))?;
+        .with_context(|| format!("read schema {}", schema.display()))?;
     if let Some(dir) = db.parent() {
         std::fs::create_dir_all(dir).ok();
     }
@@ -120,13 +121,15 @@ pub struct AttackRecord {
     pub file_size: Option<i64>,
     pub workload_mode: Option<String>,
     pub flip_log_sha256: Option<String>,
-    /// gzip+base64 of the injector's flip_log, shipped inside the record.
+    /// gzip+base64 of the injector's `flip_log`, shipped inside the record.
     pub flip_log_b64: Option<String>,
+    /// gzip+base64 of the beamfs dmesg lines from the attack window.
+    pub dmesg_b64: Option<String>,
 }
 
 impl AttackRecord {
     /// Read ok and content unchanged. Anything else is either a refusal
-    /// (cat_rc != 0) or silent corruption (cat_rc == 0, hashes differ),
+    /// (`cat_rc` != 0) or silent corruption (`cat_rc` == 0, hashes differ),
     /// and those must not be collapsed together.
     pub fn intact(&self) -> Option<i64> {
         match (&self.hash_pre, &self.hash_post, self.cat_rc) {
@@ -172,6 +175,7 @@ pub fn parse_records(text: &str) -> Vec<AttackRecord> {
             workload_mode: s("WORKLOAD_MODE"),
             flip_log_sha256: s("FLIP_LOG_SHA256").filter(|v| v != "na"),
             flip_log_b64: s("FLIP_LOG_B64").filter(|v| v != "na"),
+            dmesg_b64: s("DMESG_B64").filter(|v| v != "na"),
         });
     }
     out
@@ -289,8 +293,8 @@ pub fn ingest_run(
 /// beamfs on-disk data block geometry (beamfs.h).
 ///
 /// Bytes 0..4079 hold 16 interleaved RS(255,239) subblocks laid out as
-/// [239 data][16 parity] repeated; DATA_CSUM type sits at 4080, its
-/// value at 4084, DATA_SELFID at 4088, and the block ends at 4096.
+/// [239 data][16 parity] repeated; `DATA_CSUM` type sits at 4080, its
+/// value at 4084, `DATA_SELFID` at 4088, and the block ends at 4096.
 const SUB_TOTAL: i64 = 255;
 const SUB_DATA: i64 = 239;
 const N_SUB: i64 = 16;
@@ -312,7 +316,7 @@ fn locate(off: i64) -> (Option<i64>, Option<i64>, &'static str) {
     (Some(idx), Some(pos), if pos < SUB_DATA { "rs_data" } else { "rs_parity" })
 }
 
-/// One decoded flip_log line.
+/// One decoded `flip_log` line.
 #[derive(Debug, Clone)]
 struct FlipRow {
     seq: i64,
@@ -329,22 +333,71 @@ fn parse_hex_byte(s: &str) -> i64 {
     i64::from_str_radix(s.trim().trim_start_matches("0x"), 16).unwrap_or(-1)
 }
 
-fn decode_flip_log(b64: &str) -> Result<Vec<FlipRow>> {
-    use std::io::Write;
-    use std::process::Stdio;
-
+/// base64 -d | gzip -dc through the shell: both tools exist on host and
+/// nodes, and this keeps the crate free of compression dependencies.
+fn decode_b64_gzip(b64: &str) -> Result<String> {
     let mut child = Command::new("sh")
         .arg("-c").arg("base64 -d | gzip -dc")
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn()
-        .context("spawn base64/gzip")?;
+        .spawn().context("spawn base64/gzip")?;
     child.stdin.as_mut().context("stdin")?
         .write_all(b64.as_bytes()).context("write b64")?;
     let out = child.wait_with_output().context("wait decode")?;
-    if !out.status.success() {
-        anyhow::bail!("flip_log decode failed");
+    if !out.status.success() { anyhow::bail!("decode failed"); }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// What the kernel reported for one (iblock, subblock).
+#[derive(Debug, Clone, Default)]
+struct KernelVerdict {
+    outcome: String,
+    inode_no: Option<i64>,
+}
+
+/// Index the kernel's verdicts by subblock.
+///
+/// beamfs names what it acted on:
+///   beamfs/inline: ino=11 iblock=55 subblock=7: 3 symbol(s) corrected
+///   beamfs/inline: ino=11 iblock=55 subblock=7 uncorrectable
+/// keyed by (iblock, subblock) -- the same key the flip reconstruction
+/// produces, which is what lets the two be joined. Fail-closed paths
+/// name no subblock, so they are keyed on iblock and cover the block.
+///
+/// Joining these turns "64 flips, hash unchanged" into "these flips hit
+/// this subblock and RS repaired it there": the difference between
+/// asserting a correction happened and showing it.
+fn parse_kernel_verdicts(dmesg: &str)
+    -> (HashMap<(i64, i64), KernelVerdict>, HashMap<i64, KernelVerdict>)
+{
+    let mut by_sub = HashMap::new();
+    let mut by_block = HashMap::new();
+    let field = |line: &str, key: &str| -> Option<i64> {
+        let i = line.find(key)? + key.len();
+        let rest = &line[i..];
+        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        rest[..end].parse::<i64>().ok()
+    };
+    for line in dmesg.lines() {
+        if !line.contains("beamfs/inline:") { continue; }
+        let ino = field(line, "ino=");
+        let Some(iblock) = field(line, "iblock=") else { continue };
+        if let Some(sub) = field(line, "subblock=") {
+            let outcome = if line.contains("uncorrectable") { "uncorrectable" }
+                          else if line.contains("corrected") { "corrected" }
+                          else { continue };
+            by_sub.insert((iblock, sub),
+                KernelVerdict { outcome: outcome.into(), inode_no: ino });
+        } else if line.contains("mismatch") || line.contains("bad descriptor")
+               || line.contains("pointer") || line.contains("unallocated") {
+            by_block.insert(iblock,
+                KernelVerdict { outcome: "unprotected".into(), inode_no: ino });
+        }
     }
-    let text = String::from_utf8_lossy(&out.stdout);
+    (by_sub, by_block)
+}
+
+fn decode_flip_log(b64: &str) -> Result<Vec<FlipRow>> {
+    let text = decode_b64_gzip(b64)?;
 
     let mut rows = Vec::new();
     for line in text.lines().skip(1) {
@@ -400,6 +453,11 @@ fn ingest_flip_events(db: &Path, run_id: i64, r: &AttackRecord) -> Result<usize>
         }
     }
 
+    let dmesg = r.dmesg_b64.as_deref()
+        .and_then(|b| decode_b64_gzip(b).ok())
+        .unwrap_or_default();
+    let (verdict_by_sub, verdict_by_block) = parse_kernel_verdicts(&dmesg);
+
     let mut sql = String::from("BEGIN;");
     for f in &rows {
         // byte_offset is relative to the bio payload. Filesystem writes
@@ -413,13 +471,26 @@ fn ingest_flip_events(db: &Path, run_id: i64, r: &AttackRecord) -> Result<usize>
         } else {
             (None, None, "unknown")
         };
-        let bytes_hit = idx.and_then(|i| hits.get(&(block_no, i)).map(|s| s.len() as i64));
-        let over = bytes_hit.map(|b| if b > RS_BUDGET { 1 } else { 0 });
+        let bytes_hit = idx.and_then(|i| hits.get(&(block_no, i)).map(|s| i64::try_from(s.len()).unwrap_or(i64::MAX)));
+        let over = bytes_hit.map(|b| i64::from(b > RS_BUDGET));
         let on_target = if ranges.is_empty() { None }
-                        else { Some(if in_ranges(f.sector, ranges) { 1 } else { 0 }) };
+                        else { Some(i64::from(in_ranges(f.sector, ranges))) };
 
-        sql.push_str(&format!(
-            "INSERT INTO flip_event (run_id, fs, seq, ktime_ns, sector, bio_op,              byte_offset, bit_index, before_byte, after_byte, block_no,              offset_in_block, subblock_idx, offset_in_sub, region, on_target,              sub_bytes_hit, rs_budget, over_budget) VALUES              ({run_id}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});",
+        // What the kernel did about this flip: looked up on the subblock
+        // it hit, falling back to a block-level fail-closed verdict. No
+        // entry means no reported reaction -- parity never needed, or a
+        // block never read back.
+        let kv = idx.and_then(|i| verdict_by_sub.get(&(block_no, i)))
+                    .or_else(|| verdict_by_block.get(&block_no));
+        let outcome = match kv {
+            Some(v) => v.outcome.as_str(),
+            None if !is_beamfs => "unknown",
+            None => "no_effect",
+        };
+        let inode_no = kv.and_then(|v| v.inode_no);
+
+        write!(sql,
+            "INSERT INTO flip_event (run_id, fs, seq, ktime_ns, sector, bio_op,              byte_offset, bit_index, before_byte, after_byte, block_no,              offset_in_block, subblock_idx, offset_in_sub, region, on_target,              sub_bytes_hit, rs_budget, over_budget, outcome, inode_no) VALUES              ({run_id}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});",
             sql_str(Some(&r.fs)),
             f.seq, f.ktime_ns, f.sector, f.bio_op, f.byte_offset, f.bit_index,
             f.before, f.after, block_no, off_in_block,
@@ -427,7 +498,9 @@ fn ingest_flip_events(db: &Path, run_id: i64, r: &AttackRecord) -> Result<usize>
             sql_num(on_target), sql_num(bytes_hit),
             if is_beamfs { RS_BUDGET.to_string() } else { "NULL".into() },
             sql_num(over),
-        ));
+            sql_str(Some(outcome)),
+            sql_num(inode_no),
+        ).unwrap();
     }
     sql.push_str("COMMIT;");
     exec(db, &sql)?;
@@ -442,20 +515,18 @@ fn ingest_flip_events(db: &Path, run_id: i64, r: &AttackRecord) -> Result<usize>
 pub fn ingest_run_dir(db: &Path, run_dir: &Path, campaign_id: Option<i64>) -> Result<i64> {
     let records_path = run_dir.join("all-records.txt");
     let text = std::fs::read_to_string(&records_path)
-        .with_context(|| format!("read {:?}", records_path))?;
+        .with_context(|| format!("read {}", records_path.display()))?;
     let records = parse_records(&text);
     if records.is_empty() {
-        anyhow::bail!("no ATTACK record in {:?}", records_path);
+        anyhow::bail!("no ATTACK record in {records_path:?}");
     }
 
     let name = run_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let started = name
         .rsplit_once("-multifs-")
         .map(|(_, ts)| ts.to_string())
-        .filter(|ts| ts.len() == 15)
-        .map(|ts| format!("{}-{}-{} {}:{}:{}",
-            &ts[0..4], &ts[4..6], &ts[6..8], &ts[9..11], &ts[11..13], &ts[13..15]))
-        .unwrap_or_else(|| "unknown".into());
+        .filter(|ts| ts.len() == 15).map_or_else(|| "unknown".into(), |ts| format!("{}-{}-{} {}:{}:{}",
+            &ts[0..4], &ts[4..6], &ts[6..8], &ts[9..11], &ts[11..13], &ts[13..15]));
 
     let scope = records.iter().find_map(|r| r.workload_mode.as_deref());
 
@@ -468,7 +539,7 @@ pub fn ingest_run_dir(db: &Path, run_dir: &Path, campaign_id: Option<i64>) -> Re
     )
 }
 
-/// Has this directory already been ingested? Matched on log_path, which
+/// Has this directory already been ingested? Matched on `log_path`, which
 /// is the run directory: re-ingesting would double every measurement.
 fn already_ingested(db: &Path, run_dir: &Path) -> Result<bool> {
     let sql = format!(
@@ -488,13 +559,12 @@ pub fn cmd_ingest(runs_dir: Option<&str>) -> Result<i32> {
     };
 
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
-        .with_context(|| format!("read {:?}", root))?
-        .filter_map(|e| e.ok())
+        .with_context(|| format!("read {}", root.display()))?
+        .filter_map(std::result::Result::ok)
         .map(|e| e.path())
         .filter(|p| p.is_dir()
             && p.file_name().and_then(|n| n.to_str())
-                .map(|n| n.starts_with("beamfs-bench-multifs-"))
-                .unwrap_or(false)
+                .is_some_and(|n| n.starts_with("beamfs-bench-multifs-"))
             && p.join("all-records.txt").exists())
         .collect();
     dirs.sort();
@@ -519,7 +589,7 @@ pub fn cmd_ingest(runs_dir: Option<&str>) -> Result<i32> {
     println!();
     println!("{done} ingested, {skipped} already present, {failed} failed");
     println!("database: {}", db.display());
-    Ok(if failed > 0 { 1 } else { 0 })
+    Ok(i32::from(failed > 0))
 }
 
 pub enum Query {
@@ -536,8 +606,6 @@ pub fn cmd_query(q: Query) -> Result<i32> {
         Query::Validity =>
             "SELECT verdict, COUNT(*) AS n,              GROUP_CONCAT(DISTINCT fs) AS filesystems              FROM validity GROUP BY verdict ORDER BY n DESC;",
     };
-    use std::io::Write;
-    use std::process::Stdio;
     let mut child = Command::new("sqlite3")
         .arg("-header").arg("-column").arg(&db)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
@@ -554,14 +622,13 @@ pub fn cmd_query(q: Query) -> Result<i32> {
     Ok(0)
 }
 
-/// Drop old runs. Aggregates in flip_distribution are kept: they are the
+/// Drop old runs. Aggregates in `flip_distribution` are kept: they are the
 /// point of computing them at ingest, so trends survive the purge.
 pub fn cmd_purge(older_than_days: u32) -> Result<i32> {
     let db = default_db_path();
     let before = exec(&db, "SELECT COUNT(*) FROM run;")?;
     let sql = format!(
-        "PRAGMA foreign_keys = ON;          DELETE FROM flip_raw WHERE run_id IN            (SELECT id FROM run WHERE started_at < datetime('now', '-{d} days'));          DELETE FROM measurement WHERE run_id IN            (SELECT id FROM run WHERE started_at < datetime('now', '-{d} days'));          DELETE FROM validity WHERE run_id IN            (SELECT id FROM run WHERE started_at < datetime('now', '-{d} days'));          DELETE FROM run WHERE started_at < datetime('now', '-{d} days');          VACUUM;",
-        d = older_than_days
+        "PRAGMA foreign_keys = ON;          DELETE FROM flip_raw WHERE run_id IN            (SELECT id FROM run WHERE started_at < datetime('now', '-{older_than_days} days'));          DELETE FROM measurement WHERE run_id IN            (SELECT id FROM run WHERE started_at < datetime('now', '-{older_than_days} days'));          DELETE FROM validity WHERE run_id IN            (SELECT id FROM run WHERE started_at < datetime('now', '-{older_than_days} days'));          DELETE FROM run WHERE started_at < datetime('now', '-{older_than_days} days');          VACUUM;"
     );
     exec(&db, &sql)?;
     let after = exec(&db, "SELECT COUNT(*) FROM run;")?;

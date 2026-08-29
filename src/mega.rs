@@ -29,6 +29,7 @@ use crate::lifecycle;
 use crate::metadata;
 use crate::multifs;
 use crate::pipeline;
+use std::fmt::Write;
 
 const RUNS_DIR: &str = "/home/aurelien/git/yocto-beamfs/Documentation/runs";
 
@@ -58,7 +59,7 @@ fn relocate_run_dir(prefix: &str, before: &[String], mega_dir: &Path, sub_name: 
             let src = Path::new(RUNS_DIR).join(&new_basename);
             let dst = mega_dir.join(sub_name);
             match fs::rename(&src, &dst) {
-                Ok(_) => println!("[mega]  relocated {sub_name}: {} -> {}",
+                Ok(()) => println!("[mega]  relocated {sub_name}: {} -> {}",
                                   new_basename, dst.display()),
                 Err(e) => eprintln!("[mega]  WARN: rename {} -> {}: {e:#}",
                                     src.display(), dst.display()),
@@ -95,8 +96,8 @@ fn capture_env(env_dir: &Path) -> Result<()> {
         let status = Command::new("git").args(["-C", repo, "status", "-s"])
             .output().with_context(|| format!("git status {repo}"))?;
         let mut s = String::new();
-        s.push_str(&format!("# repo: {repo}\n"));
-        s.push_str(&format!("HEAD: {}", String::from_utf8_lossy(&head.stdout)));
+        writeln!(s, "# repo: {repo}").unwrap();
+        write!(s, "HEAD: {}", String::from_utf8_lossy(&head.stdout)).unwrap();
         s.push_str("status -s:\n");
         s.push_str(&String::from_utf8_lossy(&status.stdout));
         fs::write(env_dir.join(format!("git-{name}.txt")), s)?;
@@ -156,22 +157,22 @@ fn write_global_manifest(
     s.push_str("================================================================\n");
     s.push_str(" beamfs-bench mega manifest (consolidated investigation run)\n");
     s.push_str("================================================================\n");
-    s.push_str(&format!("Run dir         : {}\n", mega_dir.display()));
-    s.push_str(&format!("Started         : {}\n", started_ts.format("%Y-%m-%d %H:%M:%S %Z")));
-    s.push_str(&format!("Ended           : {}\n", ended.format("%Y-%m-%d %H:%M:%S %Z")));
-    s.push_str(&format!("Duration (s)    : {duration}\n"));
-    s.push_str(&format!("Total phases    : {}\n", phases.len()));
+    writeln!(s, "Run dir         : {}", mega_dir.display()).unwrap();
+    writeln!(s, "Started         : {}", started_ts.format("%Y-%m-%d %H:%M:%S %Z")).unwrap();
+    writeln!(s, "Ended           : {}", ended.format("%Y-%m-%d %H:%M:%S %Z")).unwrap();
+    writeln!(s, "Duration (s)    : {duration}").unwrap();
+    writeln!(s, "Total phases    : {}", phases.len()).unwrap();
     let n_ok = phases.iter().filter(|p| p.rc == 0).count();
     let n_fail = phases.len() - n_ok;
-    s.push_str(&format!("PASSED          : {n_ok}\n"));
-    s.push_str(&format!("FAILED          : {n_fail}\n"));
+    writeln!(s, "PASSED          : {n_ok}").unwrap();
+    writeln!(s, "FAILED          : {n_fail}").unwrap();
     s.push_str("\n================================================================\n");
     s.push_str(" PHASE-BY-PHASE\n");
     s.push_str("================================================================\n");
     for p in phases {
         let tag = if p.rc == 0 { "[OK]  " } else { "[FAIL]" };
-        s.push_str(&format!("{tag} {:<28} ({:>5} s) : rc={} {}\n",
-            p.name, p.duration_secs, p.rc, p.note));
+        writeln!(s, "{tag} {:<28} ({:>5} s) : rc={} {}",
+            p.name, p.duration_secs, p.rc, p.note).unwrap();
     }
     s.push_str("\n================================================================\n");
     s.push_str(" ARTIFACTS IN MEGA DIR (depth-3 listing)\n");
@@ -180,16 +181,16 @@ fn write_global_manifest(
         if depth > 3 { return; }
         if let Ok(rd) = fs::read_dir(dir) {
             let mut entries: Vec<_> = rd.flatten().collect();
-            entries.sort_by_key(|e| e.file_name());
+            entries.sort_by_key(std::fs::DirEntry::file_name);
             for entry in entries {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 let path = entry.path();
                 if path.is_dir() {
-                    out.push_str(&format!("{prefix}{name}/\n"));
+                    writeln!(out, "{prefix}{name}/").unwrap();
                     let new_prefix = format!("{prefix}  ");
                     list_recursive(&path, &new_prefix, out, depth + 1);
                 } else if let Ok(meta) = entry.metadata() {
-                    out.push_str(&format!("{prefix}{:<40} : {} bytes\n", name, meta.len()));
+                    writeln!(out, "{prefix}{:<40} : {} bytes", name, meta.len()).unwrap();
                 }
             }
         }
@@ -244,19 +245,19 @@ pub fn run(injector: &str) -> Result<i32> {
     let mut phases: Vec<PhaseResult> = Vec::new();
 
     // Phase 00: env capture
-    let _t0 = Instant::now();
+    let t0 = Instant::now();
     let rc = match capture_env(&env_dir) {
-        Ok(_) => 0,
+        Ok(()) => 0,
         Err(e) => { eprintln!("[mega] capture_env: {e:#}"); 1 }
     };
     phases.push(PhaseResult {
         name: "00_capture_env".into(), rc,
-        duration_secs: _t0.elapsed().as_secs(),
+        duration_secs: t0.elapsed().as_secs(),
         note: "uname + bench version + git HEADs".into(),
     });
 
     // Phase 01: pipeline R19
-    let _t0 = Instant::now();
+    let t0 = Instant::now();
     println!();
     println!("[mega] === Phase 01: pipeline R19 validation chain ===");
     // L5 : pipeline closure now also returns the USB verdicts captured
@@ -301,10 +302,10 @@ pub fn run(injector: &str) -> Result<i32> {
         }
         Ok(usb_verdicts)
     })();
-    let pipeline_rc = if pipeline_result.is_ok() { 0 } else { 1 };
+    let pipeline_rc = i32::from(pipeline_result.is_err());
     phases.push(PhaseResult {
         name: "01_pipeline_R19".into(), rc: pipeline_rc,
-        duration_secs: _t0.elapsed().as_secs(),
+        duration_secs: t0.elapsed().as_secs(),
         note: match &pipeline_result {
             Ok(_) => "phases 0.0..0.7 PASS".into(),
             Err(e) => format!("FAIL: {e:#}"),
@@ -324,7 +325,7 @@ pub fn run(injector: &str) -> Result<i32> {
 
     // Phase 02: analyse Full
     let before = list_run_dirs_with_prefix("beamfs-bench-analyse-full-");
-    let _t0 = Instant::now();
+    let t0 = Instant::now();
     println!();
     println!("[mega] === Phase 02: analyse scope=Full ===");
     let cfg = analyse::AnalyseConfig {
@@ -342,14 +343,14 @@ pub fn run(injector: &str) -> Result<i32> {
     };
     phases.push(PhaseResult {
         name: "02_analyse_full".into(), rc,
-        duration_secs: _t0.elapsed().as_secs(),
+        duration_secs: t0.elapsed().as_secs(),
         note: "multifs + cluster + 4-node forensics".into(),
     });
     relocate_run_dir("beamfs-bench-analyse-full-", &before, &mega_dir, "analyse");
 
     // Phase 03: bitrot
     let before = list_run_dirs_with_prefix("beamfs-bench-bitrot-");
-    let _t0 = Instant::now();
+    let t0 = Instant::now();
     println!();
     println!("[mega] === Phase 03: bitrot ===");
     let rc = match bitrot::run(injector) {
@@ -358,14 +359,14 @@ pub fn run(injector: &str) -> Result<i32> {
     };
     phases.push(PhaseResult {
         name: "03_bitrot".into(), rc,
-        duration_secs: _t0.elapsed().as_secs(),
+        duration_secs: t0.elapsed().as_secs(),
         note: "offline bit-rot 4 scenarios".into(),
     });
     relocate_run_dir("beamfs-bench-bitrot-", &before, &mega_dir, "bitrot");
 
     // Phase 04: metadata
     let before = list_run_dirs_with_prefix("beamfs-bench-metadata-");
-    let _t0 = Instant::now();
+    let t0 = Instant::now();
     println!();
     println!("[mega] === Phase 04: metadata ===");
     let rc = match metadata::run(injector) {
@@ -374,14 +375,14 @@ pub fn run(injector: &str) -> Result<i32> {
     };
     phases.push(PhaseResult {
         name: "04_metadata".into(), rc,
-        duration_secs: _t0.elapsed().as_secs(),
+        duration_secs: t0.elapsed().as_secs(),
         note: "RadFI metadata 5 FS x 4 phases".into(),
     });
     relocate_run_dir("beamfs-bench-metadata-", &before, &mega_dir, "metadata");
 
     // Phase 05: crash
     let before = list_run_dirs_with_prefix("beamfs-bench-crash-");
-    let _t0 = Instant::now();
+    let t0 = Instant::now();
     println!();
     println!("[mega] === Phase 05: crash ===");
     let rc = match crash::run(injector) {
@@ -390,14 +391,14 @@ pub fn run(injector: &str) -> Result<i32> {
     };
     phases.push(PhaseResult {
         name: "05_crash".into(), rc,
-        duration_secs: _t0.elapsed().as_secs(),
+        duration_secs: t0.elapsed().as_secs(),
         note: "power-loss mid-write 5 FS".into(),
     });
     relocate_run_dir("beamfs-bench-crash-", &before, &mega_dir, "crash");
 
     // Phase 06: fsck
     let before = list_run_dirs_with_prefix("beamfs-bench-fsck-");
-    let _t0 = Instant::now();
+    let t0 = Instant::now();
     println!();
     println!("[mega] === Phase 06: fsck ===");
     let rc = match fsck::run(injector) {
@@ -406,31 +407,31 @@ pub fn run(injector: &str) -> Result<i32> {
     };
     phases.push(PhaseResult {
         name: "06_fsck".into(), rc,
-        duration_secs: _t0.elapsed().as_secs(),
+        duration_secs: t0.elapsed().as_secs(),
         note: "offline FS check 5 FS".into(),
     });
     relocate_run_dir("beamfs-bench-fsck-", &before, &mega_dir, "fsck");
 
     // Phase 07: Yocto build logs
-    let _t0 = Instant::now();
-    let rc = match capture_yocto_build_logs(&build_dir) { Ok(_) => 0, Err(_) => 1 };
+    let t0 = Instant::now();
+    let rc = match capture_yocto_build_logs(&build_dir) { Ok(()) => 0, Err(_) => 1 };
     phases.push(PhaseResult {
         name: "07_yocto_build_logs".into(), rc,
-        duration_secs: _t0.elapsed().as_secs(),
+        duration_secs: t0.elapsed().as_secs(),
         note: "log.do_* + run.do_* + task_order".into(),
     });
 
     // Phase 08: kernel artifacts
-    let _t0 = Instant::now();
-    let rc = match capture_kernel_artifacts(&build_dir) { Ok(_) => 0, Err(_) => 1 };
+    let t0 = Instant::now();
+    let rc = match capture_kernel_artifacts(&build_dir) { Ok(()) => 0, Err(_) => 1 };
     phases.push(PhaseResult {
         name: "08_kernel_artifacts".into(), rc,
-        duration_secs: _t0.elapsed().as_secs(),
+        duration_secs: t0.elapsed().as_secs(),
         note: "/proc/config.gz + modinfo".into(),
     });
 
     // Phase 09: post-attack forensics
-    let _t0 = Instant::now();
+    let t0 = Instant::now();
     let rc = (|| -> Result<i32> {
         let nodes: Vec<cluster::ClusterNode> = cluster::CLUSTER_NODES.iter()
             .map(|(ip, hostname)| cluster::ClusterNode {
@@ -447,7 +448,7 @@ pub fn run(injector: &str) -> Result<i32> {
     })().unwrap_or(1);
     phases.push(PhaseResult {
         name: "09_post_forensics".into(), rc,
-        duration_secs: _t0.elapsed().as_secs(),
+        duration_secs: t0.elapsed().as_secs(),
         note: "dmesg + radfi-counters + lsmod + ftrace + rs-journal".into(),
     });
 
@@ -465,7 +466,7 @@ pub fn run(injector: &str) -> Result<i32> {
             println!(" Tarball : {}", t.display());
             let mp = mega_dir.join("manifest.txt");
             if let Ok(mut s) = fs::read_to_string(&mp) {
-                s.push_str(&format!("\nTARBALL : {}\n", t.display()));
+                write!(s, "\nTARBALL : {}\n", t.display()).unwrap();
                 let _ = fs::write(&mp, s);
             }
         }

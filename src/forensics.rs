@@ -5,9 +5,9 @@
 //! | Capture                | quick | standard | full |
 //! |------------------------|-------|----------|------|
 //! | dmesg dump             |  yes  |   yes    |  yes |
-//! | RadFI debugfs counters |  yes  |   yes    |  yes |
+//! | `RadFI` debugfs counters |  yes  |   yes    |  yes |
 //! | lsmod (top 30)         |  yes  |   yes    |  yes |
-//! | ftrace function_graph  |  no   |   no     |  yes |
+//! | ftrace `function_graph`  |  no   |   no     |  yes |
 //! | perf record -a -g      |  no   |   no     |  yes |
 //! | RS journal SB hexdump  |  no   |   yes    |  yes |
 //!
@@ -26,6 +26,7 @@ use std::thread;
 
 use crate::cluster::ClusterNode;
 use crate::ssh::SshTarget;
+use std::fmt::Write;
 
 /// Forensic scope levels. Mapped 1:1 to `analyse --scope=<...>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +105,7 @@ pub fn pre_capture_all(nodes: &[ClusterNode], scope: Scope) -> Result<Vec<(Strin
 }
 
 /// Start `perf record -a -g` in background on master only (for scope=full).
-/// Returns immediately; stop_perf() must be called before final capture.
+/// Returns immediately; `stop_perf()` must be called before final capture.
 pub fn start_perf_master() -> Result<()> {
     let ssh = ssh_for("192.168.56.10")?;
     // Wipe stale PID file before launch (idempotent).
@@ -112,7 +113,7 @@ pub fn start_perf_master() -> Result<()> {
     // nohup + sleep 3600 = bounded duration; we'll SIGINT it before that.
     // Capture the perf PID via $! into a sidecar file so stop_perf_master
     // can wait on the exact process and let perf finalize its header.
-    let launch = r#"sudo bash -c 'nohup perf record -a -g -o /tmp/beamfs-bench-perf.data -- sleep 3600 >/tmp/beamfs-bench-perf.log 2>&1 & echo $! > /tmp/beamfs-bench-perf.pid'"#;
+    let launch = r"sudo bash -c 'nohup perf record -a -g -o /tmp/beamfs-bench-perf.data -- sleep 3600 >/tmp/beamfs-bench-perf.log 2>&1 & echo $! > /tmp/beamfs-bench-perf.pid'";
     ssh.exec_lenient(launch)?;
     // Give perf a moment to start sampling and write its header.
     std::thread::sleep(std::time::Duration::from_millis(1500));
@@ -203,7 +204,7 @@ fn capture_one_node(
 ) -> Result<PathBuf> {
     let node_dir = run_dir.join(format!("forensics-{hostname}"));
     fs::create_dir_all(&node_dir)
-        .with_context(|| format!("create_dir_all {:?}", node_dir))?;
+        .with_context(|| format!("create_dir_all {}", node_dir.display()))?;
 
     let ssh = ssh_for(ip)?;
 
@@ -335,9 +336,9 @@ pub fn write_crash_report(
     let path = run_dir.join("crash-report.md");
     let mut content = String::new();
     content.push_str("# beamfs-bench analyse: CRASH REPORT\n\n");
-    content.push_str(&format!("**Date**: {ts_human}\n"));
-    content.push_str(&format!("**Exit code**: {exit_code}\n"));
-    content.push_str(&format!("**Run dir**: `{}`\n\n", run_dir.display()));
+    writeln!(content, "**Date**: {ts_human}").unwrap();
+    writeln!(content, "**Exit code**: {exit_code}").unwrap();
+    write!(content, "**Run dir**: `{}`\n\n", run_dir.display()).unwrap();
 
     if let Some(p) = tir_log_path {
         if let Ok(log) = fs::read_to_string(p) {
@@ -372,11 +373,11 @@ pub fn write_crash_report(
     content.push_str("## Files in this run dir\n\n");
     if let Ok(rd) = fs::read_dir(run_dir) {
         for entry in rd.flatten() {
-            content.push_str(&format!("- `{}`\n", entry.path().display()));
+            writeln!(content, "- `{}`", entry.path().display()).unwrap();
         }
     }
 
     fs::write(&path, content)
-        .with_context(|| format!("write {:?}", path))?;
+        .with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }

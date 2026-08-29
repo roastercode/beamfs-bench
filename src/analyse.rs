@@ -3,12 +3,12 @@
 //! ## Scopes
 //!
 //! - `quick`    : multifs(probs=[1000000]) + post-capture master only
-//!   (dmesg + RadFI + lsmod). No ftrace, no perf, no cluster.
+//!   (dmesg + `RadFI` + lsmod). No ftrace, no perf, no cluster.
 //! - `standard` : multifs(probs=default) + post-capture all 4 nodes
-//!   (dmesg + RadFI + lsmod) + RS journal SB on master.
+//!   (dmesg + `RadFI` + lsmod) + RS journal SB on master.
 //!   No ftrace, no perf, no cluster_*.
-//! - `full`     : multifs(probs=default) + cluster_setup/attack/verify
-//!   on master + 3 computes + ftrace function_graph on all
+//! - `full`     : multifs(probs=default) + `cluster_setup/attack/verify`
+//!   on master + 3 computes + ftrace `function_graph` on all
 //!   nodes + perf record on master + RS journal SB on master
 //!   + crash-report if any verdict failed.
 //!
@@ -47,9 +47,9 @@ pub struct AnalyseConfig {
     /// Fault injector to use: "radfi" or "emufi". Propagated to multifs
     /// + cluster scopes. Default: "radfi".
     pub injector: String,
-    /// USB pre-flight verdicts captured by usb_health::run() in Phase 0.0a.
-    /// Used to build the runtime (fs, vd) mapping via build_fs_mapping
-    /// without any hardcoded DEFAULT_FS_LIST. Empty Vec is allowed only
+    /// USB pre-flight verdicts captured by `usb_health::run()` in Phase 0.0a.
+    /// Used to build the runtime (fs, vd) mapping via `build_fs_mapping`
+    /// without any hardcoded `DEFAULT_FS_LIST`. Empty Vec is allowed only
     /// when scope=Standard or Quick is invoked without lifecycle/full
     /// (in that case multifs cannot run, but analyse can still capture
     /// host-level forensics).
@@ -71,11 +71,11 @@ impl Default for AnalyseConfig {
     }
 }
 
-/// S3.1-cluster : parse cluster_setup_all outputs and compute the
-/// union of per-node target_block_range, in sector units. Each
-/// node may host the target_file at a different physical extent
+/// S3.1-cluster : parse `cluster_setup_all` outputs and compute the
+/// union of per-node `target_block_range`, in sector units. Each
+/// node may host the `target_file` at a different physical extent
 /// (4 independent beamfs instances), so we take min(start) and
-/// max(end) across reachable nodes to cover them all. RadFI then
+/// max(end) across reachable nodes to cover them all. `RadFI` then
 /// flips inside this union, never on SB / inode 1 / inode table.
 ///
 /// Returns None if no node emitted a valid range (e.g. old worker.sh
@@ -110,22 +110,19 @@ fn compute_cluster_target_range(setup: &[cluster::ClusterActionResult]) -> Optio
     }
 }
 
-/// S3.1-cluster : set or remove the TARGET_BLOCK_RANGE_* env vars
-/// according to the computed union. Mirrors the multifs.rs::Phase 3
-/// set/remove block. Must be called before each cluster_attack_all
-/// (the range may evolve across setup_again iterations between probs).
+/// S3.1-cluster : set or remove the `TARGET_BLOCK_RANGE`_* env vars
+/// according to the computed union. Mirrors the `multifs.rs::Phase` 3
+/// set/remove block. Must be called before each `cluster_attack_all`
+/// (the range may evolve across `setup_again` iterations between probs).
 fn apply_cluster_target_range(range: Option<(u64, u64)>) {
-    match range {
-        Some((s, e)) => {
-            std::env::set_var("TARGET_BLOCK_RANGE_START", s.to_string());
-            std::env::set_var("TARGET_BLOCK_RANGE_END",   e.to_string());
-            println!("  [S3.1-cluster] target_block_range = [{s}, {e}) sectors");
-        }
-        None => {
-            std::env::remove_var("TARGET_BLOCK_RANGE_START");
-            std::env::remove_var("TARGET_BLOCK_RANGE_END");
-            println!("  [S3.1-cluster] target_block_range UNAVAILABLE -- fallback to whole-device injection");
-        }
+    if let Some((s, e)) = range {
+        std::env::set_var("TARGET_BLOCK_RANGE_START", s.to_string());
+        std::env::set_var("TARGET_BLOCK_RANGE_END",   e.to_string());
+        println!("  [S3.1-cluster] target_block_range = [{s}, {e}) sectors");
+    } else {
+        std::env::remove_var("TARGET_BLOCK_RANGE_START");
+        std::env::remove_var("TARGET_BLOCK_RANGE_END");
+        println!("  [S3.1-cluster] target_block_range UNAVAILABLE -- fallback to whole-device injection");
     }
 }
 
@@ -227,7 +224,7 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
         .join("Documentation/runs")
         .join(format!("{run_dir_prefix}-{ts_compact}"));
     fs::create_dir_all(&run_dir)
-        .with_context(|| format!("create_dir_all {:?}", run_dir))?;
+        .with_context(|| format!("create_dir_all {}", run_dir.display()))?;
     fs::write(run_dir.join("cluster-topology.txt"), &cluster_table)
         .context("write cluster-topology.txt")?;
     let scope_str = cfg.scope.as_str();
@@ -364,7 +361,7 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
         let probs = multifs_cfg.probs.clone();
         let cluster_log = run_dir.join("cluster-records.txt");
         let mut cf = fs::File::create(&cluster_log)
-            .with_context(|| format!("create {:?}", cluster_log))?;
+            .with_context(|| format!("create {}", cluster_log.display()))?;
 
         for &prob in &probs {
             println!();
@@ -516,7 +513,7 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
         println!();
         println!("[tar]    Archive...");
         let archive = make_tarball(&run_dir).context("create tarball")?;
-        let size = std::fs::metadata(&archive).map(|m| m.len()).unwrap_or(0);
+        let size = std::fs::metadata(&archive).map_or(0, |m| m.len());
         println!("  {} ({} bytes)", archive.display(), size);
         archive_path = Some(archive);
     }
@@ -544,18 +541,18 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     Ok(exit_code)
 }
 
-/// Aggregate exit_code from multifs + cluster verdicts.
+/// Aggregate `exit_code` from multifs + cluster verdicts.
 ///
-/// Trouvaille 2 fix : prior code returned 0 iff multifs_result.is_some(),
+/// Trouvaille 2 fix : prior code returned 0 iff `multifs_result.is_some()`,
 /// which ignored the actual verdict content. R19 Phase 6 criterion
 /// "12/12 RECOVERED DIFFS=0" is now enforced here.
 ///
 /// Decision rules :
-///   - multifs_result == None                       -> 1 (hard fail)
-///   - any beamfs (multifs) verdict != RS_RECOVERED|RS_PASSTHROUGH -> 1
-///   - any cluster (host, prob) verdict != RS_RECOVERED|RS_PASSTHROUGH -> 1
-///   - legacy multifs FS (ext4) FS_PANIC at any prob is ALLOWED
-///     (R19 explicitly says "ext4/btrfs FS_PANIC at prob=1M is expected
+///   - `multifs_result` == None                       -> 1 (hard fail)
+///   - any beamfs (multifs) verdict != `RS_RECOVERED|RS_PASSTHROUGH` -> 1
+///   - any cluster (host, prob) verdict != `RS_RECOVERED|RS_PASSTHROUGH` -> 1
+///   - legacy multifs FS (ext4) `FS_PANIC` at any prob is ALLOWED
+///     (R19 explicitly says "ext4/btrfs `FS_PANIC` at prob=1M is expected
 ///     and non-blocking ; only beamfs must RECOVERED 3/3").
 ///   - else -> 0
 fn aggregate_exit_code(
@@ -625,22 +622,22 @@ fn aggregate_exit_code(
 /// Verdict-pass predicate : the states that count as a clean pass
 /// for beamfs (FEC-protected) are:
 ///
-///   - RS_RECOVERED : FEC corrected the flip transparently.
-///   - RS_PASSTHROUGH : no flip reached data, FEC unused but data
+///   - `RS_RECOVERED` : FEC corrected the flip transparently.
+///   - `RS_PASSTHROUGH` : no flip reached data, FEC unused but data
 ///     intact.
-///   - RS_FAIL_CLOSED : beamfs detected the corruption (CRC32, RS
+///   - `RS_FAIL_CLOSED` : beamfs detected the corruption (CRC32, RS
 ///     uncorrectable, or pointer out-of-range) and refused the read
 ///     with -EUCLEAN / -EIO. This is the intended fail-closed
 ///     behaviour under FEC saturation; the kernel did its job by
 ///     signalling rather than silently returning bad bytes.
 ///
-/// Every other state (CORRUPTED_DATA = silent bad bytes, RS_FAILED =
+/// Every other state (`CORRUPTED_DATA` = silent bad bytes, `RS_FAILED` =
 /// fail without a kernel signal so we cannot attribute to a clean
-/// detection, FS_PANIC, ?) is a fail.
+/// detection, `FS_PANIC`, ?) is a fail.
 fn verdict_is_pass(v: Option<&str>) -> bool {
     matches!(
         v,
-        Some("RS_RECOVERED") | Some("RS_PASSTHROUGH") | Some("RS_FAIL_CLOSED")
+        Some("RS_RECOVERED" | "RS_PASSTHROUGH" | "RS_FAIL_CLOSED")
     )
 }
 
@@ -665,10 +662,10 @@ pub fn make_tarball(run_dir: &Path) -> Result<PathBuf> {
             // `.json.asc`), so sort_by_key + last() picks the most recent
             // manifest .json, and the .asc lookup builds the correct path.
             let mut manifests: Vec<_> = entries
-                .filter_map(|e| e.ok())
+                .filter_map(std::result::Result::ok)
                 .filter(|e| {
                     let n = e.file_name().to_string_lossy().to_string();
-                    n.starts_with("manifest-") && n.ends_with(".json")
+                    n.starts_with("manifest-") && n.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("json"))
                 })
                 .collect();
             manifests.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());

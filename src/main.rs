@@ -82,7 +82,7 @@ struct Cli {
     /// emufi 0.3.2 attack-tuning flags. v0.8.0 expansion.
     /// Every flag here is GLOBAL: accepted on any subcommand, applied
     /// uniformly. Each flag, when present, is exported to the process
-    /// environment so cluster::worker_cmd() forwards it to worker.sh
+    /// environment so `cluster::worker_cmd()` forwards it to worker.sh
     /// which pushes the value to the matching debugfs entry IFF the
     /// entry exists on the target injector (sudo test -e guard).
     /// All flags are CUMULATIVE SIMULTANEOUS: any combination is valid.
@@ -93,35 +93,35 @@ struct Cli {
 
 /// Cumulative attack-tuning options exposed by emufi 0.3.2 debugfs.
 /// All optional. None of these conflict with any other; combining them
-/// is the supported usage pattern (e.g. multi_chip + codeword_size_bytes
-/// + sefi_probability + burst_symbols in a single attack).
+/// is the supported usage pattern (e.g. `multi_chip` + `codeword_size_bytes`
+/// + `sefi_probability` + `burst_symbols` in a single attack).
 #[derive(clap::Args, Debug, Default)]
 struct EmufiAttackArgs {
     // ---- v0.7.x baseline flags promoted from env-var-only to CLI ----
-    /// Number of bits flipped per event (MBU width). emufi entry: flip_width.
+    /// Number of bits flipped per event (MBU width). emufi entry: `flip_width`.
     #[arg(long, value_name = "U32", global = true)]
     flip_width: Option<u32>,
     /// LET intensity bucket (0=LOW 1=MEDIUM 2=HIGH 3=EXTREME).
-    /// emufi entry: let_class. Baumann 2005 / JEDEC JEP89 calibrated.
+    /// emufi entry: `let_class`. Baumann 2005 / JEDEC JEP89 calibrated.
     #[arg(long, value_name = "U8", global = true)]
     let_class: Option<u8>,
-    /// Spatial flip pattern: RANDOM | CONSECUTIVE | EXACT. emufi entry: flip_locality.
+    /// Spatial flip pattern: RANDOM | CONSECUTIVE | EXACT. emufi entry: `flip_locality`.
     #[arg(long, value_name = "STR", global = true)]
     flip_locality: Option<String>,
-    /// Symbols per burst (RS codeword targeting). emufi entry: burst_symbols.
+    /// Symbols per burst (RS codeword targeting). emufi entry: `burst_symbols`.
     #[arg(long, value_name = "U8", global = true)]
     burst_symbols: Option<u8>,
-    /// On-disk struct selector (1=SUPERBLOCK 2=INODE_TABLE 3=ROOT_DIR
-    /// 4=INODE_BITMAP 5=DATA_BLOCK). emufi entry: target_struct.
+    /// On-disk struct selector (1=SUPERBLOCK `2=INODE_TABLE` `3=ROOT_DIR`
+    /// `4=INODE_BITMAP` `5=DATA_BLOCK`). emufi entry: `target_struct`.
     #[arg(long, value_name = "U8", global = true)]
     target_struct: Option<u8>,
-    /// Block number within the target structure. emufi entry: target_struct_block_no.
+    /// Block number within the target structure. emufi entry: `target_struct_block_no`.
     #[arg(long, value_name = "U32", global = true)]
     target_struct_block_no: Option<u32>,
-    /// SEFI per-event probability (ppm). emufi entry: sefi_probability.
+    /// SEFI per-event probability (ppm). emufi entry: `sefi_probability`.
     #[arg(long, value_name = "PPM", global = true)]
     sefi_probability: Option<u32>,
-    /// SEFI persistence window (ms). emufi entry: sefi_window_ms.
+    /// SEFI persistence window (ms). emufi entry: `sefi_window_ms`.
     #[arg(long, value_name = "MS", global = true)]
     sefi_window_ms: Option<u32>,
     /// Phase A.5: number of raw direct-I/O reads on block 0 during
@@ -134,37 +134,37 @@ struct EmufiAttackArgs {
     sb_read_loops: Option<u32>,
 
     // ---- v0.8.0 additions: rest of the emufi 0.3.2 surface ----
-    /// Byte offset within the target struct block. emufi entry: target_struct_offset.
+    /// Byte offset within the target struct block. emufi entry: `target_struct_offset`.
     #[arg(long, value_name = "U32", global = true)]
     target_struct_offset: Option<u32>,
-    /// Inode-aware FS targeting (FS-level hook required). emufi entry: target_inode.
+    /// Inode-aware FS targeting (FS-level hook required). emufi entry: `target_inode`.
     #[arg(long, value_name = "U64", global = true)]
     target_inode: Option<u64>,
-    /// Enable FS-level hook in addition to blk-level. emufi entry: hook_fs.
+    /// Enable FS-level hook in addition to blk-level. emufi entry: `hook_fs`.
     #[arg(long, global = true)]
     hook_fs: bool,
     /// Multi-segment burst (event spans non-contiguous segments).
-    /// emufi entry: multi_segment.
+    /// emufi entry: `multi_segment`.
     #[arg(long, global = true)]
     multi_segment: bool,
-    /// Multi-chip injection realism (event distributed over chip_count chips).
-    /// emufi entry: multi_chip.
+    /// Multi-chip injection realism (event distributed over `chip_count` chips).
+    /// emufi entry: `multi_chip`.
     #[arg(long, global = true)]
     multi_chip: bool,
-    /// Number of chips when multi_chip=1. emufi entry: chip_count.
+    /// Number of chips when `multi_chip=1`. emufi entry: `chip_count`.
     #[arg(long, value_name = "U8", global = true)]
     chip_count: Option<u8>,
-    /// MBU width sampling mode. emufi entry: width_mode.
+    /// MBU width sampling mode. emufi entry: `width_mode`.
     #[arg(long, value_name = "U8", global = true)]
     width_mode: Option<u8>,
     /// Stride between flips in a burst (intra-burst spacing).
-    /// emufi entry: flip_stride_bits.
+    /// emufi entry: `flip_stride_bits`.
     #[arg(long, value_name = "U8", global = true)]
     flip_stride_bits: Option<u8>,
-    /// RS codeword size in bytes (FEC-aware targeting). emufi entry: codeword_size_bytes.
+    /// RS codeword size in bytes (FEC-aware targeting). emufi entry: `codeword_size_bytes`.
     #[arg(long, value_name = "U32", global = true)]
     codeword_size_bytes: Option<u32>,
-    /// RS codeword alignment in bytes. emufi entry: codeword_align_bytes.
+    /// RS codeword alignment in bytes. emufi entry: `codeword_align_bytes`.
     #[arg(long, value_name = "U32", global = true)]
     codeword_align_bytes: Option<u32>,
     /// Reseed the injector PRNG (write-only command, fresh seed).
@@ -175,7 +175,7 @@ struct EmufiAttackArgs {
 
 impl EmufiAttackArgs {
     /// Export every set flag to the process environment so that
-    /// cluster::worker_cmd() picks them up and forwards them via SSH.
+    /// `cluster::worker_cmd()` picks them up and forwards them via SSH.
     /// Boolean flags are exported as "1" when true (and not exported
     /// when false, leaving the kernel default in place).
     fn export_to_env(&self) {
@@ -230,7 +230,7 @@ enum Command {
     /// Print version and build info, then exit.
     Version,
 
-    /// Multi-FS head-to-head bench under RadFI live injection.
+    /// Multi-FS head-to-head bench under `RadFI` live injection.
     /// Targets 2 FS x 3 probabilities by default.
     /// REQUIRES: device validation prompt (or --auto-confirm).
     Multifs {
@@ -250,7 +250,7 @@ enum Command {
         injector: String,
     },
 
-    /// multifs + forensic capture (dmesg + RadFI + ftrace + perf + cluster).
+    /// multifs + forensic capture (dmesg + `RadFI` + ftrace + perf + cluster).
     /// Three scopes available (--scope=quick|standard|full).
     Analyse {
         /// Forensic scope. Default = standard.
@@ -311,10 +311,10 @@ enum Command {
         /// Bypass regression check with explicit reason. Empty rejected.
         #[arg(long)]
         accept_regression: Option<String>,
-        /// Format cluster /data with mkfs.beamfs -O per_inode_rs (v5
-        /// PER_INODE_RS feature flag, bit 8 of s_feat_incompat).
+        /// Format cluster /data with mkfs.beamfs -O `per_inode_rs` (v5
+        /// `PER_INODE_RS` feature flag, bit 8 of `s_feat_incompat`).
         /// Func-12 sub-3/sub-4: empirical activation of the decoupled
-        /// per-inode RS protection on scheme=2 UNIVERSAL_INLINE volume.
+        /// per-inode RS protection on scheme=2 `UNIVERSAL_INLINE` volume.
         #[arg(long)]
         per_inode_rs: bool,
     },
@@ -360,7 +360,7 @@ enum Command {
 
     /// Test F - tindirect: triple-indirect addressing round-trip.
     /// Sparse writes at iblocks crossing dindirect->tindirect frontier,
-    /// then sync + drop_caches + remount + read-verify byte-identical.
+    /// then sync + `drop_caches` + remount + read-verify byte-identical.
     /// No fault injection; validates addressing math + bounds checks.
     Tindirect {
         /// Fault injector to use (kept for worker.sh module-loading uniformity).
@@ -385,7 +385,7 @@ enum ScopeArg {
     Quick,
     /// Default probs, no ftrace, no perf, all 4 nodes dmesg/radfi forensics.
     Standard,
-    /// Default probs, ftrace + perf + cluster_setup/attack/verify on 4 nodes.
+    /// Default probs, ftrace + perf + `cluster_setup/attack/verify` on 4 nodes.
     Full,
 }
 
@@ -400,15 +400,15 @@ impl ScopeArg {
 }
 
 fn cmd_version() -> i32 {
-    println!("beamfs-bench {}", BEAMFS_BENCH_VERSION);
+    println!("beamfs-bench {BEAMFS_BENCH_VERSION}");
     println!("license GPL-2.0-only");
     println!("status: full + multifs + analyse + bitrot + metadata + crash + fsck implemented");
     0
 }
 
-/// Configuration for cmd_full. Aggregates the 8 flags exposed by
+/// Configuration for `cmd_full`. Aggregates the 8 flags exposed by
 /// `Command::Full` so the pipeline orchestrator does not run into
-/// clippy::too_many_arguments and reads naturally for future flags.
+/// `clippy::too_many_arguments` and reads naturally for future flags.
 struct FullConfig {
     auto_confirm: bool,
     no_tarball: bool,
@@ -549,7 +549,9 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     let table = cluster::render_cluster_table(&nodes);
     print!("{table}");
 
-    if !skip_vm_bootstrap {
+    if skip_vm_bootstrap {
+        println!("[full] Phase 2 skipped (--skip-vm-bootstrap)");
+    } else {
         bootstrap::bootstrap_all_data(&nodes, per_inode_rs, &injector).context("Phase 2 bootstrap failed")?;
 
         println!();
@@ -557,8 +559,6 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
         let nodes2 = cluster::discover_cluster().context("cluster re-discovery")?;
         let table2 = cluster::render_cluster_table(&nodes2);
         print!("{table2}");
-    } else {
-        println!("[full] Phase 2 skipped (--skip-vm-bootstrap)");
     }
 
     println!();

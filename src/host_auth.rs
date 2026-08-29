@@ -3,8 +3,8 @@
 //! beamfs-bench runs sudo commands on the host (mount, umount, cp,
 //! sha256sum on privileged files, perf record, virsh outside the
 //! NOPASSWD scope, etc.) and signs the manifest via gpg at end of
-//! pipeline. Long pipelines (cmd_full = 5-15 min, cmd_mega = up to
-//! 30 min) can outlive the default sudo timestamp_timeout (5 min) and
+//! pipeline. Long pipelines (`cmd_full` = 5-15 min, `cmd_mega` = up to
+//! 30 min) can outlive the default sudo `timestamp_timeout` (5 min) and
 //! the gpg-agent default-cache-ttl (3600 s for signing keys).
 //!
 //! Without priming, the operator faces interactive password prompts
@@ -27,10 +27,10 @@
 //!    A keep-alive thread calls `gpg-connect-agent NOP /bye` every
 //!    30 minutes to keep the cache from auto-clearing on idle.
 //!
-//! 3. ssh-agent (optional) : if ~/.ssh/id_ed25519 exists and is
+//! 3. ssh-agent (optional) : if ~/.`ssh/id_ed25519` exists and is
 //!    passphrase-protected, ensures it is loaded in ssh-agent. Only
 //!    relevant for future scopes that may push manifests upstream.
-//!    Not required for the current bench (cluster keys hpclab_admin
+//!    Not required for the current bench (cluster keys `hpclab_admin`
 //!    are passphrase-less).
 //!
 //! ## Invocation
@@ -50,9 +50,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use std::io::Write;
 
-const SUDO_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(240); // 4 min
-const GPG_KEEPALIVE_INTERVAL:  Duration = Duration::from_secs(1800); // 30 min
+const SUDO_KEEPALIVE_INTERVAL: Duration = Duration::from_mins(4); // 4 min
+const GPG_KEEPALIVE_INTERVAL:  Duration = Duration::from_mins(30); // 30 min
 
 /// Prime sudo + GPG + ssh-agent caches and spawn keep-alive threads.
 ///
@@ -89,7 +90,6 @@ pub fn prime_session() -> Result<()> {
 
 fn prime_sudo() -> Result<()> {
     print!("[priming] sudo session check... ");
-    use std::io::Write;
     std::io::stdout().flush().ok();
 
     // v0.8.3 : detect NOPASSWD before invoking sudo -v.
@@ -105,8 +105,7 @@ fn prime_sudo() -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| s.success());
     if nopasswd {
         println!("NOPASSWD detected, skipping -v refresh");
         return Ok(());
@@ -130,7 +129,6 @@ fn prime_sudo() -> Result<()> {
 
 fn prime_gpg() -> Result<()> {
     print!("[priming] checking gpg-agent cache state... ");
-    use std::io::Write;
     std::io::stdout().flush().ok();
     let out = Command::new("gpg-connect-agent")
         .args(["KEYINFO --list", "/bye"])
@@ -168,7 +166,6 @@ fn prime_gpg() -> Result<()> {
         .spawn()
         .context("spawn gpg --clearsign")?;
     if let Some(stdin) = child.stdin.as_mut() {
-        use std::io::Write;
         stdin.write_all(b"beamfs-bench session priming\n")
             .context("write to gpg stdin")?;
     }
@@ -201,7 +198,6 @@ fn prime_ssh() -> Result<()> {
         return Ok(()); // already loaded
     }
     print!("[priming] ssh-add {}... ", key.display());
-    use std::io::Write;
     std::io::stdout().flush().ok();
     let status = Command::new("ssh-add")
         .arg(&key)

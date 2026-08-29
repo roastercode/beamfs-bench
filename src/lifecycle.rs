@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// The 4 VMs managed by lifecycle. Order matches cluster.rs::CLUSTER_NODES.
+/// The 4 VMs managed by lifecycle. Order matches `cluster.rs::CLUSTER_NODES`.
 pub const VMS: &[(&str, &str)] = &[
     ("beamfs-master",    "192.168.56.10"),
     ("beamfs-compute01", "192.168.56.11"),
@@ -35,7 +35,7 @@ pub const HPCNET: &str = "hpcnet";
 /// SSH wait per-node timeout in seconds. Parallel across nodes.
 pub const SSH_WAIT_TIMEOUT_SEC: u64 = 180;
 
-/// Run a virsh command via sudo on qemu:///system. Returns trimmed stdout.
+/// Run a virsh command via sudo on <qemu:///system>. Returns trimmed stdout.
 fn virsh_sudo(args: &[&str]) -> Result<String> {
     let mut full_args = vec!["virsh", "-c", "qemu:///system"];
     full_args.extend_from_slice(args);
@@ -55,7 +55,7 @@ fn virsh_sudo(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Same as virsh_sudo but tolerates non-zero exit (some virsh subcommands
+/// Same as `virsh_sudo` but tolerates non-zero exit (some virsh subcommands
 /// like `domstate` on undefined domain return 1 normally).
 pub(crate) fn virsh_sudo_lenient(args: &[&str]) -> (i32, String, String) {
     let mut full_args = vec!["virsh", "-c", "qemu:///system"];
@@ -122,8 +122,7 @@ pub fn start_network() -> Result<()> {
     let (_rc, info, _) = virsh_sudo_lenient(&["net-info", HPCNET]);
     let active = info.lines()
         .find(|l| l.starts_with("Active:"))
-        .map(|l| l.trim_end().ends_with("yes"))
-        .unwrap_or(false);
+        .is_some_and(|l| l.trim_end().ends_with("yes"));
     if active {
         println!("  {HPCNET} : already active");
         return Ok(());
@@ -180,11 +179,10 @@ pub fn wait_ssh_ready_parallel() -> Result<()> {
                     if ok {
                         println!("  [{vm}] READY (attempt {attempt}, {}s)", elapsed.as_secs());
                         return Ok(());
-                    } else {
-                        // Verbose every 5 attempts to avoid noise but show liveness (R3)
-                        if attempt == 1 || attempt.is_multiple_of(5) {
-                            println!("  [{vm}] retry {attempt} ({}s elapsed)", elapsed.as_secs());
-                        }
+                    }
+                    // Verbose every 5 attempts to avoid noise but show liveness (R3)
+                    if attempt == 1 || attempt.is_multiple_of(5) {
+                        println!("  [{vm}] retry {attempt} ({}s elapsed)", elapsed.as_secs());
                     }
                 }
                 thread::sleep(Duration::from_secs(2));
@@ -212,7 +210,7 @@ pub fn wait_ssh_ready_parallel() -> Result<()> {
     Ok(())
 }
 
-/// Single SSH probe: ssh -BatchMode -ConnectTimeout=2 'true'.
+/// Single SSH probe: ssh -`BatchMode` -ConnectTimeout=2 'true'.
 /// Returns true on exit 0, false otherwise.
 pub(crate) fn ssh_probe(ip: &str, key_path: &str) -> bool {
     let status = Command::new("ssh")
@@ -240,18 +238,17 @@ pub(crate) fn ssh_probe(ip: &str, key_path: &str) -> bool {
 ///
 /// Architecture per recadrage R-isolation:
 ///   master    : vda (rootfs) + vdb (cluster /data) ONLY
-///                (orchestrator, never RadFI target, no FS-test USB)
+///                (orchestrator, never `RadFI` target, no FS-test USB)
 ///   compute01 : vda + vdb + N USB FS-test victims at vdc..vd?
 ///                (N is adaptive ; count is read from libvirt XML
-///                 by Phase 0.0a usb_health, not enforced here)
+///                 by Phase 0.0a `usb_health`, not enforced here)
 ///   compute02 : vda + vdb only
 ///   compute03 : vda + vdb only
 ///
 /// Returns Err if the persistent libvirt XML diverges from this contract.
 /// This guarantees the bench cannot run on a misconfigured cluster
-/// where transverse RadFI contamination would invalidate results.
+/// where transverse `RadFI` contamination would invalidate results.
 pub fn assert_isolation_architecture() -> Result<()> {
-    use std::process::Command;
 
     println!("================================================================");
     println!(" beamfs-bench lifecycle - Phase 0: isolation pre-flight check");
@@ -311,7 +308,7 @@ pub fn assert_isolation_architecture() -> Result<()> {
     for (vm, want) in strict_vms {
         let xml = dumpxml(vm)?;
         let found = extract_disk_targets(&xml);
-        let mut want_sorted: Vec<String> = want.iter().map(|s| s.to_string()).collect();
+        let mut want_sorted: Vec<String> = want.iter().map(std::string::ToString::to_string).collect();
         want_sorted.sort();
         if found != want_sorted {
             eprintln!("  [{vm}] FAIL");

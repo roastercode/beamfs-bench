@@ -24,6 +24,7 @@ use anyhow::{anyhow, Context, Result};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::fmt::Write;
 
 /// Authoritative description of a single virtio-blk target as wired up
 /// by libvirt. The `host_byid_path` is the path passed to qemu in the
@@ -50,7 +51,7 @@ pub struct VirtioDisk {
 const SKIPPED_TARGETS: &[&str] = &["vda", "vdb"];
 
 /// Run `virsh -c qemu:///system dumpxml <vm>` and parse out the virtio-blk
-/// disks (targets vd[c-z]). Returns an ordered map keyed by guest_dev.
+/// disks (targets vd[c-z]). Returns an ordered map keyed by `guest_dev`.
 pub fn discover_virtio_disks(vm_name: &str) -> Result<BTreeMap<String, VirtioDisk>> {
     let output = Command::new("virsh")
         .args(["-c", "qemu:///system", "dumpxml", vm_name])
@@ -194,7 +195,7 @@ fn format_iec(n: u64) -> String {
 /// validation table so the user can quickly recognize physical sticks.
 /// Example:
 ///   /dev/disk/by-id/usb-Kingston_DataTraveler_3.0_E0D55EA574E5E9C119DA006B-0:0-part1
-///   -> "Kingston DataTraveler ...DA006B"
+///   -> "Kingston `DataTraveler` ...DA006B"
 fn summarize_byid(path: &str) -> String {
     let basename = path.rsplit('/').next().unwrap_or(path);
     // Strip "usb-" / "ata-" prefix and "-0:0-part1" suffix
@@ -217,7 +218,7 @@ fn summarize_byid(path: &str) -> String {
     }
 }
 
-/// Mapping (fs_name, guest_dev) requested by the user, derived from the
+/// Mapping (`fs_name`, `guest_dev`) requested by the user, derived from the
 /// default multifs FS list and the disks discovered.
 #[derive(Debug, Clone)]
 pub struct ProposedMapping {
@@ -225,7 +226,7 @@ pub struct ProposedMapping {
     pub disk: VirtioDisk,
 }
 
-/// Match the default multifs FS list to the discovered disks by guest_dev.
+/// Match the default multifs FS list to the discovered disks by `guest_dev`.
 /// Returns mappings only for disks that match a known FS slot (vdc=ext4, etc.).
 /// Disks with no matching FS slot are reported separately so the user can see
 /// what's "extra" on the VM.
@@ -246,7 +247,7 @@ pub fn build_default_mapping(
             consumed.insert((*vd).to_string());
         }
     }
-    for (vd, disk) in disks.iter() {
+    for (vd, disk) in disks {
         if !consumed.contains(vd) {
             extras.push(disk.clone());
         }
@@ -265,7 +266,7 @@ pub fn render_validation_table(
     out.push_str("================================================================\n");
     out.push_str(" beamfs-bench: device validation required\n");
     out.push_str("================================================================\n");
-    out.push_str(&format!(" VM: {vm_name} (libvirt qemu:///system)\n"));
+    writeln!(out, " VM: {vm_name} (libvirt qemu:///system)").unwrap();
     out.push('\n');
     out.push_str(" The following devices on the HOST will be used as multifs targets.\n");
     out.push_str(" Each line shows the GUEST device (vdX) and its HOST identity\n");
@@ -275,34 +276,30 @@ pub fn render_validation_table(
     out.push_str(" FS slot  | Guest | Host kernel dev | Size  | Physical identity\n");
     out.push_str(" ---------+-------+-----------------+-------+----------------------------\n");
     for m in matched {
-        let resolved = m.disk.host_resolved.as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "(unresolved)".to_string());
+        let resolved = m.disk.host_resolved.as_ref().map_or_else(|| "(unresolved)".to_string(), |p| p.display().to_string());
         let size = m.disk.host_size.as_deref().unwrap_or("?");
-        out.push_str(&format!(
-            " {:<8} | {:<5} | {:<15} | {:<5} | {}\n",
+        writeln!(out,
+            " {:<8} | {:<5} | {:<15} | {:<5} | {}",
             m.fs_name, m.disk.guest_dev, resolved, size, m.disk.host_model_summary
-        ));
+        ).unwrap();
     }
     if !extras.is_empty() {
         out.push('\n');
         out.push_str(" Disks present on the VM but NOT in the default FS slot list:\n");
         for e in extras {
-            let resolved = e.host_resolved.as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "(unresolved)".to_string());
+            let resolved = e.host_resolved.as_ref().map_or_else(|| "(unresolved)".to_string(), |p| p.display().to_string());
             let size = e.host_size.as_deref().unwrap_or("?");
-            out.push_str(&format!(
-                "   {:<5} -> {} ({}) [{}]\n",
+            writeln!(out,
+                "   {:<5} -> {} ({}) [{}]",
                 e.guest_dev, resolved, size, e.host_model_summary
-            ));
+            ).unwrap();
         }
         out.push_str(" These disks will NOT be touched.\n");
     }
     out.push('\n');
     out.push_str(" By-id paths (full, copy-pasteable for `ls -la`):\n");
     for m in matched {
-        out.push_str(&format!("   {} -> {}\n", m.disk.guest_dev, m.disk.host_byid_path));
+        writeln!(out, "   {} -> {}", m.disk.guest_dev, m.disk.host_byid_path).unwrap();
     }
     out.push_str("================================================================\n");
     out

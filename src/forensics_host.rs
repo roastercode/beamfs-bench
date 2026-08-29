@@ -1,4 +1,4 @@
-//! forensics_host.rs - host-side forensic capture for beamfs-bench.
+//! `forensics_host.rs` - host-side forensic capture for beamfs-bench.
 //!
 //! Companion to `forensics.rs` (which captures inside the 4 cluster VMs).
 //! This module captures host-side state (`spartian-1`) into
@@ -20,12 +20,12 @@
 //! ## What is captured (opt-in, --bpftrace flag)
 //!
 //!   - bpftrace.log           : passive bpftrace probes during the run
-//!     (block_rq_complete + sched_switch counts)
+//!     (`block_rq_complete` + `sched_switch` counts)
 //!
 //! ## Why a separate module
 //!
 //! `forensics.rs` is VM-side: every function takes a list of `ClusterNode`
-//! and SSHes into the guest. Adding host-side captures there would
+//! and `SSHes` into the guest. Adding host-side captures there would
 //! conflate two responsibilities and break the existing single-purpose
 //! contract documented at the top of `forensics.rs`. Keeping host-side
 //! in `forensics_host.rs` makes the orchestration in `analyse.rs` an
@@ -35,7 +35,7 @@
 //!
 //! bpftrace is not currently in the Yocto image
 //! `hpc-arm64-research-beamfs.bb` (R23). VM-side bpftrace would require
-//! adding it to IMAGE_INSTALL and rebuilding. Tracked as a follow-up.
+//! adding it to `IMAGE_INSTALL` and rebuilding. Tracked as a follow-up.
 
 use anyhow::{Context, Result};
 use std::fs;
@@ -43,6 +43,8 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::forensics::Scope;
+use std::fmt::Write;
+use std::io::Write as IoWrite;
 
 const VM_NAMES: &[&str] = &[
     "beamfs-master",
@@ -62,7 +64,7 @@ fn run_host(cmd: &str) -> Result<String> {
         .arg("-c")
         .arg(cmd)
         .output()
-        .with_context(|| format!("spawn bash -c {cmd:?}"))?;
+        .with_context(|| format!("spawn bash -c {cmd}"))?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
@@ -91,7 +93,7 @@ pub fn pre_capture_host(
 ) -> Result<()> {
     let host_dir = run_dir.join("host");
     fs::create_dir_all(&host_dir)
-        .with_context(|| format!("create_dir_all {:?}", host_dir))?;
+        .with_context(|| format!("create_dir_all {}", host_dir.display()))?;
 
     println!("[pre]    Host-side capture (static snapshot)...");
 
@@ -227,12 +229,9 @@ END { printf("bpftrace: ended %s\n", strftime("%Y-%m-%d %H:%M:%S", nsecs)); }
 /// then copy `/tmp/beamfs-bench-bpftrace.log` into `<run_dir>/host/`.
 fn stop_bpftrace_host(host_dir: &Path) {
     // Read PID from sidecar file ; if missing, nothing to stop.
-    let pid = match fs::read_to_string(BPFTRACE_PID_FILE) {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => {
-            eprintln!("[post]   bpftrace stop skipped: no PID file (was bpftrace started?)");
-            return;
-        }
+    let pid = if let Ok(s) = fs::read_to_string(BPFTRACE_PID_FILE) { s.trim().to_string() } else {
+        eprintln!("[post]   bpftrace stop skipped: no PID file (was bpftrace started?)");
+        return;
     };
     if pid.is_empty() {
         eprintln!("[post]   bpftrace stop skipped: empty PID file");
@@ -257,8 +256,7 @@ fn stop_bpftrace_host(host_dir: &Path) {
             .arg("-0")
             .arg(&pid)
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+            .is_ok_and(|s| s.success());
         if !still_alive {
             break;
         }
@@ -337,7 +335,6 @@ fn ssh_capture(ip: &str, remote_cmd: &str) -> String {
     // Bug B fix: encode the remote command in base64 so we never have to
     // quote-escape multi-line shell scripts through Rust's Debug format.
     // The remote side decodes and pipes to bash -s.
-    use std::io::Write;
     let b64: String = {
         match Command::new("base64")
             .arg("-w0")
@@ -391,7 +388,7 @@ git --no-pager -C {path} remote -v 2>&1
     }
 }
 
-/// Capture bitbake recipe provenance for beamfs-module: SRC_URI, SRCREV,
+/// Capture bitbake recipe provenance for beamfs-module: `SRC_URI`, SRCREV,
 /// FILESPATH, S=. Confirms which source tree produced the .ko.
 fn capture_bitbake_provenance(host_dir: &Path) {
     println!("[pre]    Host capture: bitbake provenance");
@@ -424,17 +421,17 @@ fn capture_vm_rootfs_format(host_dir: &Path) {
     let canonical_resolved = match std::fs::canonicalize(canonical_link) {
         Ok(p) => p,
         Err(e) => {
-            out.push_str(&format!("(readlink failed: {e})\n"));
+            writeln!(out, "(readlink failed: {e})").unwrap();
             std::path::PathBuf::from(canonical_link)
         }
     };
-    out.push_str(&format!("path: {}\n", canonical_resolved.display()));
+    writeln!(out, "path: {}", canonical_resolved.display()).unwrap();
     match Command::new("sudo")
         .args(["qemu-img", "info", canonical_resolved.to_str().unwrap_or(canonical_link)])
         .output()
     {
         Ok(o) => out.push_str(&String::from_utf8_lossy(&o.stdout)),
-        Err(e) => out.push_str(&format!("(qemu-img failed: {e})\n")),
+        Err(e) => write!(out, "(qemu-img failed: {e})\n").unwrap(),
     }
     match Command::new("sudo")
         .args(["sha256sum", canonical_resolved.to_str().unwrap_or(canonical_link)])
@@ -443,23 +440,23 @@ fn capture_vm_rootfs_format(host_dir: &Path) {
         Ok(o) => {
             let s = String::from_utf8_lossy(&o.stdout);
             let sha = s.split_whitespace().next().unwrap_or("(none)");
-            out.push_str(&format!("canonical sha256: {sha}\n"));
+            writeln!(out, "canonical sha256: {sha}").unwrap();
         }
-        Err(e) => out.push_str(&format!("(sha256sum failed: {e})\n")),
+        Err(e) => write!(out, "(sha256sum failed: {e})\n").unwrap(),
     }
     out.push('\n');
 
     // Per-VM: resolve vda source via libvirt XML, then qemu-img info + sha256.
     for vm in VM_NAMES {
-        out.push_str(&format!("=== {vm} (vda) ===\n"));
+        writeln!(out, "=== {vm} (vda) ===").unwrap();
         let path = match crate::pipeline::resolve_vda_source(vm) {
             Ok(p) => p,
             Err(e) => {
-                out.push_str(&format!("(resolve_vda_source failed: {e:#})\n\n"));
+                write!(out, "(resolve_vda_source failed: {e:#})\n\n").unwrap();
                 continue;
             }
         };
-        out.push_str(&format!("resolved path: {path}\n"));
+        writeln!(out, "resolved path: {path}").unwrap();
         match Command::new("sudo")
             .args(["qemu-img", "info", &path])
             .output()
@@ -471,7 +468,7 @@ fn capture_vm_rootfs_format(host_dir: &Path) {
                     out.push('\n');
                 }
             }
-            Err(e) => out.push_str(&format!("(qemu-img failed: {e})\n")),
+            Err(e) => write!(out, "(qemu-img failed: {e})\n").unwrap(),
         }
         match Command::new("sudo")
             .args(["sha256sum", &path])
@@ -480,9 +477,9 @@ fn capture_vm_rootfs_format(host_dir: &Path) {
             Ok(o) => {
                 let s = String::from_utf8_lossy(&o.stdout);
                 let sha = s.split_whitespace().next().unwrap_or("(none)");
-                out.push_str(&format!("sha256: {sha}\n"));
+                writeln!(out, "sha256: {sha}").unwrap();
             }
-            Err(e) => out.push_str(&format!("(sha256sum failed: {e})\n")),
+            Err(e) => write!(out, "(sha256sum failed: {e})\n").unwrap(),
         }
         out.push('\n');
     }
@@ -551,7 +548,7 @@ cat /etc/os-release 2>&1
     }
 }
 
-/// Capture full modinfo for beamfs, reed_solomon, radfi on each node.
+/// Capture full modinfo for beamfs, `reed_solomon`, radfi on each node.
 fn capture_vm_modinfo(host_dir: &Path) {
     println!("[pre]    Host capture: modinfo per node (4 SSH probes)");
     for (vm, ip) in VM_IPS {

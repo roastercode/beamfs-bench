@@ -1,4 +1,4 @@
-//! usb_health.rs - pre-flight USB pass-through health audit.
+//! `usb_health.rs` - pre-flight USB pass-through health audit.
 //!
 //! Runs in Phase 0.0a of `beamfs-bench full`, between R21 isolation
 //! invariant (Phase 0.0) and code analysis (Phase 0.0bis). Aborts early
@@ -19,8 +19,8 @@
 //!     Expected count = number of <disk type='block'> entries in the
 //!     libvirt XML. The bench is fully adaptive : add/remove a USB
 //!     in the libvirt declaration, the bench picks it up next run.
-//!   - Run aborts (returns Err) iff healthy_count < declared_count
-//!     OR healthy_count == 0 (strict-with-log per user policy).
+//!   - Run aborts (returns Err) iff `healthy_count` < `declared_count`
+//!     OR `healthy_count` == 0 (strict-with-log per user policy).
 //!
 //! Author: Aurelien DESBRIERES <aurelien@hackers.camp>
 //! License: GPL-2.0-only
@@ -28,6 +28,7 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::os::unix::fs::FileTypeExt;
 
 /// libvirt URI used by the bench (matches lifecycle.rs convention).
 const LIBVIRT_URI: &str = "qemu:///system";
@@ -61,7 +62,7 @@ const PROBE_SIZE_MIB: u64 = 1;
 /// Per-slot verdict after probing.
 ///
 /// Forensic/audit fields `source` and `resolved` are part of the
-/// public API contract for downstream callers (run_dir export,
+/// public API contract for downstream callers (`run_dir` export,
 /// crash-report.md, future test scopes), even if no current caller
 /// reads them. Pattern mirrors `multifs::MultifsResult`.
 #[derive(Debug, Clone)]
@@ -170,15 +171,15 @@ pub fn run() -> Result<Vec<SlotVerdict>> {
     Ok(verdicts)
 }
 
-/// Build the runtime (fs_name, vd_slot) mapping from a verdict list.
+/// Build the runtime (`fs_name`, `vd_slot`) mapping from a verdict list.
 ///
 /// Algorithm (deterministic for reproducibility) :
 ///   1. Filter verdicts to keep only Healthy ones.
 ///   2. Sort by vd slot ascending (alphabetical : vdc, vdd, vde, ...).
-///   3. Pair with FS_PRIORITY in order : index 0 -> beamfs, 1 -> ext4, etc.
-///   4. Stop at min(healthy_count, FS_PRIORITY.len()).
+///   3. Pair with `FS_PRIORITY` in order : index 0 -> beamfs, 1 -> ext4, etc.
+///   4. Stop at `min(healthy_count`, `FS_PRIORITY.len()`).
 ///
-/// Returns Vec<(fs_name, vd)> ready to drop into MultifsConfig.fs_list.
+/// Returns Vec<(`fs_name`, vd)> ready to drop into `MultifsConfig.fs_list`.
 /// Empty vec is returned for empty input -- caller should validate first.
 pub fn build_fs_mapping(verdicts: &[SlotVerdict]) -> Vec<(String, String)> {
     let mut healthy_slots: Vec<&str> = verdicts
@@ -188,7 +189,7 @@ pub fn build_fs_mapping(verdicts: &[SlotVerdict]) -> Vec<(String, String)> {
             _ => None,
         })
         .collect();
-    healthy_slots.sort();
+    healthy_slots.sort_unstable();
 
     // v3 campaign : env var BEAMFS_BENCH_FS_LIST overrides FS_PRIORITY
     // for batch-mode comparative testing across multiple FS sets without
@@ -224,7 +225,7 @@ pub fn build_fs_mapping(verdicts: &[SlotVerdict]) -> Vec<(String, String)> {
 }
 
 /// Invoke `sudo virsh -c qemu:///system dumpxml <vm>` and capture stdout.
-/// Uses sudo because qemu:///system requires libvirt group membership;
+/// Uses sudo because <qemu:///system> requires libvirt group membership;
 /// the bench is run by a user already in the libvirt group (per R22 OS
 /// stack), but on Gentoo the polkit rules can require sudo regardless.
 fn dumpxml(vm: &str) -> Result<String> {
@@ -273,20 +274,17 @@ fn parse_block_disks(xml: &str) -> Vec<DiskEntry> {
         let block = &xml[abs_start..abs_end];
         cursor = abs_end;
 
-        let type_attr = match extract_attr(block, "<disk", "type") {
-            Some(v) => v,
-            None => continue,
+        let Some(type_attr) = extract_attr(block, "<disk", "type") else {
+            continue
         };
         if type_attr != "block" {
             continue;
         }
-        let target = match extract_attr(block, "<target", "dev") {
-            Some(v) => v,
-            None => continue,
+        let Some(target) = extract_attr(block, "<target", "dev") else {
+            continue
         };
-        let source = match extract_attr(block, "<source", "dev") {
-            Some(v) => v,
-            None => continue,
+        let Some(source) = extract_attr(block, "<source", "dev") else {
+            continue
         };
         if !target.starts_with("vd") {
             continue;
@@ -400,10 +398,8 @@ fn probe_slot(d: &DiskEntry) -> SlotVerdict {
 }
 
 fn is_block_device(p: &Path) -> bool {
-    use std::os::unix::fs::FileTypeExt;
     std::fs::metadata(p)
-        .map(|m| m.file_type().is_block_device())
-        .unwrap_or(false)
+        .is_ok_and(|m| m.file_type().is_block_device())
 }
 
 fn blockdev_getsize64(dev: &Path) -> Result<u64> {
@@ -423,7 +419,7 @@ fn blockdev_getsize64(dev: &Path) -> Result<u64> {
     }
     let s = String::from_utf8_lossy(&out.stdout);
     s.trim().parse::<u64>()
-        .with_context(|| format!("parse blockdev output: {:?}", s))
+        .with_context(|| format!("parse blockdev output: {s}"))
 }
 
 /// Read 1 MiB from `dev` at `skip_mib` MiB offset, into /dev/null.
@@ -575,20 +571,20 @@ mod tests {
 
     #[test]
     fn extract_attr_single_quotes() {
-        let block = r#"<disk type='block'><source dev='/dev/sdb'/></disk>"#;
+        let block = r"<disk type='block'><source dev='/dev/sdb'/></disk>";
         assert_eq!(extract_attr(block, "<disk", "type"), Some("block".to_string()));
         assert_eq!(extract_attr(block, "<source", "dev"), Some("/dev/sdb".to_string()));
     }
 
     #[test]
     fn extract_attr_absent_returns_none() {
-        let block = r#"<disk><source dev='/dev/sdc'/></disk>"#;
+        let block = r"<disk><source dev='/dev/sdc'/></disk>";
         assert_eq!(extract_attr(block, "<disk", "type"), None);
     }
 
     #[test]
     fn parse_block_disks_skips_file_type() {
-        let xml = r#"
+        let xml = r"
             <domain>
               <devices>
                 <disk type='file' device='disk'>
@@ -600,7 +596,7 @@ mod tests {
                   <source dev='/dev/disk/by-id/usb-Kingston_-part1'/>
                 </disk>
               </devices>
-            </domain>"#;
+            </domain>";
         let disks = parse_block_disks(xml);
         assert_eq!(disks.len(), 1);
         assert_eq!(disks[0].target, "vdc");
@@ -609,14 +605,14 @@ mod tests {
 
     #[test]
     fn parse_block_disks_three_usb() {
-        let xml = r#"
+        let xml = r"
             <domain>
               <devices>
                 <disk type='block'><target dev='vdc'/><source dev='/dev/disk/by-id/a-part1'/></disk>
                 <disk type='block'><target dev='vdd'/><source dev='/dev/disk/by-id/b-part1'/></disk>
                 <disk type='block'><target dev='vde'/><source dev='/dev/disk/by-id/c-part1'/></disk>
               </devices>
-            </domain>"#;
+            </domain>";
         let disks = parse_block_disks(xml);
         assert_eq!(disks.len(), 3);
         assert_eq!(disks.iter().map(|d| d.target.as_str()).collect::<Vec<_>>(),

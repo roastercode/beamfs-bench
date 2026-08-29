@@ -1,15 +1,15 @@
-//! metadata.rs - Test A: RadFI deterministic injection on metadata blocks.
+//! metadata.rs - Test A: `RadFI` deterministic injection on metadata blocks.
 //!
 //! ## Role
 //!
 //! Tests filesystem resilience to electromagnetic perturbations on
-//! metadata blocks (superblock, bitmap, inode table) via RadFI
-//! deterministic targeting (target_block + probability=1M).
+//! metadata blocks (superblock, bitmap, inode table) via `RadFI`
+//! deterministic targeting (`target_block` + probability=1M).
 //!
 //! Per the EMR threat model (Family A stochastic SEU + Family B
-//! adversarial bursts, see beamfs paper v2 + RadFI paper v1), this
+//! adversarial bursts, see beamfs paper v2 + `RadFI` paper v1), this
 //! exercises the kernel transit path: bytes in DRAM are flipped
-//! while in flight through submit_bio_noacct/submit_bh, simulating
+//! while in flight through `submit_bio_noacct/submit_bh`, simulating
 //! single-event upsets observable at the byte level.
 //!
 //! Cluster topology (R-isolation enforced):
@@ -22,12 +22,12 @@
 //! For each (FS, scenario) pair, it emits a factual observation
 //! record:
 //!
-//!   METADATA|HOST=...|FS=...|SCENARIO=...|TARGET_BLOCK=N
-//!           |SCHEME=N|MOUNTED=0/1|READ_OK=K
-//!           |DMESG_RS_CORRECTED=N|DMESG_UNCORRECTABLE=N
-//!           |DMESG_EIO=N|DMESG_PANIC=N
-//!           |RS_JOURNAL_NEW_ENTRIES=N
-//!           |HASH_PRE=<sha256>|HASH_POST=<sha256>
+//!   `METADATA|HOST=...|FS=...|SCENARIO=...|TARGET_BLOCK=N`
+//!           |`SCHEME=N|MOUNTED=0/1|READ_OK=K`
+//!           |`DMESG_RS_CORRECTED=N|DMESG_UNCORRECTABLE=N`
+//!           |`DMESG_EIO=N|DMESG_PANIC=N`
+//!           |`RS_JOURNAL_NEW_ENTRIES=N`
+//!           |`HASH_PRE`=<sha256>|`HASH_POST`=<sha256>
 //!
 //! Interpretation (e.g. "ext4 panicked on superblock corruption,
 //! beamfs recovered via RS FEC") is the role of post-run synthesis,
@@ -36,15 +36,15 @@
 //!
 //! ## Scenarios (4 per FS, 5 FS = 20 observations)
 //!
-//!   A1 superblock      : target_block=0, prob=1M (Family A SEU)
-//!   A2 bitmap-adjacent : target_block=1, prob=1M
-//!   A3 inode-adjacent  : target_block=2, prob=1M
-//!   A4 saturation      : target_block=0, prob=1M, repeated up to 3x
+//!   A1 superblock      : `target_block=0`, prob=1M (Family A SEU)
+//!   A2 bitmap-adjacent : `target_block=1`, prob=1M
+//!   A3 inode-adjacent  : `target_block=2`, prob=1M
+//!   A4 saturation      : `target_block=0`, prob=1M, repeated up to 3x
 //!                        Probes Theorem v2.2 saturation observability.
 //!                        - On non-FEC FSes (ext4/btrfs/squashfs),
 //!                          iter=1 typically corrupts the SB enough
 //!                          that subsequent iterations cannot remount;
-//!                          the bench emits INJECT=SKIP|saturation_reached
+//!                          the bench emits `INJECT=SKIP|saturation_reached`
 //!                          as a factual observation (not an error).
 //!                        - On beamfs (FEC-protected), all 3 iters
 //!                          should succeed up to RS correction limit.
@@ -56,6 +56,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::bitrot::ssh_target;
 use crate::cluster::{ClusterNode, NodeState};
+use std::fmt::Write;
 
 #[derive(Debug, Clone)]
 pub struct MetadataObservation {
@@ -159,10 +160,10 @@ fn write_synthesis(run_dir: &Path, observations: &[MetadataObservation]) -> Resu
     for o in observations {
         let phase = if o.phase_ok { "OK" } else { "FAIL" };
         let verify_short: String = o.raw_verify.lines().next().unwrap_or("").chars().take(120).collect();
-        s.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | `{}` |\n",
+        writeln!(s,
+            "| {} | {} | {} | {} | {} | {} | `{}` |",
             o.fs, o.vd, o.scenario, o.target_block, o.probability, phase, verify_short
-        ));
+        ).unwrap();
     }
     s.push('\n');
 
@@ -180,10 +181,10 @@ fn write_synthesis(run_dir: &Path, observations: &[MetadataObservation]) -> Resu
     let records_path = run_dir.join("all-records.txt");
     let mut r = String::new();
     for o in observations {
-        r.push_str(&format!("--- {} / {} / {} ---\n", o.fs, o.vd, o.scenario));
-        r.push_str(&format!("setup  : {}\n", o.raw_setup.trim()));
-        r.push_str(&format!("inject : {}\n", o.raw_inject.trim()));
-        r.push_str(&format!("verify : {}\n", o.raw_verify.trim()));
+        writeln!(r, "--- {} / {} / {} ---", o.fs, o.vd, o.scenario).unwrap();
+        writeln!(r, "setup  : {}", o.raw_setup.trim()).unwrap();
+        writeln!(r, "inject : {}", o.raw_inject.trim()).unwrap();
+        writeln!(r, "verify : {}", o.raw_verify.trim()).unwrap();
         r.push('\n');
     }
     fs::write(&records_path, r).context("write all-records.txt")?;
@@ -203,7 +204,7 @@ pub fn run(injector: &str) -> Result<i32> {
     let stamp = now.format("%Y%m%d-%H%M%S").to_string();
     let started_inst = Instant::now();
     let started_epoch = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs()).unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let run_dir = PathBuf::from(format!(
         "/home/aurelien/git/yocto-beamfs/Documentation/runs/beamfs-bench-metadata-{stamp}"
     ));
@@ -266,27 +267,27 @@ pub fn run(injector: &str) -> Result<i32> {
 
     // Manifest + tarball
     let ended_epoch = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs()).unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let duration_secs = started_inst.elapsed().as_secs();
     let mut manifest = String::new();
     manifest.push_str("================================================================\n");
     manifest.push_str(" beamfs-bench metadata manifest\n");
     manifest.push_str("================================================================\n");
-    manifest.push_str(&format!("Run dir         : {}\n", run_dir.display()));
-    manifest.push_str(&format!("Started (epoch) : {started_epoch}\n"));
-    manifest.push_str(&format!("Ended   (epoch) : {ended_epoch}\n"));
-    manifest.push_str(&format!("Duration (s)    : {duration_secs}\n"));
-    manifest.push_str(&format!("EXPECTED PHASES : {}\n", observations.len()));
-    manifest.push_str(&format!("EXECUTED PHASES : {}\n", observations.len()));
-    manifest.push_str(&format!("PASSED          : {n_ok}\n"));
-    manifest.push_str(&format!("FAILED          : {n_fail}\n"));
+    writeln!(manifest, "Run dir         : {}", run_dir.display()).unwrap();
+    writeln!(manifest, "Started (epoch) : {started_epoch}").unwrap();
+    writeln!(manifest, "Ended   (epoch) : {ended_epoch}").unwrap();
+    writeln!(manifest, "Duration (s)    : {duration_secs}").unwrap();
+    writeln!(manifest, "EXPECTED PHASES : {}", observations.len()).unwrap();
+    writeln!(manifest, "EXECUTED PHASES : {}", observations.len()).unwrap();
+    writeln!(manifest, "PASSED          : {n_ok}").unwrap();
+    writeln!(manifest, "FAILED          : {n_fail}").unwrap();
     manifest.push_str("\n================================================================\n");
     manifest.push_str(" PHASE-BY-PHASE\n");
     manifest.push_str("================================================================\n");
     for o in &observations {
         let tag = if o.phase_ok { "[OK]  " } else { "[FAIL]" };
         let summary = o.raw_verify.trim().chars().take(140).collect::<String>();
-        manifest.push_str(&format!("{tag} {}/{} : {summary}\n", o.fs, o.scenario));
+        writeln!(manifest, "{tag} {}/{} : {summary}", o.fs, o.scenario).unwrap();
     }
     manifest.push_str("\n================================================================\n");
     manifest.push_str(" ARTIFACTS IN RUN DIR\n");
@@ -294,8 +295,8 @@ pub fn run(injector: &str) -> Result<i32> {
     if let Ok(rd) = fs::read_dir(&run_dir) {
         for entry in rd.flatten() {
             if let Ok(meta) = entry.metadata() {
-                manifest.push_str(&format!("{:<40} : {} bytes\n",
-                    entry.file_name().to_string_lossy(), meta.len()));
+                writeln!(manifest, "{:<40} : {} bytes",
+                    entry.file_name().to_string_lossy(), meta.len()).unwrap();
             }
         }
     }

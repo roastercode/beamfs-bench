@@ -6,7 +6,7 @@
 //!
 //!   1. SSH to the node
 //!   2. Invoke `worker.sh bootstrap_data` action
-//!      (which insmods reed_solomon + beamfs, umounts /data if mounted,
+//!      (which insmods `reed_solomon` + beamfs, umounts /data if mounted,
 //!      mkfs.beamfs /dev/vdb, mount -t beamfs /dev/vdb /data)
 //!   3. Parse the response line `CLUSTER|HOST=<host>|BOOTSTRAP=OK|...`
 //!      or `CLUSTER|HOST=<host>|BOOTSTRAP=ERROR|reason=...`
@@ -34,7 +34,7 @@ pub struct BootstrapResult {
     pub raw_output: String,
 }
 
-/// Build SshTarget for an IP using the standard hpcadmin key.
+/// Build `SshTarget` for an IP using the standard hpcadmin key.
 fn ssh_for(ip: &str) -> Result<SshTarget> {
     let key_path = std::env::var("HOME")
         .map(|h| format!("{h}/.ssh/hpclab_admin"))

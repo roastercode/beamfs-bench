@@ -922,6 +922,26 @@ print(f'{bits} {frac_bp} {len(blocks)}')
     [ -z "$DMESG_UNCORR" ] && DMESG_UNCORR=0
     [ -z "$DMESG_EIO" ] && DMESG_EIO=0
 
+    # Ship the kernel's own account of the attack window, not just counts
+    # of it. beamfs names the subblock it acted on:
+    #
+    #   beamfs/inline: ino=11 iblock=55 subblock=7: 3 symbol(s) corrected
+    #   beamfs/inline: ino=11 iblock=55 subblock=7 uncorrectable
+    #
+    # which is the same (block, subblock) key the flip_log reconstruction
+    # produces. Joining the two turns "64 flips, hash unchanged" into
+    # "these flips hit this subblock, and RS repaired that many symbols
+    # there" -- the difference between asserting the correction happened
+    # and showing it. Counting alone cannot support that claim, and it is
+    # the claim the paper rests on.
+    #
+    # Only beamfs lines are kept: the rest of the window is unrelated
+    # kernel noise, and this travels inside the record.
+    DMESG_B64=$(echo "$DMESG_SLICE" \
+        | grep -E 'beamfs' \
+        | gzip -9 -c 2>/dev/null | base64 -w0 2>/dev/null)
+    [ -z "$DMESG_B64" ] && DMESG_B64=na
+
     # Phase A.4 : count unique bytes attacked from the EMUFI flip_log ring
     # buffer. Each flip event carries (sector, byte_offset) ; we deduplicate
     # the tuple to count bytes physically distinct on disk.
@@ -1030,7 +1050,7 @@ print(f'{bits} {frac_bp} {len(blocks)}')
 
     sudo rm -f /tmp/pre-cat-$FS.bin /tmp/post-cat-$FS.bin /tmp/cat-err-$FS.log 2>/dev/null || true
 
-    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_PRECAT=$HASH_PRECAT|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|FRAG_PRE_PHYS=$FRAG_PRE_PHYS|FRAG_POST_PHYS=$FRAG_POST_PHYS|FRAG_RELOCATED=$FRAG_RELOCATED|WORKLOAD_MODE=$WORKLOAD_MODE_VAL|WORKLOAD_DURATION=$WORKLOAD_DURATION_VAL|ATTACKED_BYTES_UNIQUE=$ATTACKED_BYTES_UNIQUE|FLIPS_ON_TARGET=$FLIPS_ON_TARGET|FLIP_LOG_SHA256=$FLIP_LOG_SHA|FLIP_LOG_B64=$FLIP_LOG_B64"
+    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_PRECAT=$HASH_PRECAT|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|FRAG_PRE_PHYS=$FRAG_PRE_PHYS|FRAG_POST_PHYS=$FRAG_POST_PHYS|FRAG_RELOCATED=$FRAG_RELOCATED|WORKLOAD_MODE=$WORKLOAD_MODE_VAL|WORKLOAD_DURATION=$WORKLOAD_DURATION_VAL|ATTACKED_BYTES_UNIQUE=$ATTACKED_BYTES_UNIQUE|FLIPS_ON_TARGET=$FLIPS_ON_TARGET|FLIP_LOG_SHA256=$FLIP_LOG_SHA|FLIP_LOG_B64=$FLIP_LOG_B64|DMESG_B64=$DMESG_B64"
     ;;
 
 verify)
@@ -1379,6 +1399,26 @@ print(f'{bits} {frac_bp} {len(blocks)}')
     [ -z "$RS_CORRECTED" ] && RS_CORRECTED=0
     [ -z "$DMESG_UNCORR" ] && DMESG_UNCORR=0
     [ -z "$DMESG_EIO" ] && DMESG_EIO=0
+
+    # Ship the kernel's own account of the attack window, not just counts
+    # of it. beamfs names the subblock it acted on:
+    #
+    #   beamfs/inline: ino=11 iblock=55 subblock=7: 3 symbol(s) corrected
+    #   beamfs/inline: ino=11 iblock=55 subblock=7 uncorrectable
+    #
+    # which is the same (block, subblock) key the flip_log reconstruction
+    # produces. Joining the two turns "64 flips, hash unchanged" into
+    # "these flips hit this subblock, and RS repaired that many symbols
+    # there" -- the difference between asserting the correction happened
+    # and showing it. Counting alone cannot support that claim, and it is
+    # the claim the paper rests on.
+    #
+    # Only beamfs lines are kept: the rest of the window is unrelated
+    # kernel noise, and this travels inside the record.
+    DMESG_B64=$(echo "$DMESG_SLICE" \
+        | grep -E 'beamfs' \
+        | gzip -9 -c 2>/dev/null | base64 -w0 2>/dev/null)
+    [ -z "$DMESG_B64" ] && DMESG_B64=na
 
     sudo rm -f /tmp/pre-cat-cluster-$$.bin /tmp/post-cat-cluster-$$.bin /tmp/cat-err-cluster-$$.log 2>/dev/null || true
 

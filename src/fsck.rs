@@ -19,8 +19,8 @@
 //!
 //! ## Format
 //!
-//!   FSCK|HOST=...|FS=...|FSCK_RC=N|FSCK_SUMMARY=<first 20 lines, semicolon-joined>
-//!   FSCK|HOST=...|FS=squashfs|CHECK=SKIP|reason=read_only_filesystem_no_fsck
+//!   `FSCK|HOST=...|FS=...|FSCK_RC=N|FSCK_SUMMARY`=<first 20 lines, semicolon-joined>
+//!   `FSCK|HOST=...|FS=squashfs|CHECK=SKIP|reason=read_only_filesystem_no_fsck`
 //!
 //! Topology: compute01 (R-isolation).
 
@@ -31,6 +31,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::bitrot::ssh_target;
 use crate::cluster::{ClusterNode, NodeState};
+use std::fmt::Write;
 
 #[derive(Debug, Clone)]
 pub struct FsckObservation {
@@ -94,7 +95,7 @@ fn write_synthesis(run_dir: &Path, observations: &[FsckObservation]) -> Result<(
     for o in observations {
         let phase = if o.phase_ok { "OK" } else { "FAIL" };
         let v: String = o.raw_check.lines().next().unwrap_or("").chars().take(150).collect();
-        s.push_str(&format!("| {} | {} | {} | `{}` |\n", o.fs, o.vd, phase, v));
+        writeln!(s, "| {} | {} | {} | `{}` |", o.fs, o.vd, phase, v).unwrap();
     }
     s.push_str("\n## Notes for analysis\n\n");
     s.push_str("- fsck_rc=0 generally means clean; rc=1 means errors corrected;\n");
@@ -107,8 +108,8 @@ fn write_synthesis(run_dir: &Path, observations: &[FsckObservation]) -> Result<(
     let records_path = run_dir.join("all-records.txt");
     let mut r = String::new();
     for o in observations {
-        r.push_str(&format!("--- {} / {} ---\n", o.fs, o.vd));
-        r.push_str(&format!("check : {}\n\n", o.raw_check.trim()));
+        writeln!(r, "--- {} / {} ---", o.fs, o.vd).unwrap();
+        write!(r, "check : {}\n\n", o.raw_check.trim()).unwrap();
     }
     fs::write(&records_path, r).context("write all-records.txt")?;
     Ok(())
@@ -125,7 +126,7 @@ pub fn run(injector: &str) -> Result<i32> {
     let stamp = now.format("%Y%m%d-%H%M%S").to_string();
     let started_inst = Instant::now();
     let started_epoch = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs()).unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let run_dir = PathBuf::from(format!(
         "/home/aurelien/git/yocto-beamfs/Documentation/runs/beamfs-bench-fsck-{stamp}"
     ));
@@ -179,27 +180,27 @@ pub fn run(injector: &str) -> Result<i32> {
 
     // Manifest + tarball
     let ended_epoch = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs()).unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let duration_secs = started_inst.elapsed().as_secs();
     let mut manifest = String::new();
     manifest.push_str("================================================================\n");
     manifest.push_str(" beamfs-bench fsck manifest\n");
     manifest.push_str("================================================================\n");
-    manifest.push_str(&format!("Run dir         : {}\n", run_dir.display()));
-    manifest.push_str(&format!("Started (epoch) : {started_epoch}\n"));
-    manifest.push_str(&format!("Ended   (epoch) : {ended_epoch}\n"));
-    manifest.push_str(&format!("Duration (s)    : {duration_secs}\n"));
-    manifest.push_str(&format!("EXPECTED PHASES : {}\n", observations.len()));
-    manifest.push_str(&format!("EXECUTED PHASES : {}\n", observations.len()));
-    manifest.push_str(&format!("PASSED          : {n_ok}\n"));
-    manifest.push_str(&format!("FAILED          : {n_fail}\n"));
+    writeln!(manifest, "Run dir         : {}", run_dir.display()).unwrap();
+    writeln!(manifest, "Started (epoch) : {started_epoch}").unwrap();
+    writeln!(manifest, "Ended   (epoch) : {ended_epoch}").unwrap();
+    writeln!(manifest, "Duration (s)    : {duration_secs}").unwrap();
+    writeln!(manifest, "EXPECTED PHASES : {}", observations.len()).unwrap();
+    writeln!(manifest, "EXECUTED PHASES : {}", observations.len()).unwrap();
+    writeln!(manifest, "PASSED          : {n_ok}").unwrap();
+    writeln!(manifest, "FAILED          : {n_fail}").unwrap();
     manifest.push_str("\n================================================================\n");
     manifest.push_str(" PHASE-BY-PHASE\n");
     manifest.push_str("================================================================\n");
     for o in &observations {
         let tag = if o.phase_ok { "[OK]  " } else { "[FAIL]" };
         let summary = o.raw_check.trim().chars().take(140).collect::<String>();
-        manifest.push_str(&format!("{tag} {} : {summary}\n", o.fs));
+        writeln!(manifest, "{tag} {} : {summary}", o.fs).unwrap();
     }
     manifest.push_str("\n================================================================\n");
     manifest.push_str(" ARTIFACTS IN RUN DIR\n");
@@ -207,8 +208,8 @@ pub fn run(injector: &str) -> Result<i32> {
     if let Ok(rd) = fs::read_dir(&run_dir) {
         for entry in rd.flatten() {
             if let Ok(meta) = entry.metadata() {
-                manifest.push_str(&format!("{:<40} : {} bytes\n",
-                    entry.file_name().to_string_lossy(), meta.len()));
+                writeln!(manifest, "{:<40} : {} bytes",
+                    entry.file_name().to_string_lossy(), meta.len()).unwrap();
             }
         }
     }

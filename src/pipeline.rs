@@ -1,17 +1,17 @@
 //! beamfs-bench pipeline -- MIL no-NAK validation chain.
 //!
 //! Phases executed before any test runs:
-//!   0.1 verify_clean_working_trees   3 git repos must be clean
-//!   0.2 verify_lockstep_sources      sha256 manifest source vs yocto layer
-//!   0.3 bitbake_image                build canonical .beamfs
-//!   0.4 extract_reference_ko_sha     loop-mount canonical, sha256 module
-//!   0.5 redeploy_4_vms               virsh destroy + cp x4 + chown + start
-//!   0.6 wait_ssh_ready_parallel      reuse lifecycle helper
-//!   0.7 verify_module_identity       sha256 in-VM == reference, on 4 nodes
+//!   0.1 `verify_clean_working_trees`   3 git repos must be clean
+//!   0.2 `verify_lockstep_sources`      sha256 manifest source vs yocto layer
+//!   0.3 `bitbake_image`                build canonical .beamfs
+//!   0.4 `extract_reference_ko_sha`     loop-mount canonical, sha256 module
+//!   0.5 `redeploy_4_vms`               virsh destroy + cp x4 + chown + start
+//!   0.6 `wait_ssh_ready_parallel`      reuse lifecycle helper
+//!   0.7 `verify_module_identity`       sha256 in-VM == reference, on 4 nodes
 //!
 //! Phases executed after tests:
-//!   8.1 verify_dmesg_clean           no BUG/Oops/WARN on any node
-//!   8.2 emit_manifest                JSON + GPG-detached-sign
+//!   8.1 `verify_dmesg_clean`           no BUG/Oops/WARN on any node
+//!   8.2 `emit_manifest`                JSON + GPG-detached-sign
 //!
 //! All phases fail-closed. Any non-zero exit aborts the pipeline,
 //! emits a partial manifest with the failure record, and returns rc=2.
@@ -115,13 +115,13 @@ pub fn verify_clean_working_trees() -> Result<()> {
         let out = Command::new("git").args(["-C", BENCH_REPO, "status", "-s"]).output()
             .with_context(|| format!("git status in {BENCH_REPO}"))?;
         let dirty = String::from_utf8_lossy(&out.stdout);
-        if !dirty.trim().is_empty() {
+        if dirty.trim().is_empty() {
+            println!("  {BENCH_REPO} clean");
+        } else {
             println!("  {BENCH_REPO} dirty (informative, non-blocking):");
             for line in dirty.lines().take(20) {
                 println!("    {line}");
             }
-        } else {
-            println!("  {BENCH_REPO} clean");
         }
     }
     Ok(())
@@ -154,7 +154,7 @@ pub fn bitbake_image(skip: bool) -> Result<()> {
     bitbake_image_to(skip, None)
 }
 
-/// Same as bitbake_image but optionally captures stdout+stderr to a log file
+/// Same as `bitbake_image` but optionally captures stdout+stderr to a log file
 /// (in addition to streaming to terminal). Used by mega scope to archive build logs.
 pub fn bitbake_image_to(skip: bool, log_dir: Option<&Path>) -> Result<()> {
     if skip {

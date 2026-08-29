@@ -2,11 +2,11 @@
 //!
 //! ## Public API
 //!
-//!   - MultifsConfig: parameterizes a multifs run (FS list, probs, run_dir prefix,
-//!     security flags: auto_confirm/dry_run/vm_name)
-//!   - MultifsResult: returned to callers (analyse.rs) for follow-up forensic capture
-//!   - run(): convenience entry for `Cli::Multifs` (uses default config)
-//!   - run_with_config(): full API, used by analyse.rs
+//!   - `MultifsConfig`: parameterizes a multifs run (FS list, probs, `run_dir` prefix,
+//!     security flags: `auto_confirm/dry_run/vm_name`)
+//!   - `MultifsResult`: returned to callers (analyse.rs) for follow-up forensic capture
+//!   - `run()`: convenience entry for `Cli::Multifs` (uses default config)
+//!   - `run_with_config()`: full API, used by analyse.rs
 //!
 //! ## Security pipeline (anti-NAK / R12 of context-recadrage)
 //!
@@ -28,9 +28,9 @@ use std::fs;
 use std::collections::HashMap;
 
 /// S3.1: parsed payload from the SETUP record echo emitted by
-/// worker.sh::setup case. Captures the file-precise injection range
+/// `worker.sh::setup` case. Captures the file-precise injection range
 /// computed via filefrag during setup, to be propagated to attack
-/// phase as env vars (TARGET_BLOCK_RANGE_START / _END).
+/// phase as env vars (`TARGET_BLOCK_RANGE_START` / _END).
 #[derive(Debug, Clone, Default)]
 struct SetupParse {
     target_block_range_start: u64,
@@ -48,7 +48,7 @@ struct SetupParse {
     target_ranges: String,
 }
 
-/// Parse a key=value| pipe-delimited setup record into SetupParse.
+/// Parse a key=value| pipe-delimited setup record into `SetupParse`.
 /// Unknown keys are ignored. Missing range keys default to 0/0
 /// (= range filter inactive, broadcast fallback preserved).
 fn parse_setup_record(out: &str) -> SetupParse {
@@ -93,9 +93,9 @@ pub fn worker_sh() -> &'static str {
 /// Default probabilities (matches Tir-multifs.sh line 54).
 pub const DEFAULT_PROBS: &[u32] = &[1000, 100000, 1000000];
 
-/// v3 campaign : read BEAMFS_BENCH_PROBS env var and parse as comma-separated
-/// list of u32 ppm values. Fallback to DEFAULT_PROBS if env var is unset or
-/// invalid. Used by MultifsConfig::default() and run_with_mapping() callers.
+/// v3 campaign : read `BEAMFS_BENCH_PROBS` env var and parse as comma-separated
+/// list of u32 ppm values. Fallback to `DEFAULT_PROBS` if env var is unset or
+/// invalid. Used by `MultifsConfig::default()` and `run_with_mapping()` callers.
 /// Format : "100,1000,10000,100000,500000,1000000" (no spaces).
 pub fn resolve_probs() -> Vec<u32> {
     match std::env::var("BEAMFS_BENCH_PROBS") {
@@ -128,7 +128,7 @@ pub const DEFAULT_VM_NAME: &str = "beamfs-compute01";
 pub struct MultifsConfig {
     /// libvirt domain name to query for the (vd -> by-id) mapping.
     pub vm_name: String,
-    /// FS slot definitions: (fs_name, guest_dev). Matched against `virsh dumpxml`.
+    /// FS slot definitions: (`fs_name`, `guest_dev`). Matched against `virsh dumpxml`.
     pub fs_list: Vec<(String, String)>,
     /// Probabilities (in ppm) to sweep.
     pub probs: Vec<u32>,
@@ -159,9 +159,7 @@ pub struct MultifsConfig {
 
 impl Default for MultifsConfig {
     fn default() -> Self {
-        let key_path = std::env::var("HOME")
-            .map(|h| format!("{h}/.ssh/hpclab_admin"))
-            .unwrap_or_else(|_| "/root/.ssh/hpclab_admin".to_string());
+        let key_path = std::env::var("HOME").map_or_else(|_| "/root/.ssh/hpclab_admin".to_string(), |h| format!("{h}/.ssh/hpclab_admin"));
         Self {
             vm_name: DEFAULT_VM_NAME.to_string(),
             // L5 : fs_list is now built at runtime by usb_health::build_fs_mapping
@@ -185,7 +183,7 @@ impl Default for MultifsConfig {
 
 impl MultifsConfig {
     /// Quick mode: single probability (1000000 ppm = saturation).
-    /// Currently unused inside the binary (analyse.rs builds its own MultifsConfig
+    /// Currently unused inside the binary (analyse.rs builds its own `MultifsConfig`
     /// inline) but kept as a documented public API for external callers / tests.
     #[allow(dead_code)]
     pub fn quick() -> Self {
@@ -210,9 +208,9 @@ pub struct MultifsResult {
 }
 
 /// Convenience entry for `Cli::Multifs`. Uses default config.
-/// L5 deprecation note : prefer run_with_mapping() which accepts a runtime
-/// fs_list. This function is kept for callers that want the legacy behaviour
-/// (empty fs_list -> error from analyse). Currently unused by Cli::Multifs
+/// L5 deprecation note : prefer `run_with_mapping()` which accepts a runtime
+/// `fs_list`. This function is kept for callers that want the legacy behaviour
+/// (empty `fs_list` -> error from analyse). Currently unused by `Cli::Multifs`
 /// since L5 ; kept public for back-compat with external callers.
 #[allow(dead_code)]
 pub fn run(auto_confirm: bool, dry_run: bool, injector: &str) -> Result<i32> {
@@ -226,10 +224,10 @@ pub fn run(auto_confirm: bool, dry_run: bool, injector: &str) -> Result<i32> {
     Ok(0)
 }
 
-/// L5 entry for Cli::Multifs : accepts a runtime fs_list mapping built
-/// from usb_health::build_fs_mapping(). This replaces the legacy run()
-/// for the default invocation path (cmd_full -> analyse uses
-/// run_with_config directly, not this function).
+/// L5 entry for `Cli::Multifs` : accepts a runtime `fs_list` mapping built
+/// from `usb_health::build_fs_mapping()`. This replaces the legacy `run()`
+/// for the default invocation path (`cmd_full` -> analyse uses
+/// `run_with_config` directly, not this function).
 pub fn run_with_mapping(
     auto_confirm: bool,
     dry_run: bool,
@@ -262,22 +260,19 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
     // Otherwise, call discover_and_validate which prompts the user.
     // dry_run aborts here without creating any directories.
     // ----------------------------------------------------------------
-    let validated: Vec<ProposedMapping> = match &cfg.pre_validated_mappings {
-        Some(m) => {
-            eprintln!("beamfs-bench: using pre-validated mappings from caller ({} entries)", m.len());
-            m.clone()
-        }
-        None => {
-            let fs_list_refs: Vec<(&str, &str)> = cfg.fs_list.iter()
-                .map(|(f, v)| (f.as_str(), v.as_str()))
-                .collect();
-            devices::discover_and_validate(
-                &cfg.vm_name,
-                &fs_list_refs,
-                cfg.auto_confirm,
-                cfg.dry_run,
-            )?
-        }
+    let validated: Vec<ProposedMapping> = if let Some(m) = &cfg.pre_validated_mappings {
+        eprintln!("beamfs-bench: using pre-validated mappings from caller ({} entries)", m.len());
+        m.clone()
+    } else {
+        let fs_list_refs: Vec<(&str, &str)> = cfg.fs_list.iter()
+            .map(|(f, v)| (f.as_str(), v.as_str()))
+            .collect();
+        devices::discover_and_validate(
+            &cfg.vm_name,
+            &fs_list_refs,
+            cfg.auto_confirm,
+            cfg.dry_run,
+        )?
     };
 
     // From here on, RUN_DIR is created and destructive actions begin.
@@ -286,7 +281,7 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
         .join(format!("{}-{}", cfg.run_dir_prefix, ts_compact));
     let per_fs_dir = run_dir.join("per-fs");
     fs::create_dir_all(&per_fs_dir)
-        .with_context(|| format!("create_dir_all {:?}", per_fs_dir))?;
+        .with_context(|| format!("create_dir_all {}", per_fs_dir.display()))?;
 
     // Persist the validated mapping as audit trail.
     persist_validated_mapping(&run_dir, &cfg.vm_name, &validated)?;
@@ -304,11 +299,11 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
     // ----------------------------------------------------------------
     // Phase 1: deploy worker (skipped if caller already did it)
     // ----------------------------------------------------------------
-    if !cfg.skip_worker_deploy {
+    if cfg.skip_worker_deploy {
+        blue("[1/5] Worker deployment skipped (caller-managed)");
+    } else {
         blue("[1/5] Setup VMs: load modules + format 5 partitions + create test layout");
         deploy_worker(&ssh).context("deploy worker on master")?;
-    } else {
-        blue("[1/5] Worker deployment skipped (caller-managed)");
     }
 
     // ----------------------------------------------------------------
@@ -325,7 +320,7 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
 
         let fs_dir = per_fs_dir.join(&m.fs_name);
         fs::create_dir_all(&fs_dir)
-            .with_context(|| format!("create_dir_all {:?}", fs_dir))?;
+            .with_context(|| format!("create_dir_all {}", fs_dir.display()))?;
         write_text(&fs_dir.join("setup.txt"), &format!("{out}\n"))?;
         // S3.1: parse and store the range for later propagation.
         setup_parsed.insert(m.fs_name.clone(), parse_setup_record(&out));
@@ -340,7 +335,7 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
 
     let all_records_path = run_dir.join("all-records.txt");
     let mut all_records = fs::File::create(&all_records_path)
-        .with_context(|| format!("create {:?}", all_records_path))?;
+        .with_context(|| format!("create {}", all_records_path.display()))?;
     writeln!(all_records).context("write blank line to all-records.txt")?;
 
     for m in &validated {
@@ -348,9 +343,9 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
         let attacks_path = fs_dir.join("attacks.txt");
         let verifies_path = fs_dir.join("verifies.txt");
         let mut attacks_f = fs::File::create(&attacks_path)
-            .with_context(|| format!("create {:?}", attacks_path))?;
+            .with_context(|| format!("create {}", attacks_path.display()))?;
         let mut verifies_f = fs::File::create(&verifies_path)
-            .with_context(|| format!("create {:?}", verifies_path))?;
+            .with_context(|| format!("create {}", verifies_path.display()))?;
 
         // S3.1: set TARGET_BLOCK_RANGE_* env vars from per-FS SETUP parse.
         let setup_p = setup_parsed.get(&m.fs_name).cloned().unwrap_or_default();
@@ -441,7 +436,7 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
     {
         let db_path = crate::db::default_db_path();
         match crate::db::init(&db_path)
-            .and_then(|_| crate::db::ingest_run_dir(&db_path, &run_dir, None))
+            .and_then(|()| crate::db::ingest_run_dir(&db_path, &run_dir, None))
         {
             Ok(id) => println!("DB:        run #{id} -> {}", db_path.display()),
             Err(e) => eprintln!("[multifs] WARN : database ingest skipped: {e:#}"),
@@ -465,16 +460,14 @@ fn persist_validated_mapping(
 ) -> Result<()> {
     let path = run_dir.join("devices-validated.txt");
     let mut f = fs::File::create(&path)
-        .with_context(|| format!("create {:?}", path))?;
+        .with_context(|| format!("create {}", path.display()))?;
     writeln!(f, "# beamfs-bench device validation audit")?;
     writeln!(f, "# vm        : {vm_name}")?;
     writeln!(f, "# generated : {}", Local::now().format("%Y-%m-%d %H:%M:%S"))?;
     writeln!(f, "# format    : <fs>|<guest_dev>|<host_resolved>|<host_size>|<host_byid>")?;
     writeln!(f)?;
     for m in validated {
-        let resolved = m.disk.host_resolved.as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "?".to_string());
+        let resolved = m.disk.host_resolved.as_ref().map_or_else(|| "?".to_string(), |p| p.display().to_string());
         let size = m.disk.host_size.as_deref().unwrap_or("?");
         writeln!(f, "{}|{}|{}|{}|{}",
                  m.fs_name,
@@ -491,7 +484,7 @@ pub fn deploy_worker(ssh: &SshTarget) -> Result<()> {
     let local_worker = std::env::temp_dir()
         .join(format!("beamfs-bench-worker-{}.sh", std::process::id()));
     fs::write(&local_worker, WORKER_SH)
-        .with_context(|| format!("write local worker {:?}", local_worker))?;
+        .with_context(|| format!("write local worker {}", local_worker.display()))?;
     ssh.scp_to(local_worker.to_str().unwrap(), REMOTE_WORKER_PATH)
         .context("scp worker to target")?;
     ssh.exec(&format!("chmod +x {REMOTE_WORKER_PATH}"))
@@ -508,7 +501,7 @@ fn validated_display(validated: &[ProposedMapping]) -> String {
 }
 
 fn probs_display(probs: &[u32]) -> String {
-    probs.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" ")
+    probs.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join(" ")
 }
 
 fn blue(msg: &str) {
@@ -516,7 +509,7 @@ fn blue(msg: &str) {
 }
 
 fn write_text(path: &Path, content: &str) -> Result<()> {
-    fs::write(path, content).with_context(|| format!("write {:?}", path))
+    fs::write(path, content).with_context(|| format!("write {}", path.display()))
 }
 
 pub fn locate_repo_root() -> Result<PathBuf> {
@@ -550,7 +543,7 @@ fn walk_up_for_repo(start: &Path) -> Option<PathBuf> {
 mod tests_phase_a5 {
     use super::*;
 
-    /// Phase A.5: verify worker.sh embeds the SB_READ_LOOPS guard for
+    /// Phase A.5: verify worker.sh embeds the `SB_READ_LOOPS` guard for
     /// SB-targeted I/O burst (RS saturation campaign).
     #[test]
     fn worker_sh_contains_sb_read_loops_guard() {

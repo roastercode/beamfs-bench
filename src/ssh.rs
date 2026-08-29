@@ -1,8 +1,8 @@
-//! ssh.rs  -  SSH/SCP wrapper using std::process::Command.
+//! ssh.rs  -  SSH/SCP wrapper using `std::process::Command`.
 //!
 //! Mirrors exactly what Tir-multifs.sh does:
-//!   ssh $SSH_OPTS user@host "cmd"
-//!   scp $SSH_OPTS file user@host:dest
+//!   ssh $`SSH_OPTS` user@host "cmd"
+//!   scp $`SSH_OPTS` file user@host:dest
 //!
 //! No fancy session reuse, no async. Each call spawns ssh. Same semantics
 //! as the bash, same failure modes, same exit codes propagated.
@@ -30,7 +30,7 @@ impl SshTarget {
     ///   -o StrictHostKeyChecking=no
     ///   -o UserKnownHostsFile=/dev/null
     ///   -o LogLevel=ERROR
-    ///   -i <key_path>
+    ///   -i <`key_path`>
     fn opts(&self) -> Vec<String> {
         vec![
             "-o".into(), "StrictHostKeyChecking=no".into(),
@@ -46,7 +46,7 @@ impl SshTarget {
 
     /// Execute a remote command. Captures stdout (trimmed of trailing
     /// newlines) and returns it. Stderr is captured but currently
-    /// discarded; if needed for debugging, set BEAMFS_BENCH_DEBUG_SSH=1
+    /// discarded; if needed for debugging, set `BEAMFS_BENCH_DEBUG_SSH=1`
     /// in the environment to print stderr to our own stderr.
     pub fn exec(&self, remote_cmd: &str) -> Result<String> {
         let mut cmd = Command::new("ssh");
@@ -81,9 +81,9 @@ impl SshTarget {
         Ok(stdout.trim_end_matches('\n').to_string())
     }
 
-    /// Same as exec() but tolerates a non-zero exit and still returns
+    /// Same as `exec()` but tolerates a non-zero exit and still returns
     /// stdout. Used for verify/attack actions where the worker may
-    /// legitimately exit non-zero on FS_PANIC etc. but its stdout is
+    /// legitimately exit non-zero on `FS_PANIC` etc. but its stdout is
     /// still the verdict line we need.
     pub fn exec_lenient(&self, remote_cmd: &str) -> Result<String> {
         let mut cmd = Command::new("ssh");
