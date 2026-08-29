@@ -226,3 +226,93 @@ SELECT r.id AS run_id, r.prob_ppm, m.fs,
 FROM measurement m
 JOIN run r ON r.id = m.run_id
 LEFT JOIN validity v ON v.run_id = m.run_id AND v.fs = m.fs;
+
+-- --------------------------------------------------------------- flip_event
+-- One row per individual flip, reconstructed.
+--
+-- Counting impacts is not measuring an outcome. Fourteen flips spread
+-- across fourteen RS subblocks are trivially corrected; the same
+-- fourteen concentrated in two subblocks exceed the 8-symbol radius and
+-- are lost. The aggregate figures cannot tell those cases apart, yet
+-- they decide the result -- so the reconstruction has to be per event.
+--
+-- beamfs data block geometry (beamfs.h): 16 interleaved RS(255,239)
+-- subblocks fill bytes 0..4079 as [239 data][16 parity] repeated, then
+-- DATA_CSUM type at 4080, its value at 4084, DATA_SELFID at 4088, and
+-- the block ends at 4096. A flip's byte offset therefore places it
+-- exactly: subblock index, position within it, and whether it landed on
+-- payload, on parity, or on a descriptor -- three cases the correction
+-- path treats differently.
+--
+-- Dimensions are kept separate rather than pre-projected: a 3D plot
+-- shows three of them, and which three is a question to be answered per
+-- analysis, not baked into the storage.
+CREATE TABLE IF NOT EXISTS flip_event (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
+    fs              TEXT NOT NULL,
+
+    -- as recorded by the injector
+    seq             INTEGER,
+    ktime_ns        INTEGER,
+    sector          INTEGER,
+    bio_op          INTEGER,      -- 0 read, 1 write
+    byte_offset     INTEGER,      -- within the bio payload
+    bit_index       INTEGER,      -- 0..7 within the byte
+    before_byte     INTEGER,
+    after_byte      INTEGER,
+
+    -- reconstructed position
+    block_no        INTEGER,      -- sector / 8
+    offset_in_block INTEGER,      -- 0..4095
+    subblock_idx    INTEGER,      -- 0..15, NULL outside the RS region
+    offset_in_sub   INTEGER,      -- 0..254 within that subblock
+    region          TEXT,         -- rs_data | rs_parity | data_csum
+                                  -- | data_selfid | pad | unknown
+
+    -- reconstructed context
+    zone            TEXT,         -- superblock | inode_table | bitmap
+                                  -- | data | reserved | outside_fs
+    on_target       INTEGER,      -- 1 if inside the verified file's extents
+    inode_no        INTEGER,      -- when derivable
+
+    -- energy relative to the correction budget: how many distinct bytes
+    -- of this subblock were hit during the run, against the 8 symbols
+    -- RS(255,239) can repair. This is the axis that separates a
+    -- harmless event from a fatal one.
+    sub_bytes_hit   INTEGER,
+    rs_budget       INTEGER DEFAULT 8,
+    over_budget     INTEGER,      -- 1 when sub_bytes_hit > rs_budget
+
+    -- outcome, filled from the kernel's own account
+    outcome         TEXT          -- corrected | uncorrectable | unprotected
+                                  -- | no_effect | unknown
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_run    ON flip_event(run_id, fs);
+CREATE INDEX IF NOT EXISTS idx_event_region ON flip_event(region);
+CREATE INDEX IF NOT EXISTS idx_event_sub    ON flip_event(run_id, fs, block_no, subblock_idx);
+
+-- Occupancy of the correction budget, per subblock actually touched.
+-- Reading this tells how close a campaign ran to the RS limit, which no
+-- flip count can.
+CREATE VIEW IF NOT EXISTS v_rs_occupancy AS
+SELECT e.run_id, e.fs, e.block_no, e.subblock_idx,
+       COUNT(DISTINCT e.offset_in_sub) AS bytes_hit,
+       MAX(e.rs_budget)                AS budget,
+       CASE WHEN COUNT(DISTINCT e.offset_in_sub) > MAX(e.rs_budget)
+            THEN 1 ELSE 0 END          AS over_budget
+FROM flip_event e
+WHERE e.subblock_idx IS NOT NULL
+GROUP BY e.run_id, e.fs, e.block_no, e.subblock_idx;
+
+-- Where flips land, by structure. The comparison "beamfs corrected"
+-- means little without knowing whether the hits were on payload, on
+-- parity, or on an unprotected pointer.
+CREATE VIEW IF NOT EXISTS v_region_breakdown AS
+SELECT run_id, fs, region, zone,
+       COUNT(*)            AS n,
+       SUM(on_target)      AS n_on_target,
+       SUM(over_budget)    AS n_over_budget
+FROM flip_event
+GROUP BY run_id, fs, region, zone;

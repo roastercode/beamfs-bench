@@ -119,6 +119,9 @@ pub struct AttackRecord {
     pub bits_diff: Option<i64>,
     pub file_size: Option<i64>,
     pub workload_mode: Option<String>,
+    pub flip_log_sha256: Option<String>,
+    /// gzip+base64 of the injector's flip_log, shipped inside the record.
+    pub flip_log_b64: Option<String>,
 }
 
 impl AttackRecord {
@@ -167,6 +170,8 @@ pub fn parse_records(text: &str) -> Vec<AttackRecord> {
             bits_diff: n("BITS_DIFF"),
             file_size: n("FILE_SIZE"),
             workload_mode: s("WORKLOAD_MODE"),
+            flip_log_sha256: s("FLIP_LOG_SHA256").filter(|v| v != "na"),
+            flip_log_b64: s("FLIP_LOG_B64").filter(|v| v != "na"),
         });
     }
     out
@@ -274,8 +279,159 @@ pub fn ingest_run(
             sql_str(reason.as_deref()),
         );
         exec(db, &sql)?;
+        if let Err(e) = ingest_flip_events(db, run_id, r) {
+            eprintln!("  WARN flip events ({}): {e:#}", r.fs);
+        }
     }
     Ok(run_id)
+}
+
+/// beamfs on-disk data block geometry (beamfs.h).
+///
+/// Bytes 0..4079 hold 16 interleaved RS(255,239) subblocks laid out as
+/// [239 data][16 parity] repeated; DATA_CSUM type sits at 4080, its
+/// value at 4084, DATA_SELFID at 4088, and the block ends at 4096.
+const SUB_TOTAL: i64 = 255;
+const SUB_DATA: i64 = 239;
+const N_SUB: i64 = 16;
+const RS_REGION_END: i64 = SUB_TOTAL * N_SUB; // 4080
+/// RS(255,239) repairs up to (255-239)/2 = 8 symbols per subblock.
+const RS_BUDGET: i64 = 8;
+
+/// Where a byte offset falls inside a beamfs data block.
+///
+/// Meaningful for beamfs only. Other filesystems have their own layout,
+/// so their events are recorded with region "unknown" rather than
+/// forced into a geometry that is not theirs.
+fn locate(off: i64) -> (Option<i64>, Option<i64>, &'static str) {
+    if off >= 4088 { return (None, None, "data_selfid"); }
+    if off >= 4080 { return (None, None, "data_csum"); }
+    if off >= RS_REGION_END { return (None, None, "pad"); }
+    let idx = off / SUB_TOTAL;
+    let pos = off % SUB_TOTAL;
+    (Some(idx), Some(pos), if pos < SUB_DATA { "rs_data" } else { "rs_parity" })
+}
+
+/// One decoded flip_log line.
+#[derive(Debug, Clone)]
+struct FlipRow {
+    seq: i64,
+    ktime_ns: i64,
+    sector: i64,
+    bio_op: i64,
+    byte_offset: i64,
+    bit_index: i64,
+    before: i64,
+    after: i64,
+}
+
+fn parse_hex_byte(s: &str) -> i64 {
+    i64::from_str_radix(s.trim().trim_start_matches("0x"), 16).unwrap_or(-1)
+}
+
+fn decode_flip_log(b64: &str) -> Result<Vec<FlipRow>> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = Command::new("sh")
+        .arg("-c").arg("base64 -d | gzip -dc")
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn()
+        .context("spawn base64/gzip")?;
+    child.stdin.as_mut().context("stdin")?
+        .write_all(b64.as_bytes()).context("write b64")?;
+    let out = child.wait_with_output().context("wait decode")?;
+    if !out.status.success() {
+        anyhow::bail!("flip_log decode failed");
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+
+    let mut rows = Vec::new();
+    for line in text.lines().skip(1) {
+        let f: Vec<&str> = line.split(',').collect();
+        if f.len() < 8 { continue; }
+        let n = |i: usize| f[i].trim().parse::<i64>().unwrap_or(-1);
+        // ktime_ns == 0 marks an unused ring slot.
+        if n(1) == 0 { continue; }
+        rows.push(FlipRow {
+            seq: n(0), ktime_ns: n(1), sector: n(2), bio_op: n(3),
+            byte_offset: n(4), bit_index: n(5),
+            before: parse_hex_byte(f[6]), after: parse_hex_byte(f[7]),
+        });
+    }
+    Ok(rows)
+}
+
+/// Is this sector inside one of the "start:end" intervals?
+fn in_ranges(sector: i64, ranges: &str) -> bool {
+    ranges.split(',').any(|r| {
+        match r.split_once(':') {
+            Some((a, b)) => {
+                let (lo, hi) = (a.trim().parse::<i64>().unwrap_or(-1),
+                                b.trim().parse::<i64>().unwrap_or(-1));
+                lo >= 0 && sector >= lo && sector < hi
+            }
+            None => false,
+        }
+    })
+}
+
+/// Reconstruct and store every flip of one measurement.
+fn ingest_flip_events(db: &Path, run_id: i64, r: &AttackRecord) -> Result<usize> {
+    let Some(b64) = r.flip_log_b64.as_deref() else { return Ok(0) };
+    let rows = decode_flip_log(b64)?;
+    if rows.is_empty() { return Ok(0); }
+
+    let is_beamfs = r.fs == "beamfs";
+    let ranges = r.target_ranges.as_deref().unwrap_or("");
+
+    // Budget occupancy is a property of the subblock over the whole run,
+    // not of a single flip: count the distinct bytes hit in each
+    // (block, subblock) before deciding whether any of them exceeded the
+    // correction radius.
+    let mut hits: HashMap<(i64, i64), std::collections::HashSet<i64>> = HashMap::new();
+    if is_beamfs {
+        for f in &rows {
+            let off_in_block = f.byte_offset % 4096;
+            let (idx, pos, _) = locate(off_in_block);
+            if let (Some(i), Some(p)) = (idx, pos) {
+                hits.entry((f.sector / 8, i)).or_default().insert(p);
+            }
+        }
+    }
+
+    let mut sql = String::from("BEGIN;");
+    for f in &rows {
+        // byte_offset is relative to the bio payload. Filesystem writes
+        // start on a block boundary, so modulo 4096 gives the offset
+        // within the block; a bio that did not would misplace this, and
+        // that assumption is stated rather than hidden.
+        let off_in_block = f.byte_offset % 4096;
+        let block_no = f.sector / 8;
+        let (idx, pos, region) = if is_beamfs {
+            locate(off_in_block)
+        } else {
+            (None, None, "unknown")
+        };
+        let bytes_hit = idx.and_then(|i| hits.get(&(block_no, i)).map(|s| s.len() as i64));
+        let over = bytes_hit.map(|b| if b > RS_BUDGET { 1 } else { 0 });
+        let on_target = if ranges.is_empty() { None }
+                        else { Some(if in_ranges(f.sector, ranges) { 1 } else { 0 }) };
+
+        sql.push_str(&format!(
+            "INSERT INTO flip_event (run_id, fs, seq, ktime_ns, sector, bio_op,              byte_offset, bit_index, before_byte, after_byte, block_no,              offset_in_block, subblock_idx, offset_in_sub, region, on_target,              sub_bytes_hit, rs_budget, over_budget) VALUES              ({run_id}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});",
+            sql_str(Some(&r.fs)),
+            f.seq, f.ktime_ns, f.sector, f.bio_op, f.byte_offset, f.bit_index,
+            f.before, f.after, block_no, off_in_block,
+            sql_num(idx), sql_num(pos), sql_str(Some(region)),
+            sql_num(on_target), sql_num(bytes_hit),
+            if is_beamfs { RS_BUDGET.to_string() } else { "NULL".into() },
+            sql_num(over),
+        ));
+    }
+    sql.push_str("COMMIT;");
+    exec(db, &sql)?;
+    Ok(rows.len())
 }
 
 /// Ingest one run directory by reading its all-records.txt.

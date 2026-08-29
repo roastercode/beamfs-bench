@@ -690,6 +690,26 @@ attack)
     if [ "$WORKLOAD_MODE_VAL" = "write-active" ] && ! is_readonly_fs "$FS"; then
         # --time_based + --runtime bound the write loop, so the background
         # job self-terminates at the end of the attack window.
+        #
+        # The workload file spans 6 GiB, not a few megabytes, because
+        # under uniform scope the flips follow the I/O and the I/O follows
+        # this file. With a 4 MiB workload every bio landed in the first
+        # few hundred megabytes of the device, alongside the metadata:
+        # measured on 2026-08-28, ext4's flips spanned sectors 0-286552
+        # while its verified file sat at sector 8651264, so not one flip
+        # could reach it (FLIPS_ON_TARGET=0), while beamfs, whose file
+        # happens to live at sector 3440, took 15 hits. That is a
+        # comparison of block-allocation policy, not of resilience.
+        # randwrite over a large sparse extent spreads the traffic across
+        # the device without having to write it end to end, which a 30 s
+        # window could not do anyway.
+        #
+        # direct=0 is required, not a default left in place: beamfs has no
+        # O_DIRECT support, so direct=1 made fio fail outright on it
+        # ("destination does not support O_DIRECT", zero-byte workload
+        # file) while succeeding on ext3 -- the worst possible outcome,
+        # since the comparison then ran with a workload on some
+        # filesystems and none on others.
         # Write to a scratch file, NOT to the attack target. The integrity
         # verdict compares HASH_PRE (frozen in HASHES.sha256 at setup)
         # against HASH_POST; writing randwrite over the target would make
@@ -705,11 +725,13 @@ attack)
                      --filename="$WORKLOAD_FILE" \
                      --rw=randwrite \
                      --bs=4k \
-                     --size=4M \
+                     --size=6G \
+                     --filesize=6G \
+                     --randrepeat=0 \
                      --time_based=1 \
                      --runtime=${WORKLOAD_DURATION_VAL} \
                      --ioengine=psync \
-                     --direct=1 \
+                     --direct=0 \
                      --output-format=terse \
                      >/tmp/fio-workload-$FS.log 2>&1 &
             WORKLOAD_PID=$!
@@ -935,6 +957,22 @@ print(f'{bits} {frac_bp} {len(blocks)}')
         sudo cat ${INJECTOR_DBG}/flip_log 2>/dev/null \
             > /tmp/flip-log-$FS-$PROB.csv || true
 
+        # Ship the log back inside the record, gzip+base64. Counting
+        # flips does not measure an outcome: fourteen flips spread over
+        # fourteen RS subblocks are corrected without effort, the same
+        # fourteen landing in two subblocks exceed the 8-symbol radius
+        # and are lost. Only the per-event positions separate those, and
+        # they live on the node, where nothing was collecting them.
+        #
+        # Encoding into the record avoids adding a file-retrieval path
+        # for a payload this small: measured 2026-08-29, 1.5 to 6.7 KiB
+        # per filesystem once compressed, against 3 to 13 KiB raw.
+        FLIP_LOG_B64=$(gzip -9 -c /tmp/flip-log-$FS-$PROB.csv 2>/dev/null \
+            | base64 -w0 2>/dev/null)
+        [ -z "$FLIP_LOG_B64" ] && FLIP_LOG_B64=na
+        FLIP_LOG_SHA=$(sha256sum /tmp/flip-log-$FS-$PROB.csv 2>/dev/null | awk '{print $1}')
+        [ -z "$FLIP_LOG_SHA" ] && FLIP_LOG_SHA=na
+
         # How many flips actually landed in the blocks of the file whose
         # hash we then compare. Under uniform scope a flip can land
         # anywhere -- superblock, inode table, bitmap, journal, unrelated
@@ -948,13 +986,36 @@ print(f'{bits} {frac_bp} {len(blocks)}')
         # 4096-byte blocks, the flip_log records 512-byte sectors, hence
         # the /8. Getting this wrong yields a silent zero -- plausible
         # looking and entirely false.
-        if [ -n "$FRAG_PRE_PHYS" ] && [ "$FRAG_PRE_PHYS" != "na" ] \
-           && [ "$FRAG_PRE_PHYS" != "missing" ] \
-           && [ "$FRAG_PRE_PHYS" != "filefrag_failed" ]; then
+        # Match against TARGET_RANGES, not FRAG_PRE_PHYS. filefrag reports
+        # one line per extent, and FRAG_PRE_PHYS keeps only each extent's
+        # first block: for an extent-based filesystem that is a single
+        # number covering 512 sectors, so every flip past the first block
+        # goes uncounted. beamfs, having no extents, lists all 64 blocks
+        # individually and is counted in full. Comparing the two would
+        # have shown beamfs taking every hit and the others none -- an
+        # artefact of how each filesystem reports its layout, not of where
+        # the flips fell.
+        #
+        # TARGET_RANGES carries start:end sector intervals covering whole
+        # extents for every filesystem, which is what the flip_log's
+        # sector column can be compared against directly (no unit
+        # conversion, both are 512-byte sectors).
+        if [ -n "${TARGET_RANGES:-}" ]; then
             FLIPS_ON_TARGET=$(sudo cat ${INJECTOR_DBG}/flip_log 2>/dev/null \
-                | awk -F',' -v blocks="$FRAG_PRE_PHYS" '
-                    BEGIN { n = split(blocks, b, ","); for (i = 1; i <= n; i++) want[b[i]] = 1 }
-                    NR > 1 && $2 != "0" { if (int($3 / 8) in want) c++ }
+                | awk -F',' -v ranges="$TARGET_RANGES" '
+                    BEGIN {
+                        n = split(ranges, r, ",")
+                        for (i = 1; i <= n; i++) {
+                            split(r[i], se, ":")
+                            lo[i] = se[1] + 0; hi[i] = se[2] + 0
+                        }
+                        nr = n
+                    }
+                    NR > 1 && $2 != "0" {
+                        s = $3 + 0
+                        for (i = 1; i <= nr; i++)
+                            if (s >= lo[i] && s < hi[i]) { c++; break }
+                    }
                     END { print c + 0 }')
             [ -z "$FLIPS_ON_TARGET" ] && FLIPS_ON_TARGET=0
         else
@@ -963,11 +1024,13 @@ print(f'{bits} {frac_bp} {len(blocks)}')
     else
         ATTACKED_BYTES_UNIQUE=na
         FLIPS_ON_TARGET=na
+        FLIP_LOG_B64=na
+        FLIP_LOG_SHA=na
     fi
 
     sudo rm -f /tmp/pre-cat-$FS.bin /tmp/post-cat-$FS.bin /tmp/cat-err-$FS.log 2>/dev/null || true
 
-    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_PRECAT=$HASH_PRECAT|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|FRAG_PRE_PHYS=$FRAG_PRE_PHYS|FRAG_POST_PHYS=$FRAG_POST_PHYS|FRAG_RELOCATED=$FRAG_RELOCATED|WORKLOAD_MODE=$WORKLOAD_MODE_VAL|WORKLOAD_DURATION=$WORKLOAD_DURATION_VAL|ATTACKED_BYTES_UNIQUE=$ATTACKED_BYTES_UNIQUE|FLIPS_ON_TARGET=$FLIPS_ON_TARGET"
+    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_PRECAT=$HASH_PRECAT|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|FRAG_PRE_PHYS=$FRAG_PRE_PHYS|FRAG_POST_PHYS=$FRAG_POST_PHYS|FRAG_RELOCATED=$FRAG_RELOCATED|WORKLOAD_MODE=$WORKLOAD_MODE_VAL|WORKLOAD_DURATION=$WORKLOAD_DURATION_VAL|ATTACKED_BYTES_UNIQUE=$ATTACKED_BYTES_UNIQUE|FLIPS_ON_TARGET=$FLIPS_ON_TARGET|FLIP_LOG_SHA256=$FLIP_LOG_SHA|FLIP_LOG_B64=$FLIP_LOG_B64"
     ;;
 
 verify)
