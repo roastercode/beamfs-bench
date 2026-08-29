@@ -308,8 +308,7 @@ pub fn redeploy_4_vms() -> Result<BTreeMap<String, String>> {
         resolved.insert((*vm).to_string(), path);
     }
 
-    crate::lifecycle::destroy_all_vms()
-        .context("destroy all VMs before redeploy")?;
+    crate::lifecycle::destroy_all_vms();
 
     // R31 step 0.5b: confirm no qemu process is still holding a FD on
     // any target file. `fuser -s <path>` returns 0 if any FD found, 1

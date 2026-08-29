@@ -147,11 +147,11 @@ pub fn post_capture_host(
     run_dir: &Path,
     _scope: Scope,
     bpftrace_enabled: bool,
-) -> Result<()> {
+) {
     let host_dir = run_dir.join("host");
     if !host_dir.exists() {
         // pre_capture_host wasn't called or failed silently ; nothing to append.
-        return Ok(());
+        return;
     }
 
     println!("[post]   Host-side capture (post-run state)...");
@@ -162,8 +162,6 @@ pub fn post_capture_host(
     if bpftrace_enabled {
         stop_bpftrace_host(&host_dir);
     }
-
-    Ok(())
 }
 
 /// Start bpftrace in background as root via `sudo -n` (NOPASSWD required).

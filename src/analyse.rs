@@ -481,9 +481,7 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     }
 
     // Host-side post-capture (companion to forensics::post_capture_all).
-    if let Err(e) = forensics_host::post_capture_host(&run_dir, cfg.scope, cfg.bpftrace_host) {
-        eprintln!("  host post-capture warning: {e:#}");
-    }
+    forensics_host::post_capture_host(&run_dir, cfg.scope, cfg.bpftrace_host);
 
     // ----------------------------------------------------------------
     // Step 9: Crash report if anything failed

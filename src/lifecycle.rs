@@ -96,7 +96,7 @@ pub fn define_missing_vms() -> Result<()> {
 
 /// Phase 1.2: destroy ALL VMs unconditionally (R1 destroy aveugle).
 /// destroy on a shut-off domain returns error; we tolerate it.
-pub fn destroy_all_vms() -> Result<()> {
+pub fn destroy_all_vms() {
     println!("[lifecycle] Phase 1.2 - destroy all 4 VMs (aveugle)");
     for (vm, _ip) in VMS {
         let (rc, _stdout, stderr) = virsh_sudo_lenient(&["destroy", vm]);
@@ -112,7 +112,6 @@ pub fn destroy_all_vms() -> Result<()> {
     }
     // Brief settle wait so libvirt fully releases resources before start
     thread::sleep(Duration::from_secs(2));
-    Ok(())
 }
 
 /// Phase 1.3: start hpcnet if not active.
@@ -381,8 +380,7 @@ pub fn assert_isolation_architecture() -> Result<()> {
 }
 
 /// Optional shutdown phase (called by `full --shutdown` only).
-pub fn bring_cluster_down() -> Result<()> {
+pub fn bring_cluster_down() {
     println!("[lifecycle] Phase 8 - shutdown (--shutdown given)");
-    destroy_all_vms()?;
-    Ok(())
+    destroy_all_vms();
 }

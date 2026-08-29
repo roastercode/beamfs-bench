@@ -577,7 +577,7 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
 
     if shutdown {
         println!();
-        lifecycle::bring_cluster_down().context("shutdown phase failed")?;
+        lifecycle::bring_cluster_down();
     }
 
     // Phase 8.1
