@@ -125,6 +125,10 @@ pub struct AttackRecord {
     pub flip_log_b64: Option<String>,
     /// gzip+base64 of the beamfs dmesg lines from the attack window.
     pub dmesg_b64: Option<String>,
+    /// Physical blocks of the target file, in logical order: index i is
+    /// the physical block backing the file's iblock i. This is what maps
+    /// the kernel's logical addressing onto the injector's physical one.
+    pub frag_pre_phys: Option<String>,
 }
 
 impl AttackRecord {
@@ -176,6 +180,8 @@ pub fn parse_records(text: &str) -> Vec<AttackRecord> {
             flip_log_sha256: s("FLIP_LOG_SHA256").filter(|v| v != "na"),
             flip_log_b64: s("FLIP_LOG_B64").filter(|v| v != "na"),
             dmesg_b64: s("DMESG_B64").filter(|v| v != "na"),
+            frag_pre_phys: s("FRAG_PRE_PHYS")
+                .filter(|v| v != "na" && v != "missing" && v != "filefrag_failed"),
         });
     }
     out
@@ -458,7 +464,29 @@ fn ingest_flip_events(db: &Path, run_id: i64, r: &AttackRecord) -> Result<usize>
     let dmesg = r.dmesg_b64.as_deref()
         .and_then(|b| decode_b64_gzip(b).ok())
         .unwrap_or_default();
-    let (verdict_by_sub, verdict_by_block) = parse_kernel_verdicts(&dmesg);
+    let (kernel_by_sub, kernel_by_block) = parse_kernel_verdicts(&dmesg);
+
+    // The kernel names blocks logically (iblock, the file's own numbering)
+    // while the injector records physical sectors. Without translating one
+    // into the other the two sets of keys never meet, and every flip comes
+    // out as no_effect however clearly the kernel reported acting on it.
+    // FRAG_PRE_PHYS carries the mapping: index i is the physical block
+    // backing iblock i.
+    let phys: Vec<i64> = r.frag_pre_phys.as_deref().unwrap_or("")
+        .split(',')
+        .filter_map(|b| b.trim().parse::<i64>().ok())
+        .collect();
+    let to_phys = |iblock: i64| -> Option<i64> {
+        usize::try_from(iblock).ok().and_then(|i| phys.get(i)).copied()
+    };
+    let verdict_by_sub: HashMap<(i64, i64), KernelVerdict> = kernel_by_sub
+        .into_iter()
+        .filter_map(|((ib, sub), v)| to_phys(ib).map(|p| ((p, sub), v)))
+        .collect();
+    let verdict_by_block: HashMap<i64, KernelVerdict> = kernel_by_block
+        .into_iter()
+        .filter_map(|(ib, v)| to_phys(ib).map(|p| (p, v)))
+        .collect();
 
     let mut sql = String::from("BEGIN;");
     for f in &rows {
