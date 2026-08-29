@@ -520,7 +520,7 @@ pub fn ingest_run_dir(db: &Path, run_dir: &Path, campaign_id: Option<i64>) -> Re
         .with_context(|| format!("read {}", records_path.display()))?;
     let records = parse_records(&text);
     if records.is_empty() {
-        anyhow::bail!("no ATTACK record in {records_path:?}");
+        anyhow::bail!("no ATTACK record in {}", records_path.display());
     }
 
     let name = run_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");

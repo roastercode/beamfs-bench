@@ -149,7 +149,7 @@ pub fn run() -> Result<Vec<SlotVerdict>> {
                 SlotVerdict::Dead { slot, source, reason } => {
                     Some(format!("  {slot} ({}): {reason}", source.display()))
                 }
-                _ => None,
+                SlotVerdict::Healthy { .. } => None,
             })
             .collect();
         return Err(anyhow!(
@@ -185,7 +185,7 @@ pub fn build_fs_mapping(verdicts: &[SlotVerdict]) -> Vec<(String, String)> {
         .iter()
         .filter_map(|v| match v {
             SlotVerdict::Healthy { slot, .. } => Some(slot.as_str()),
-            _ => None,
+            SlotVerdict::Dead { .. } => None,
         })
         .collect();
     healthy_slots.sort_unstable();
