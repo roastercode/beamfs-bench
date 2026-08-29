@@ -594,6 +594,7 @@ pub fn cmd_ingest(runs_dir: Option<&str>) -> Result<i32> {
     Ok(i32::from(failed > 0))
 }
 
+#[derive(Clone, Copy)]
 pub enum Query {
     DoseResponse,
     Exposure,

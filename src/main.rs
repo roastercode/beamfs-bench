@@ -490,7 +490,7 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     // Phase 0.4
     let (ref_ko, beamfs_sha) = pipeline::extract_reference_ko_sha()
         .map_err(|e| pipeline::fail(&mut manifest, "0.4_extract_ref", &e))?;
-    manifest.reference_ko_sha256   = ref_ko.clone();
+    manifest.reference_ko_sha256.clone_from(&ref_ko);
     manifest.canonical_beamfs_sha256 = beamfs_sha;
     pipeline::record(&mut manifest, "0.4_extract_ref", 0);
 
@@ -596,7 +596,7 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     // crashed run.
     if analyse_rc == 0 {
         let regression_dir = std::path::PathBuf::from("/tmp/beamfs-bench-current-run");
-        if let Err(e) = regression_check::run(&regression_dir, accept_regression.clone()) {
+        if let Err(e) = regression_check::run(&regression_dir, accept_regression.as_deref()) {
             return Err(pipeline::fail(&mut manifest, "8.3_regression_check", &e));
         }
         pipeline::record(&mut manifest, "8.3_regression_check", 0);

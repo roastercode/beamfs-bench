@@ -101,7 +101,7 @@ struct ManifestSnapshot {
 /// Returns Err otherwise (rc=4 propagated by caller).
 pub fn run(
     current_run_dir: &Path,
-    accept_reason: Option<String>,
+    accept_reason: Option<&str>,
 ) -> Result<RegressionReport> {
     println!("[pipeline 8.3] regression check vs baseline");
 
@@ -124,7 +124,7 @@ pub fn run(
         findings: Vec::new(),
         fatal_count: 0,
         info_count: 0,
-        accepted_reason: accept_reason.clone(),
+        accepted_reason: accept_reason.map(str::to_string),
         overall_rc: 0,
     };
 
@@ -323,7 +323,7 @@ mod tests {
     fn empty_acceptance_rejected() {
         // verifier que reason vide bail!()
         let tmpd = tempfile::tempdir().unwrap();
-        let r = run(tmpd.path(), Some(String::new()));
+        let r = run(tmpd.path(), Some(""));
         // can't easily test without a baseline; structural test only:
         // we expect run() to either pass (no baseline) or fail with
         // empty-reason bail. Both are acceptable; this test just checks

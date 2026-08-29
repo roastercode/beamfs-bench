@@ -676,9 +676,11 @@ fn run_clang_werror(_files: &[PathBuf], out: &Path) -> ToolReport {
         .cloned()
         .collect();
     // Map kernel arch to clang target triple.
+    // aarch64 is the default: the lab targets qemu-arm64, and an
+    // unrecognised arch is more likely a naming variant of it than a
+    // genuinely different target.
     let target = match arch {
-        "arm64" => "aarch64-linux-gnu",
-        "x86"   => "x86_64-linux-gnu",
+        "x86" => "x86_64-linux-gnu",
         _ => "aarch64-linux-gnu",
     };
     let mut log_buf = format!(

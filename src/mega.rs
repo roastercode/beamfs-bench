@@ -281,7 +281,7 @@ pub fn run(injector: &str) -> Result<i32> {
         pipeline::bitbake_image_to(false, Some(&build_dir))?;
         pipeline::record(&mut manifest, "0.3_bitbake", 0);
         let (ref_ko, beamfs_sha) = pipeline::extract_reference_ko_sha()?;
-        manifest.reference_ko_sha256 = ref_ko.clone();
+        manifest.reference_ko_sha256.clone_from(&ref_ko);
         manifest.canonical_beamfs_sha256 = beamfs_sha;
         pipeline::record(&mut manifest, "0.4_extract_ref", 0);
         let resolved_vda = pipeline::redeploy_4_vms()?;
