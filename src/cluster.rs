@@ -65,6 +65,8 @@ pub fn worker_cmd(injector: &str, action_args: &str) -> String {
         "FLIP_WIDTH",
         "MAX_FLIPS",                 // u64, injection budget (emufi 0.6.0+)
         "INJECT_SCOPE",              // "targeted" (default) or "uniform"
+        "FIXED_DOSE",                // 1 = every filtered bio injected until
+                                     // the budget runs out (emufi 0.8.0+)
         "TARGET_RANGES",             // "s:e,s:e" sectors (emufi 0.7.0+)
         "LET_CLASS",
         "FLIP_LOCALITY",
@@ -126,9 +128,7 @@ pub struct NodeState {
     pub kernel: Option<String>,
     pub data_mount: Option<String>,
     pub data_used: Option<String>,
-    pub radfi_loaded: bool,
     pub beamfs_loaded: bool,
-    pub radfi_ko_present: bool,
     /// Active injector name (radfi or emufi) as reported by worker.sh
     /// `discover_cluster` output (key: `INJECTOR_NAME`). Defaults to empty
     /// string if absent (legacy worker.sh).
@@ -201,9 +201,7 @@ pub fn discover_cluster() -> Result<Vec<ClusterNode>> {
                         "KERNEL" => state.kernel = Some(v.to_string()),
                         "DATA_MOUNT" => state.data_mount = Some(v.to_string()),
                         "DATA_USED" => state.data_used = Some(v.to_string()),
-                        "RADFI_LOADED" => state.radfi_loaded = v == "yes",
                         "BEAMFS_LOADED" => state.beamfs_loaded = v == "yes",
-                        "RADFI_KO_PRESENT" => state.radfi_ko_present = v == "yes",
                         "INJECTOR_NAME" => state.injector_name = v.to_string(),
                         "EMUFI_LOADED" => state.emufi_loaded = v == "yes",
                         "EMUFI_KO_PRESENT" => state.emufi_ko_present = v == "yes",
@@ -244,31 +242,15 @@ pub fn render_cluster_table(nodes: &[ClusterNode]) -> String {
         let host = n.discovered.hostname.as_deref().unwrap_or(&n.expected_hostname);
         let kernel = n.discovered.kernel.as_deref().unwrap_or("?");
         let beamfs = if n.discovered.beamfs_loaded { "yes" } else { "no " };
-        // Show injector_name (from discover_cluster INJECTOR_NAME key) if
-        // available; fall back to "radfi" for legacy worker.sh that doesn't
-        // emit the new key. The inj_loaded/inj_ko_present booleans reflect
-        // whichever injector is actually active.
-        let inj_name = if n.discovered.injector_name.is_empty() {
-            "radfi".to_string()
-        } else {
-            n.discovered.injector_name.clone()
-        };
-        let inj_loaded = match inj_name.as_str() {
-            "emufi" => n.discovered.emufi_loaded,
-            _      => n.discovered.radfi_loaded,
-        };
-        let inj_ko_present = match inj_name.as_str() {
-            "emufi" => n.discovered.emufi_ko_present,
-            _      => n.discovered.radfi_ko_present,
-        };
-        let radfi = if inj_loaded { "yes" } else { "no " };
-        let radfi_ko = if inj_ko_present { "yes" } else { "no " };
+        // emufi is the only injector since radfi was removed.
+        let injector = if n.discovered.emufi_loaded { "yes" } else { "no " };
+        let injector_ko = if n.discovered.emufi_ko_present { "yes" } else { "no " };
         let perf = if n.discovered.perf_available { "yes" } else { "no " };
         let data = n.discovered.data_used.as_deref().unwrap_or("?");
         if n.discovered.reachable {
             writeln!(out,
                 " {host:<17} | {:<13} | {:<6} | {:<6} | {:<5} | {:<8} | {:<4} | {:<10}",
-                n.ip, kernel, beamfs, radfi, radfi_ko, perf, data
+                n.ip, kernel, beamfs, injector, injector_ko, perf, data
             ).unwrap();
         } else {
             writeln!(out,
@@ -280,7 +262,7 @@ pub fn render_cluster_table(nodes: &[ClusterNode]) -> String {
     out.push('\n');
     out.push_str(" Legend:\n");
     out.push_str("   beamfs   = beamfs.ko currently loaded\n");
-    out.push_str("   injector = active fault injector module loaded (radfi or emufi); will be insmod'ed by attack action if missing\n");
+    out.push_str("   injector = emufi module loaded; will be insmod'ed by attack action if missing\n");
     out.push_str("   inj.ko   = /lib/modules/$(uname -r)/updates/<injector>.ko present on disk\n");
     out.push_str("   perf     = /usr/bin/perf available (required for --scope=full perf record)\n");
     out.push_str("   /data    = used / total on the beamfs-on-vdb mount\n");

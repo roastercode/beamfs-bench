@@ -309,7 +309,6 @@ const REPOS: &[(&str, &str)] = &[
     ("beamfs",       "/home/aurelien/git/beamfs"),
     ("yocto-beamfs", "/home/aurelien/git/yocto-beamfs"),
     ("beamfs-bench", "/home/aurelien/git/beamfs-bench"),
-    ("radfi",        "/home/aurelien/git/radfi"),
 ];
 
 const VM_IPS: &[(&str, &str)] = &[
@@ -500,7 +499,7 @@ echo "=== beamfs.ko sha256 in /lib/modules ==="
 sudo find /lib/modules -name 'beamfs.ko*' -type f 2>/dev/null | xargs -r sudo sha256sum 2>&1
 echo
 echo "=== lsmod | grep beamfs ==="
-lsmod | grep -E 'beamfs|reed_solomon|radfi'
+lsmod | grep -E 'beamfs|reed_solomon|emufi'
 "#;
         let out = ssh_capture(ip, remote);
         let path = host_dir.join(format!("identity-{vm}.txt"));
@@ -550,7 +549,7 @@ fn capture_vm_modinfo(host_dir: &Path) {
     println!("[pre]    Host capture: modinfo per node (4 SSH probes)");
     for (vm, ip) in VM_IPS {
         let remote = r#"
-for mod in beamfs reed_solomon radfi; do
+for mod in beamfs reed_solomon emufi; do
     echo "=== modinfo $mod ==="
     sudo modinfo "$mod" 2>&1
     echo

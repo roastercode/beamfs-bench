@@ -167,7 +167,7 @@ impl Default for MultifsConfig {
             // (cmd_full, Cli::Multifs) populate it after Phase 0.0a probing.
             fs_list: Vec::new(),
             probs: resolve_probs(),
-            injector: "radfi".to_string(),
+            injector: "emufi".to_string(),
             run_dir_prefix: "beamfs-bench-multifs".to_string(),
             ssh_user: SSH_USER.to_string(),
             master_ip: MULTIFS_TARGET_IP.to_string(),

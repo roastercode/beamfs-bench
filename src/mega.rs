@@ -158,7 +158,7 @@ fn capture_kernel_artifacts(build_dir: &Path) -> Result<()> {
     }
     let mod_cmd = "ssh -i /home/aurelien/.ssh/hpclab_admin -o StrictHostKeyChecking=no \
                    -o ConnectTimeout=5 hpcadmin@192.168.56.11 \
-                   'sudo modinfo beamfs; echo ---; sudo modinfo radfi'";
+                   'sudo modinfo beamfs; echo ---; sudo modinfo emufi'";
     if let Ok(out) = Command::new("bash").arg("-c").arg(mod_cmd).output() {
         let _ = fs::write(build_dir.join("modinfo.txt"), out.stdout);
     }
@@ -451,7 +451,7 @@ pub fn run(injector: &str) -> Result<i32> {
     phases.push(PhaseResult {
         name: "09_post_forensics".into(), rc,
         duration_secs: t0.elapsed().as_secs(),
-        note: "dmesg + radfi-counters + lsmod + ftrace + rs-journal".into(),
+        note: "dmesg + injector-counters + lsmod + ftrace + rs-journal".into(),
     });
 
     // Global manifest

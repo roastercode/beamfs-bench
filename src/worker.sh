@@ -46,16 +46,15 @@
 set -u
 
 # ============================================================
-# Injector dispatch - radfi (legacy SEU) or emufi (MBU-capable)
+# Injector: emufi
 # ============================================================
-# beamfs-bench passes INJECTOR=radfi|emufi via the ssh remote_cmd
-# environment. Default is radfi to preserve the historical R19
-# baseline. The two injectors share 7 of 8 debugfs control entries
-# verbatim (enabled, hook_blk, inject_on_read, probability,
-# target_dev, target_block, call_count); only the flip-count key
-# differs (radfi=flip_count, emufi=flip_count_total).
+# radfi was removed. emufi covers everything it did and more --
+# stratified counters, multi-bit upsets, dose control, per-extent
+# targeting -- and maintaining both meant porting every kernel API
+# change twice. No archived R19 manifest references radfi, so nothing
+# replayable depends on it; the repository stays archived.
 # Reference: EMUFI v1 paper Zenodo DOI 10.5281/zenodo.20041762
-INJECTOR="${INJECTOR:-radfi}"
+INJECTOR="${INJECTOR:-emufi}"
 # v3 campaign : beamfs mkfs scheme parameterization
 # scheme=inline (default, scheme=2) reproduces N=30 baseline behaviour
 # scheme=inode-universal (scheme=5) enables paper v2 §VI.B B1/B2 latency benchmarks
@@ -84,9 +83,8 @@ mkfs_beamfs_args() {
     echo "$args"
 }
 case "${INJECTOR}" in
-    radfi) INJECTOR_DBG="/sys/kernel/debug/radfi" ; INJECTOR_KO="radfi.ko" ; FLIP_COUNT_KEY="flip_count" ;;
     emufi) INJECTOR_DBG="/sys/kernel/debug/emufi" ; INJECTOR_KO="emufi.ko" ; FLIP_COUNT_KEY="flip_count_total" ;;
-    *) echo "ERR|unknown INJECTOR=${INJECTOR} (expected: radfi|emufi)" >&2 ; exit 2 ;;
+    *) echo "ERR|unknown INJECTOR=${INJECTOR} (expected: emufi)" >&2 ; exit 2 ;;
 esac
 
 ACTION="${1:-}"
@@ -131,9 +129,7 @@ if [ "$ACTION" = "discover_cluster" ]; then
     echo "INJECTOR_NAME=${INJECTOR}"
     echo "INJECTOR_LOADED=$(lsmod | grep -q "^${INJECTOR}" && echo yes || echo no)"
     echo "INJECTOR_KO_PRESENT=$([ -f /lib/modules/$(uname -r)/updates/${INJECTOR_KO} ] && echo yes || echo no)"
-    echo "RADFI_LOADED=$(lsmod | grep -q '^radfi' && echo yes || echo no)"
     echo "BEAMFS_LOADED=$(grep -qw beamfs /proc/filesystems && echo yes || echo no)"
-    echo "RADFI_KO_PRESENT=$([ -f /lib/modules/$(uname -r)/updates/radfi.ko ] && echo yes || echo no)"
     echo "EMUFI_LOADED=$(lsmod | grep -q '^emufi' && echo yes || echo no)"
     echo "EMUFI_KO_PRESENT=$([ -f /lib/modules/$(uname -r)/updates/emufi.ko ] && echo yes || echo no)"
     echo "PERF_AVAILABLE=$(command -v perf >/dev/null 2>&1 && echo yes || echo no)"
@@ -143,27 +139,12 @@ fi
 
 # ============================================================
 # Helper : ensure ${INJECTOR_KO} + beamfs.ko + (btrfs.ko if needed) loaded.
-# IMPORTANT: enforces strict injector isolation. Only the requested ${INJECTOR}
-# is loaded; any other injector (radfi when emufi is requested, or vice versa)
-# is rmmod'd first to prevent superposition of fault injection hooks.
-# This guarantees comparative analyses (radfi vs emufi) measure each injector
-# in isolation, not their union.
+# The cross-injector rmmod that used to sit here went away with radfi:
+# emufi is the only injector now, so there is no competing set of hooks
+# to unload before loading ours.
 # ============================================================
 ensure_modules() {
     local fs="${1:-}"
-    # --- Strict isolation: rmmod any OTHER injector before loading ours ---
-    case "$INJECTOR" in
-        radfi)
-            if lsmod | grep -q '^emufi'; then
-                sudo /sbin/rmmod emufi 2>/dev/null || true
-            fi
-            ;;
-        emufi)
-            if lsmod | grep -q '^radfi'; then
-                sudo /sbin/rmmod radfi 2>/dev/null || true
-            fi
-            ;;
-    esac
     sudo depmod -a 2>/dev/null
     if [ "$fs" = "btrfs" ]; then
         sudo modprobe btrfs 2>/dev/null || true
@@ -561,6 +542,28 @@ attack)
     # flips than one issuing a single merged readahead (ext4: 4).
     if [ -n "${MAX_FLIPS:-}" ] && sudo test -e ${INJECTOR_DBG}/max_flips; then
         echo ${MAX_FLIPS} | sudo tee ${INJECTOR_DBG}/max_flips >/dev/null
+    fi
+
+    # FIXED_DOSE (emufi 0.8.0+): skip the probability roll so every bio
+    # passing the target filter is injected until the budget is spent.
+    #
+    # Probability alone cannot equalise exposure across filesystems.
+    # Reading the same file, beamfs issues 132 bio calls -- RS decoding
+    # walks every subblock -- against one extent read for ext4, so the
+    # same probability delivered 64 flips to one and 3 to the other on
+    # 2026-08-28. That is a property of how each filesystem reads, and no
+    # setting closes it. Under fixed dose each filesystem takes exactly
+    # MAX_FLIPS on the verified file, whatever its access pattern.
+    #
+    # Written explicitly either way: the module keeps its previous value
+    # between runs, so leaving the variable unset is not enough to turn
+    # the mode off.
+    if sudo test -e ${INJECTOR_DBG}/fixed_dose; then
+        if [ "${FIXED_DOSE:-0}" = "1" ]; then
+            echo 1 | sudo tee ${INJECTOR_DBG}/fixed_dose >/dev/null
+        else
+            echo 0 | sudo tee ${INJECTOR_DBG}/fixed_dose >/dev/null
+        fi
     fi
     # v0.2.1 : LET_CLASS high-level intensity (overrides PROB/FLIP_WIDTH).
     # 0=LOW 1=MEDIUM 2=HIGH 3=EXTREME (Baumann 2005 / JEDEC JEP89 calibrated).
@@ -1218,6 +1221,28 @@ cluster_attack)
     # flips than one issuing a single merged readahead (ext4: 4).
     if [ -n "${MAX_FLIPS:-}" ] && sudo test -e ${INJECTOR_DBG}/max_flips; then
         echo ${MAX_FLIPS} | sudo tee ${INJECTOR_DBG}/max_flips >/dev/null
+    fi
+
+    # FIXED_DOSE (emufi 0.8.0+): skip the probability roll so every bio
+    # passing the target filter is injected until the budget is spent.
+    #
+    # Probability alone cannot equalise exposure across filesystems.
+    # Reading the same file, beamfs issues 132 bio calls -- RS decoding
+    # walks every subblock -- against one extent read for ext4, so the
+    # same probability delivered 64 flips to one and 3 to the other on
+    # 2026-08-28. That is a property of how each filesystem reads, and no
+    # setting closes it. Under fixed dose each filesystem takes exactly
+    # MAX_FLIPS on the verified file, whatever its access pattern.
+    #
+    # Written explicitly either way: the module keeps its previous value
+    # between runs, so leaving the variable unset is not enough to turn
+    # the mode off.
+    if sudo test -e ${INJECTOR_DBG}/fixed_dose; then
+        if [ "${FIXED_DOSE:-0}" = "1" ]; then
+            echo 1 | sudo tee ${INJECTOR_DBG}/fixed_dose >/dev/null
+        else
+            echo 0 | sudo tee ${INJECTOR_DBG}/fixed_dose >/dev/null
+        fi
     fi
     if [ -n "${MULTI_CHIP:-}" ] && sudo test -e ${INJECTOR_DBG}/multi_chip; then
         echo ${MULTI_CHIP} | sudo tee ${INJECTOR_DBG}/multi_chip >/dev/null

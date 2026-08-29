@@ -86,7 +86,7 @@ struct Cli {
     /// which pushes the value to the matching debugfs entry IFF the
     /// entry exists on the target injector (sudo test -e guard).
     /// All flags are CUMULATIVE SIMULTANEOUS: any combination is valid.
-    /// radfi silently ignores flags it does not have a debugfs entry for.
+    /// Flags without a matching debugfs entry are silently ignored.
     #[command(flatten)]
     attack: EmufiAttackArgs,
 }
@@ -243,10 +243,10 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
 
-        /// Fault injector to use: "radfi" (legacy SEU baseline) or
+        /// Fault injector. Only "emufi" is supported since radfi was
         /// "emufi" (MBU-capable successor, ref Zenodo DOI
-        /// 10.5281/zenodo.20041762). Default: radfi (R19 baseline).
-        #[arg(long, default_value = "radfi")]
+        /// removed (Zenodo DOI 10.5281/zenodo.20041762).
+        #[arg(long, default_value = "emufi")]
         injector: String,
     },
 
@@ -265,8 +265,8 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
 
-        /// Fault injector to use: "radfi" or "emufi".
-        #[arg(long, default_value = "radfi")]
+        /// Fault injector. Only "emufi" is supported.
+        #[arg(long, default_value = "emufi")]
         injector: String,
 
         /// Skip the final tar.gz archive generation.
@@ -291,8 +291,8 @@ enum Command {
         /// Enable host-side bpftrace probes (requires NOPASSWD sudo on bpftrace).
         #[arg(long)]
         bpftrace: bool,
-        /// Fault injector to use: "radfi" or "emufi".
-        #[arg(long, default_value = "radfi")]
+        /// Fault injector. Only "emufi" is supported.
+        #[arg(long, default_value = "emufi")]
         injector: String,
         /// Destroy VMs after bench (default: leave running).
         #[arg(long)]
@@ -322,24 +322,24 @@ enum Command {
     /// Test A - metadata-targeted attack (superblock, inode bitmap, journal).
     /// New scope, not in legacy harness.
     Metadata {
-        /// Fault injector to use: "radfi" or "emufi".
-        #[arg(long, default_value = "radfi")]
+        /// Fault injector. Only "emufi" is supported.
+        #[arg(long, default_value = "emufi")]
         injector: String,
     },
 
     /// Test B - crash consistency (virsh destroy mid-write + remount).
     /// New scope, not in legacy harness.
     Crash {
-        /// Fault injector to use: "radfi" or "emufi".
-        #[arg(long, default_value = "radfi")]
+        /// Fault injector. Only "emufi" is supported.
+        #[arg(long, default_value = "emufi")]
         injector: String,
     },
 
     /// Test C - bit-rot offline (dd random on offline partition, then read).
     /// New scope, not in legacy harness.
     Bitrot {
-        /// Fault injector to use: "radfi" or "emufi".
-        #[arg(long, default_value = "radfi")]
+        /// Fault injector. Only "emufi" is supported.
+        #[arg(long, default_value = "emufi")]
         injector: String,
     },
 
@@ -353,8 +353,8 @@ enum Command {
     },
 
     Fsck {
-        /// Fault injector to use: "radfi" or "emufi".
-        #[arg(long, default_value = "radfi")]
+        /// Fault injector. Only "emufi" is supported.
+        #[arg(long, default_value = "emufi")]
         injector: String,
     },
 
@@ -364,7 +364,7 @@ enum Command {
     /// No fault injection; validates addressing math + bounds checks.
     Tindirect {
         /// Fault injector to use (kept for worker.sh module-loading uniformity).
-        #[arg(long, default_value = "radfi")]
+        #[arg(long, default_value = "emufi")]
         injector: String,
     },
 
@@ -373,8 +373,8 @@ enum Command {
     /// Captures Yocto build logs, kernel config, modinfo, git HEADs, and
     /// post-attack forensics (dmesg, radfi-counters, lsmod, ftrace, rs-journal SB).
     Mega {
-        /// Fault injector to use: "radfi" or "emufi".
-        #[arg(long, default_value = "radfi")]
+        /// Fault injector. Only "emufi" is supported.
+        #[arg(long, default_value = "emufi")]
         injector: String,
     },
 }

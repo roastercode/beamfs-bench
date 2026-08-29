@@ -44,8 +44,8 @@ pub struct AnalyseConfig {
     /// Enable host-side bpftrace probes during the run.
     /// Requires NOPASSWD sudo on bpftrace ; otherwise skipped gracefully.
     pub bpftrace_host: bool,
-    /// Fault injector to use: "radfi" or "emufi". Propagated to multifs
-    /// + cluster scopes. Default: "radfi".
+    /// Fault injector. Only "emufi" is supported since radfi was
+    /// removed. Propagated to multifs + cluster scopes.
     pub injector: String,
     /// USB pre-flight verdicts captured by `usb_health::run()` in Phase 0.0a.
     /// Used to build the runtime (fs, vd) mapping via `build_fs_mapping`
@@ -65,7 +65,7 @@ impl Default for AnalyseConfig {
             make_tarball: true,
             bpftrace_host: false,
             vm_name: DEFAULT_VM_NAME.to_string(),
-            injector: "radfi".to_string(),
+            injector: "emufi".to_string(),
             usb_verdicts: Vec::new(),
         }
     }

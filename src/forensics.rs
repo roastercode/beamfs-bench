@@ -80,7 +80,7 @@ pub fn pre_capture_all(nodes: &[ClusterNode], scope: Scope) -> Result<Vec<(Strin
                                 echo nop > /sys/kernel/debug/tracing/current_tracer 2>/dev/null
                                 echo > /sys/kernel/debug/tracing/trace 2>/dev/null
                                 echo > /sys/kernel/debug/tracing/set_ftrace_filter 2>/dev/null
-                                for sym in beamfs_* radfi_* submit_bio_noacct submit_bh; do
+                                for sym in beamfs_* emufi_* submit_bio_noacct submit_bh; do
                                     echo "$sym" >> /sys/kernel/debug/tracing/set_ftrace_filter 2>/dev/null || true
                                 done
                                 echo function_graph > /sys/kernel/debug/tracing/current_tracer 2>/dev/null || true
@@ -214,20 +214,8 @@ fn capture_one_node(
     fs::write(node_dir.join("dmesg.log"), dmesg)
         .with_context(|| format!("write dmesg.log for {hostname}"))?;
 
-    // 2. RadFI counters
-    let radfi_cmd = r#"
-        if sudo test -d /sys/kernel/debug/radfi; then
-            echo '--- /sys/kernel/debug/radfi/ ---'
-            for f in enabled hook_fs hook_blk inject_on_read probability target_dev target_inode target_block seed call_count flip_count skipped_disabled skipped_prob; do
-                val=$(sudo cat /sys/kernel/debug/radfi/$f 2>/dev/null)
-                printf "%-22s = %s\n" "$f" "$val"
-            done
-        elif lsmod | grep -q '^radfi'; then
-            echo 'radfi.ko loaded but /sys/kernel/debug/radfi not accessible (debugfs mount or perms issue)'
-        else
-            echo 'radfi.ko not loaded'
-        fi
-        echo
+    // 2. Injector counters
+    let injector_cmd = r#"
         if sudo test -d /sys/kernel/debug/emufi; then
             echo '--- /sys/kernel/debug/emufi/ ---'
             for f in enabled hook_fs hook_blk inject_on_read multi_segment probability flip_width flip_locality flip_stride_bits width_mode chip_count multi_chip let_class target_dev target_inode target_block seed call_count skipped_disabled skipped_filter skipped_prob flip_count_seu flip_count_mbu_w2_4 flip_count_mbu_w8_plus flip_count_mbu_w9_plus flip_count_total; do
@@ -243,9 +231,9 @@ fn capture_one_node(
         echo '--- lsmod (top 30) ---'
         lsmod | head -30
     "#;
-    let radfi = ssh.exec_lenient(radfi_cmd)
+    let injector = ssh.exec_lenient(injector_cmd)
         .with_context(|| format!("injector counters on {hostname}"))?;
-    fs::write(node_dir.join("injector-counters.log"), radfi)
+    fs::write(node_dir.join("injector-counters.log"), injector)
         .with_context(|| format!("write injector-counters.log for {hostname}"))?;
 
     // 3. lsmod full (separate file)
@@ -363,8 +351,8 @@ pub fn write_crash_report(
         content.push_str("```\n\n");
     }
 
-    let master_radfi = run_dir.join("forensics-beamfs-master/radfi-counters.log");
-    if let Ok(log) = fs::read_to_string(&master_radfi) {
+    let master_counters = run_dir.join("forensics-beamfs-master/injector-counters.log");
+    if let Ok(log) = fs::read_to_string(&master_counters) {
         content.push_str("## RadFI counters at end of run (master)\n\n```\n");
         content.push_str(&log);
         content.push_str("\n```\n\n");
