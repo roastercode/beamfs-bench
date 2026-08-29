@@ -31,6 +31,26 @@ use crate::multifs;
 use crate::pipeline;
 use std::fmt::Write;
 
+/// Depth-bounded recursive listing of the mega run directory.
+fn list_recursive(dir: &Path, prefix: &str, out: &mut String, depth: usize) {
+    if depth > 3 { return; }
+    if let Ok(rd) = fs::read_dir(dir) {
+        let mut entries: Vec<_> = rd.flatten().collect();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            if path.is_dir() {
+                writeln!(out, "{prefix}{name}/").unwrap();
+                let new_prefix = format!("{prefix}  ");
+                list_recursive(&path, &new_prefix, out, depth + 1);
+            } else if let Ok(meta) = entry.metadata() {
+                writeln!(out, "{prefix}{:<40} : {} bytes", name, meta.len()).unwrap();
+            }
+        }
+    }
+}
+
 const RUNS_DIR: &str = "/home/aurelien/git/yocto-beamfs/Documentation/runs";
 
 fn list_run_dirs_with_prefix(prefix: &str) -> Vec<String> {
@@ -177,24 +197,6 @@ fn write_global_manifest(
     s.push_str("\n================================================================\n");
     s.push_str(" ARTIFACTS IN MEGA DIR (depth-3 listing)\n");
     s.push_str("================================================================\n");
-    fn list_recursive(dir: &Path, prefix: &str, out: &mut String, depth: usize) {
-        if depth > 3 { return; }
-        if let Ok(rd) = fs::read_dir(dir) {
-            let mut entries: Vec<_> = rd.flatten().collect();
-            entries.sort_by_key(std::fs::DirEntry::file_name);
-            for entry in entries {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let path = entry.path();
-                if path.is_dir() {
-                    writeln!(out, "{prefix}{name}/").unwrap();
-                    let new_prefix = format!("{prefix}  ");
-                    list_recursive(&path, &new_prefix, out, depth + 1);
-                } else if let Ok(meta) = entry.metadata() {
-                    writeln!(out, "{prefix}{:<40} : {} bytes", name, meta.len()).unwrap();
-                }
-            }
-        }
-    }
     list_recursive(mega_dir, "", &mut s, 0);
     let path = mega_dir.join("manifest.txt");
     fs::write(&path, &s).context("write mega manifest.txt")?;

@@ -16,6 +16,30 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
+/// One filesystem's row in the head-to-head table. Column widths are
+/// computed from the collected rows so the table self-aligns to actual
+/// content rather than to hardcoded widths.
+struct Row {
+    fs: String,
+    cells: Vec<String>,
+    modes: String,
+}
+
+/// Same shape as Row, for the fine-grained verdict table.
+struct DetailRow {
+    fs: String,
+    cells: Vec<String>,
+    modes: String,
+}
+
+/// Row of the copy-on-write characterisation table; carries no modes
+/// column, the relocation status being a single value per cell.
+struct CowRow {
+    fs: String,
+    cells: Vec<String>,
+}
+
+
 pub fn write_synthesis_md(
     run_dir: &Path,
     ts_human: &str,
@@ -60,11 +84,6 @@ pub fn write_synthesis_md(
     // adapt to the actual content (verdicts of variable length, flip counts
     // of variable digit count, modes lists with multiple entries) instead
     // of being hardcoded as in the legacy Tir-multifs.sh output.
-    struct Row {
-        fs: String,
-        cells: Vec<String>,
-        modes: String,
-    }
     let mut rows: Vec<Row> = Vec::with_capacity(fs_list.len());
     for &(fs_name, _vd) in fs_list {
         let mut cells: Vec<String> = Vec::with_capacity(probs.len());
@@ -141,11 +160,6 @@ pub fn write_synthesis_md(
     writeln!(f, "Fine-grained verdicts using DMESG_UNCORRECTABLE / DMESG_EIO signals. The legacy `verdict` column above remains unchanged for backward compatibility.")?;
     writeln!(f)?;
 
-    struct DetailRow {
-        fs: String,
-        cells: Vec<String>,
-        modes: String,
-    }
     let mut detail_rows: Vec<DetailRow> = Vec::with_capacity(fs_list.len());
     for &(fs_name, _vd) in fs_list {
         let mut cells: Vec<String> = Vec::with_capacity(probs.len());
@@ -239,10 +253,6 @@ pub fn write_synthesis_md(
     writeln!(f)?;
 
 
-    struct CowRow {
-        fs: String,
-        cells: Vec<String>,
-    }
     let mut cow_rows: Vec<CowRow> = Vec::with_capacity(fs_list.len());
     for &(fs_name, _vd) in fs_list {
         let mut cells: Vec<String> = Vec::with_capacity(probs.len());
