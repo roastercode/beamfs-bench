@@ -312,12 +312,11 @@ fn run_checkpatch_strict(files: &[PathBuf], out: &Path) -> ToolReport {
         if !(f_str.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")) || f_str.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("h"))) { continue; }
         if !f_str.contains("/git/beamfs/") { continue; }
         if f_str.contains("/recipes-kernel/") { continue; }
-        let res = match Command::new(&checkpatch)
+        let Ok(res) = Command::new(&checkpatch)
             .args(["--strict", "--no-tree", "--terse", "--file", &f_str])
             .output()
-        {
-            Ok(o) => o,
-            Err(_) => continue,
+        else {
+            continue;
         };
         let s = String::from_utf8_lossy(&res.stdout);
         writeln!(log_buf, "=== {f_str} ===").unwrap();
@@ -531,16 +530,15 @@ fn run_sparse(out: &Path) -> ToolReport {
             duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         }
     };
-    let (ksrc, kbuild, arch) = match which_kernel_source() {
-        Some(t) => t,
-        None => return ToolReport {
+    let Some((ksrc, kbuild, arch)) = which_kernel_source() else {
+        return ToolReport {
             name: "sparse".to_string(),
             tier: 1,
             outcome: ToolOutcome::Skip {
                 reason: "no kernel source found (Yocto build dir or /usr/src/linux)".to_string()
             },
             duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
-        },
+        };
     };
     let beamfs_dir = PathBuf::from(BEAMFS_REPO);
     let basenames = beamfs_source_basenames();
@@ -561,13 +559,12 @@ fn run_sparse(out: &Path) -> ToolReport {
         args.push("-Wsparse-all".to_string());
         args.push("-Wbitwise".to_string());
         args.push(cf.clone());
-        let res = match Command::new(&bin)
+        let Ok(res) = Command::new(&bin)
             .args(&args)
             .current_dir(&beamfs_dir)
             .output()
-        {
-            Ok(o) => o,
-            Err(_) => continue,
+        else {
+            continue;
         };
         let s = String::from_utf8_lossy(&res.stderr);
         writeln!(log_buf, "=== {cf} ===").unwrap();
@@ -650,16 +647,15 @@ fn run_clang_werror(_files: &[PathBuf], out: &Path) -> ToolReport {
             duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         }
     };
-    let (ksrc, kbuild, arch) = match which_kernel_source() {
-        Some(t) => t,
-        None => return ToolReport {
+    let Some((ksrc, kbuild, arch)) = which_kernel_source() else {
+        return ToolReport {
             name: "clang_werror".to_string(),
             tier: 1,
             outcome: ToolOutcome::Skip {
                 reason: "no kernel source found".to_string()
             },
             duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
-        },
+        };
     };
     let beamfs_dir = PathBuf::from(BEAMFS_REPO);
     let basenames = beamfs_source_basenames();
@@ -694,13 +690,12 @@ fn run_clang_werror(_files: &[PathBuf], out: &Path) -> ToolReport {
         args.push("-Wno-pointer-sign".to_string());
         args.push("-Wno-unused-but-set-variable".to_string());
         args.push(cf.clone());
-        let res = match Command::new(&bin)
+        let Ok(res) = Command::new(&bin)
             .args(&args)
             .current_dir(&beamfs_dir)
             .output()
-        {
-            Ok(o) => o,
-            Err(_) => continue,
+        else {
+            continue;
         };
         let s = String::from_utf8_lossy(&res.stderr);
         writeln!(log_buf, "=== {cf} ===").unwrap();
@@ -880,13 +875,12 @@ fn run_kernel_doc_validate(_files: &[PathBuf], out: &Path) -> ToolReport {
                 None => continue,
             };
             if !(name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")) || name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("h"))) { continue; }
-            let res = match Command::new(&kdoc)
+            let Ok(res) = Command::new(&kdoc)
                 .args(["-none", &name])
                 .current_dir(&beamfs_dir)
                 .output()
-            {
-                Ok(o) => o,
-                Err(_) => continue,
+            else {
+                continue;
             };
             let s = String::from_utf8_lossy(&res.stderr);
             if !s.trim().is_empty() {
@@ -931,13 +925,12 @@ fn run_gpg_verify_commits(out: &Path) -> ToolReport {
     let mut bad: Vec<String> = Vec::new();
     let mut checked: u32 = 0;
     for repo in &[BEAMFS_REPO, BENCH_REPO] {
-        let log_out = match Command::new("git")
+        let Ok(log_out) = Command::new("git")
             .args(["-C", repo, "log", "-20", "--format=%H"])
             .env("PAGER", "cat")
             .output()
-        {
-            Ok(o) => o,
-            Err(_) => continue,
+        else {
+            continue;
         };
         let commits = String::from_utf8_lossy(&log_out.stdout);
         for sha in commits.lines() {
@@ -1069,9 +1062,8 @@ fn run_naming_r17_check(out: &Path) -> ToolReport {
                  || s.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("rs"))) {
                 continue;
             }
-            let content = match std::fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(_) => continue,
+            let Ok(content) = std::fs::read_to_string(path) else {
+                continue;
             };
             let is_md = s.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("md"));
             for (lineno, line) in content.lines().enumerate() {
@@ -1146,9 +1138,8 @@ fn run_emdash_r16_check(out: &Path) -> ToolReport {
                  || s.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("rs"))) {
                 continue;
             }
-            let content = match std::fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(_) => continue,
+            let Ok(content) = std::fs::read_to_string(path) else {
+                continue;
             };
             for (lineno, line) in content.lines().enumerate() {
                 for &(ch, label) in FORBIDDEN_R16 {
@@ -1206,13 +1197,11 @@ fn run_lockstep_r9_sha256(out: &Path) -> ToolReport {
             if !(name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")) || name.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("h"))) { continue; }
             let yocto_p = yocto_dir.join(name);
             if !yocto_p.is_file() { continue; }
-            let beamfs_bytes = match std::fs::read(&p) {
-                Ok(b) => b,
-                Err(_) => continue,
+            let Ok(beamfs_bytes) = std::fs::read(&p) else {
+                continue;
             };
-            let yocto_bytes = match std::fs::read(&yocto_p) {
-                Ok(b) => b,
-                Err(_) => continue,
+            let Ok(yocto_bytes) = std::fs::read(&yocto_p) else {
+                continue;
             };
             checked += 1;
             if beamfs_bytes != yocto_bytes {
