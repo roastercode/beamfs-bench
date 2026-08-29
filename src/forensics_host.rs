@@ -431,7 +431,7 @@ fn capture_vm_rootfs_format(host_dir: &Path) {
         .output()
     {
         Ok(o) => out.push_str(&String::from_utf8_lossy(&o.stdout)),
-        Err(e) => write!(out, "(qemu-img failed: {e})\n").unwrap(),
+        Err(e) => writeln!(out, "(qemu-img failed: {e})").unwrap(),
     }
     match Command::new("sudo")
         .args(["sha256sum", canonical_resolved.to_str().unwrap_or(canonical_link)])
@@ -442,7 +442,7 @@ fn capture_vm_rootfs_format(host_dir: &Path) {
             let sha = s.split_whitespace().next().unwrap_or("(none)");
             writeln!(out, "canonical sha256: {sha}").unwrap();
         }
-        Err(e) => write!(out, "(sha256sum failed: {e})\n").unwrap(),
+        Err(e) => writeln!(out, "(sha256sum failed: {e})").unwrap(),
     }
     out.push('\n');
 
@@ -468,7 +468,7 @@ fn capture_vm_rootfs_format(host_dir: &Path) {
                     out.push('\n');
                 }
             }
-            Err(e) => write!(out, "(qemu-img failed: {e})\n").unwrap(),
+            Err(e) => writeln!(out, "(qemu-img failed: {e})").unwrap(),
         }
         match Command::new("sudo")
             .args(["sha256sum", &path])
@@ -479,7 +479,7 @@ fn capture_vm_rootfs_format(host_dir: &Path) {
                 let sha = s.split_whitespace().next().unwrap_or("(none)");
                 writeln!(out, "sha256: {sha}").unwrap();
             }
-            Err(e) => write!(out, "(sha256sum failed: {e})\n").unwrap(),
+            Err(e) => writeln!(out, "(sha256sum failed: {e})").unwrap(),
         }
         out.push('\n');
     }
