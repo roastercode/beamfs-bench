@@ -2184,6 +2184,99 @@ tindirect_test)
     fi
     ;;
 
+saturation)
+    # Active falsification protocol for Theorem v2.2.
+    #
+    # v2 states the saturation observability contract -- when a
+    # perturbation exceeds the per-subblock correction capacity, the
+    # operator returns fail-closed AND emits a journal entry flagged
+    # UNCORRECTABLE at the affected (block, subblock) coordinates -- but
+    # never exercises it. v1's Theorem IV.1 was retracted because RadFI
+    # falsified it; leaving IV.2 untested while claiming a falsifiable
+    # methodology is the weaker position.
+    #
+    # Four checks: the read returns EIO, a journal entry carries
+    # UNCORRECTABLE, re_block_no decodes to the targeted coordinates,
+    # and the documented invariants hold (symbol_count == 0,
+    # ENTROPY_VALID cleared).
+    #
+    # Symbols are bytes, not bits. Nine bit flips can land in fewer than
+    # nine bytes and stay inside the correction radius, so flips go one
+    # per byte at a stride -- that is what makes this a saturation test
+    # rather than a heavy-corruption test.
+    #
+    # dd is deliberate. emufi could place these through flip_queue, but
+    # a falsification protocol should not rest on the injector whose own
+    # fidelity is under discussion.
+    FS="$ARG2"
+    VD="$ARG3"
+    SUB="${ARG4:-0}"
+    NSYM="${SAT_SYMBOLS:-9}"
+    DEV="/dev/$VD"
+    MNT="/mnt/test-$FS"
+    TGT="$MNT/sat.bin"
+
+    if [ "$FS" != "beamfs" ]; then
+        echo "SAT|FS=$FS|ERROR=beamfs_only"
+        exit 0
+    fi
+    if ! mountpoint -q "$MNT" 2>/dev/null; then
+        echo "SAT|FS=$FS|ERROR=not_mounted"
+        exit 0
+    fi
+
+    sudo dd if=/dev/urandom of="$TGT" bs=1 count=3824 2>/dev/null
+    sudo sync
+    HASH_PRE=$(sudo sha256sum "$TGT" | cut -d' ' -f1)
+    PHYS=$(sudo filefrag -v -b4096 "$TGT" 2>/dev/null | awk '/^ +0:/ {gsub(/[.:]/,"",$4); print $4}')
+    if [ -z "$PHYS" ]; then
+        echo "SAT|FS=$FS|ERROR=no_extent"
+        exit 0
+    fi
+    sudo umount "$MNT"
+
+    # Subblock SUB starts at PHYS*4096 + SUB*255: 239 data then 16
+    # parity. A stride of 7 keeps each flip in its own symbol.
+    BASE=$(( PHYS * 4096 + SUB * 255 ))
+    k=0
+    while [ "$k" -lt "$NSYM" ]; do
+        OFF=$(( BASE + k * 7 ))
+        printf '\xFF' | sudo dd of="$DEV" bs=1 seek="$OFF" count=1 conv=notrunc 2>/dev/null
+        k=$(( k + 1 ))
+    done
+    sudo sync
+    echo "SAT|FS=$FS|PHYS=$PHYS|SUBBLOCK=$SUB|SYMBOLS=$NSYM|BASE=$BASE"
+
+    sudo mount -t beamfs "$DEV" "$MNT" 2>/dev/null
+    sudo dmesg -C
+    # The mount alone does not guarantee a disk read: the page cache can
+    # still hold the pre-corruption copy, and beamfs would serve that
+    # without ever decoding the damaged block.
+    echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
+    sync
+
+    sudo cat "$TGT" > /dev/null 2>/tmp/sat-read.err
+    RC=$?
+    ERRTXT=$(head -1 /tmp/sat-read.err 2>/dev/null)
+    echo "SAT|FS=$FS|READ_RC=$RC|READ_ERR=${ERRTXT:-none}"
+
+    HASH_POST=$(sudo sha256sum "$TGT" 2>/dev/null | cut -d' ' -f1)
+    echo "SAT|FS=$FS|HASH_PRE=$HASH_PRE|HASH_POST=${HASH_POST:-none}"
+    echo "SAT|FS=$FS|DMESG_UNCORRECTABLE=$(sudo dmesg | grep -c uncorrectable)"
+    sudo dmesg | grep uncorrectable | head -2 | sed "s|^|SAT\|FS=$FS\|DMESG=|"
+
+    sudo umount "$MNT" 2>/dev/null
+    if [ -x /tmp/decode_raf_journal.py ] && [ -x /tmp/sat_check.py ]; then
+        sudo /tmp/decode_raf_journal.py "$DEV" --json > /tmp/sat-journal.json 2>/dev/null
+        /tmp/sat_check.py /tmp/sat-journal.json "$PHYS" "$SUB"
+    else
+        echo "SAT|JOURNAL_ERROR=helpers_absent"
+    fi
+
+    sudo mount -t beamfs "$DEV" "$MNT" 2>/dev/null
+    sudo rm -f "$TGT" 2>/dev/null
+    ;;
+
 perf)
     # Performance characterisation of one filesystem.
     #
