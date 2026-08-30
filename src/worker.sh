@@ -2184,6 +2184,90 @@ tindirect_test)
     fi
     ;;
 
+conservation)
+    # Space accounting checks.
+    #
+    # The rest of the harness verifies resilience: a file is corrupted,
+    # and its hash is compared before and after. That says nothing about
+    # whether the filesystem's own bookkeeping survived. A block leaked
+    # on delete leaves every hash intact and every verdict green while
+    # the volume quietly fills with blocks no file owns.
+    #
+    # That is not hypothetical. beamfs_free_data_blocks walked direct
+    # and single indirect only, so any file over 2 MiB leaked its deeper
+    # levels on plain delete -- found on 2026-08-30 by reading the code,
+    # not by the harness, which had run for weeks without noticing.
+    #
+    # Four checks, each at a depth the allocator actually reaches:
+    #
+    #   direct     12 blocks     45 KiB
+    #   indirect   524 blocks    2 MiB
+    #   dindirect  262668        1 GiB   <- where the leak lived
+    #   tindirect                512 GiB
+    #
+    # A create/delete cycle must return the free count exactly. Partial
+    # truncate must free the difference and no more: freeing too much is
+    # worse than leaking, since it hands live blocks to the allocator.
+    FS="$ARG2"
+    VD="$ARG3"
+    DEV="/dev/$VD"
+    MNT="/mnt/test-$FS"
+
+    if [ "$FS" != "beamfs" ]; then
+        echo "CONS|FS=$FS|SKIP=beamfs_only"
+        exit 0
+    fi
+
+    free_blocks() {
+        sudo umount "$MNT" 2>/dev/null
+        sudo dmesg -C 2>/dev/null
+        sudo mount -t beamfs "$DEV" "$MNT" 2>/dev/null
+        sudo dmesg | grep -oE 'free=[0-9]+' | tail -1 | cut -d= -f2
+    }
+
+    sudo mkfs.beamfs "$DEV" >/dev/null 2>&1
+    sudo mkdir -p "$MNT"
+
+    # Sizes chosen to land one level deeper each time.
+    for spec in "direct:32K" "indirect:1M" "dindirect:8M" "deep:32M"; do
+        level="${spec%%:*}"
+        size="${spec##*:}"
+
+        BASE=$(free_blocks)
+        sudo dd if=/dev/urandom of="$MNT/c.bin" bs="$size" count=1 2>/dev/null
+        sudo sync
+        WITH=$(free_blocks)
+        sudo rm -f "$MNT/c.bin"
+        sudo sync
+        AFTER=$(free_blocks)
+
+        USED=$(( BASE - WITH ))
+        LEAK=$(( BASE - AFTER ))
+        echo "CONS|FS=$FS|LEVEL=$level|SIZE=$size|USED=$USED|LEAKED=$LEAK|VERDICT=$([ "$LEAK" -eq 0 ] && echo PASS || echo FAIL)"
+    done
+
+    # Partial truncate: keep 1 MiB of an 8 MiB file. The blocks freed
+    # must match the blocks the discarded tail occupied -- no fewer, and
+    # no more.
+    BASE=$(free_blocks)
+    sudo dd if=/dev/urandom of="$MNT/t.bin" bs=1M count=8 2>/dev/null
+    sudo sync
+    FULL=$(free_blocks)
+    sudo truncate -s 1M "$MNT/t.bin"
+    sudo sync
+    CUT=$(free_blocks)
+    sudo rm -f "$MNT/t.bin"
+    sudo sync
+    GONE=$(free_blocks)
+
+    USED8=$(( BASE - FULL ))
+    FREED=$(( CUT - FULL ))
+    KEPT=$(( BASE - CUT ))
+    echo "CONS|FS=$FS|LEVEL=truncate|USED_8M=$USED8|FREED_ON_CUT=$FREED|STILL_HELD=$KEPT|LEAKED=$(( BASE - GONE ))|VERDICT=$([ "$(( BASE - GONE ))" -eq 0 ] && [ "$FREED" -gt 0 ] && echo PASS || echo FAIL)"
+
+    sudo umount "$MNT" 2>/dev/null
+    ;;
+
 saturation)
     # Active falsification protocol for Theorem v2.2.
     #
