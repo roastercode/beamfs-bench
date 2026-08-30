@@ -2184,6 +2184,98 @@ tindirect_test)
     fi
     ;;
 
+perf)
+    # Performance characterisation of one filesystem.
+    #
+    # What a reviewer asks of a filesystem that adds forward error
+    # correction is not "is it slower" -- of course it is -- but by how
+    # much, on which operation, and how predictably. So each dimension
+    # is measured separately rather than through one aggregate number:
+    #
+    #   seqwrite / seqread   throughput, the bulk case
+    #   randwrite / randread IOPS and latency percentiles, the case
+    #                        where read-modify-write costs most
+    #   fsync                the durability path, where v2 measured an
+    #                        8x median overhead and where the RS encode
+    #                        sits on the critical path
+    #
+    # Percentiles matter more than means here. beamfs trades median
+    # latency for a tighter distribution -- v2 measured a 1.74x p50/p99
+    # spread against 5.00x for ext4 -- and a mean hides exactly that.
+    #
+    # CPU time is captured alongside: on slow media the RS encode hides
+    # behind the device, on fast media it is the cost.
+    FS="$ARG2"
+    VD="$ARG3"
+    DEV="/dev/$VD"
+    MNT="/mnt/test-$FS"
+    SIZE="${PERF_SIZE:-64M}"
+    RUNTIME="${PERF_RUNTIME:-20}"
+
+    if ! mountpoint -q "$MNT" 2>/dev/null; then
+        echo "PERF|FS=$FS|ERROR=not_mounted"
+        exit 0
+    fi
+
+    # In the correcting regime the injector runs throughout, so what is
+    # measured is the filesystem doing the work it exists for rather
+    # than the format alone. Disarmed again at the end so a nominal run
+    # that follows is not contaminated.
+    if [ "${PERF_REGIME:-nominal}" = "correcting" ] && sudo test -d "$INJECTOR_DBG"; then
+        [ -n "${PROB:-}" ] && echo "${PROB}" | sudo tee ${INJECTOR_DBG}/probability >/dev/null
+        echo 1 | sudo tee ${INJECTOR_DBG}/hook_blk >/dev/null
+        echo 1 | sudo tee ${INJECTOR_DBG}/enabled >/dev/null
+    fi
+
+    sudo rm -f "$MNT/perf.bin" 2>/dev/null
+
+    run_fio() {
+        local name="$1" rw="$2" bs="$3" extra="$4"
+        local out
+        out=$(sudo fio --name="$name" --filename="$MNT/perf.bin" \
+                --rw="$rw" --bs="$bs" --size="$SIZE" \
+                --runtime="$RUNTIME" --time_based=1 \
+                --ioengine=psync --direct=0 --group_reporting=1 \
+                --percentile_list=50:95:99:99.9 \
+                --output-format=json $extra 2>/dev/null)
+        echo "$out"
+    }
+
+    emit() {
+        local op="$1" json="$2" mode="$3"
+        # mode is read or write; fio reports both, we take the active one
+        local bw iops p50 p95 p99 p999 usr sys
+        bw=$(echo "$json"   | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['jobs'][0]['$mode']['bw_bytes'])" 2>/dev/null)
+        iops=$(echo "$json" | python3 -c "import sys,json;d=json.load(sys.stdin);print(round(d['jobs'][0]['$mode']['iops'],1))" 2>/dev/null)
+        p50=$(echo "$json"  | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['jobs'][0]['$mode']['clat_ns']['percentile']['50.000000'])" 2>/dev/null)
+        p95=$(echo "$json"  | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['jobs'][0]['$mode']['clat_ns']['percentile']['95.000000'])" 2>/dev/null)
+        p99=$(echo "$json"  | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['jobs'][0]['$mode']['clat_ns']['percentile']['99.000000'])" 2>/dev/null)
+        p999=$(echo "$json" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['jobs'][0]['$mode']['clat_ns']['percentile']['99.900000'])" 2>/dev/null)
+        usr=$(echo "$json"  | python3 -c "import sys,json;d=json.load(sys.stdin);print(round(d['jobs'][0]['usr_cpu'],2))" 2>/dev/null)
+        sys=$(echo "$json"  | python3 -c "import sys,json;d=json.load(sys.stdin);print(round(d['jobs'][0]['sys_cpu'],2))" 2>/dev/null)
+        echo "PERF|FS=$FS|REGIME=${PERF_REGIME:-nominal}|OP=$op|BW_BYTES=${bw:-0}|IOPS=${iops:-0}|P50_NS=${p50:-0}|P95_NS=${p95:-0}|P99_NS=${p99:-0}|P999_NS=${p999:-0}|USR_CPU=${usr:-0}|SYS_CPU=${sys:-0}"
+    }
+
+    emit seqwrite  "$(run_fio seqwrite  write     1M '')" write
+    emit seqread   "$(run_fio seqread   read      1M '')" read
+    emit randwrite "$(run_fio randwrite randwrite 4k '')" write
+    emit randread  "$(run_fio randread  randread  4k '')" read
+    emit fsyncwrite "$(run_fio fsyncw   randwrite 4k '--fsync=1')" write
+
+    # Write amplification: how many device bytes a logical byte costs.
+    # INLINE stores 3824 logical bytes in a 4096-byte block, so 7% is
+    # structural before any read-modify-write on partial writes.
+    SECT_BEFORE=$(awk -v d="$VD" '$3==d {print $10}' /proc/diskstats 2>/dev/null)
+    sudo dd if=/dev/urandom of="$MNT/amp.bin" bs=4k count=2048 conv=fsync 2>/dev/null
+    SECT_AFTER=$(awk -v d="$VD" '$3==d {print $10}' /proc/diskstats 2>/dev/null)
+    WRITTEN=$(( (SECT_AFTER - SECT_BEFORE) * 512 ))
+    echo "PERF|FS=$FS|REGIME=${PERF_REGIME:-nominal}|OP=amplification|LOGICAL_BYTES=8388608|DEVICE_BYTES=${WRITTEN:-0}"
+    if [ "${PERF_REGIME:-nominal}" = "correcting" ] && sudo test -d "$INJECTOR_DBG"; then
+        echo 0 | sudo tee ${INJECTOR_DBG}/enabled >/dev/null
+    fi
+    sudo rm -f "$MNT/amp.bin" "$MNT/perf.bin" 2>/dev/null
+    ;;
+
 tindirect_cleanup)
     # Args: ARG2=tag
     TS_TAG="$ARG2"

@@ -542,6 +542,67 @@ fn ingest_flip_events(db: &Path, run_id: i64, r: &AttackRecord) -> Result<usize>
 /// The directory name carries the timestamp (beamfs-bench-multifs-YYYYMMDD-HHMMSS),
 /// which is the only date available for archived runs: nothing else was
 /// recorded at the time.
+/// Open a run row for a performance campaign.
+///
+/// ingest_run() takes AttackRecords and derives the probability from
+/// them; a perf campaign has no attack records, so it opens its own row
+/// and hands the id to ingest_perf.
+///
+/// # Errors
+///
+/// Returns an error if the insert fails or the id cannot be read back.
+pub fn open_perf_run(db: &Path, command: &str, bench_version: &str) -> Result<i64> {
+    let sql = format!(
+        "INSERT INTO run (started_at, command, bench_version) \
+         VALUES (datetime('now'), {}, {}); SELECT last_insert_rowid();",
+        sql_str(Some(command)),
+        sql_str(Some(bench_version)),
+    );
+    exec(db, &sql)?.trim().parse().context("perf run id")
+}
+
+/// Store a set of performance measurements against a run.
+///
+/// Every field the worker reports is kept, including the ones no view
+/// reads today: p95 and p999 bound the tail, iops separates a slow
+/// device from a slow filesystem, and user CPU separates the RS encode
+/// from kernel overhead. Discarding them at ingest would mean rerunning
+/// a campaign to answer a question the data already contained.
+///
+/// # Errors
+///
+/// Returns an error if the insert fails.
+pub fn ingest_perf(db: &Path, run_id: i64, rows: &[crate::perf::PerfRow]) -> Result<usize> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let mut sql = String::new();
+    for r in rows {
+        use std::fmt::Write as _;
+        let _ = write!(
+            sql,
+            "INSERT INTO perf (run_id, fs, regime, op, bw_bytes, iops, \
+             p50_ns, p95_ns, p99_ns, p999_ns, usr_cpu, sys_cpu, \
+             logical_bytes, device_bytes) VALUES ({run_id}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});",
+            sql_str(Some(&r.fs)),
+            sql_str(Some(&r.regime)),
+            sql_str(Some(&r.op)),
+            sql_num(i64::try_from(r.bw_bytes).ok()),
+            r.iops,
+            sql_num(i64::try_from(r.p50_ns).ok()),
+            sql_num(i64::try_from(r.p95_ns).ok()),
+            sql_num(i64::try_from(r.p99_ns).ok()),
+            sql_num(i64::try_from(r.p999_ns).ok()),
+            r.usr_cpu,
+            r.sys_cpu,
+            sql_num(i64::try_from(r.logical_bytes).ok()),
+            sql_num(i64::try_from(r.device_bytes).ok()),
+        );
+    }
+    exec(db, &sql).context("insert perf rows")?;
+    Ok(rows.len())
+}
+
 pub fn ingest_run_dir(db: &Path, run_dir: &Path, campaign_id: Option<i64>) -> Result<i64> {
     let records_path = run_dir.join("all-records.txt");
     let text = std::fs::read_to_string(&records_path)

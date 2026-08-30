@@ -63,6 +63,7 @@ mod ssh;
 mod synthesis;
 mod tindirect;
 mod usb_health;
+mod perf;
 
 const BEAMFS_BENCH_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -250,6 +251,33 @@ enum Command {
         injector: String,
     },
 
+    /// Performance characterisation of every filesystem, in two
+    /// regimes.
+    ///
+    /// `nominal` measures what the on-disk format costs; `correcting`
+    /// measures the filesystem while the injector runs, which is what
+    /// it costs doing the work it exists for. The gap between them is
+    /// what resilience costs, and it is the figure that sizes a
+    /// deployment -- a system under radiation keeps serving while
+    /// upsets arrive.
+    Perf {
+        /// Which regimes to measure. Nominal first so a correcting run
+        /// cannot leave the injector armed under a clean measurement.
+        #[arg(long, default_value = "nominal,correcting")]
+        regimes: String,
+        /// Injection probability in ppm, correcting regime only.
+        #[arg(long, default_value_t = 100_000)]
+        prob: u32,
+        /// Seconds per fio job.
+        #[arg(long, default_value_t = 20)]
+        runtime: u32,
+        /// Working set per job.
+        #[arg(long, default_value = "64M")]
+        size: String,
+        /// Fault injector. Only "emufi" is supported.
+        #[arg(long, default_value = "emufi")]
+        injector: String,
+    },
     /// multifs + forensic capture (dmesg + `RadFI` + ftrace + perf + cluster).
     /// Three scopes available (--scope=quick|standard|full).
     Analyse {
@@ -630,6 +658,52 @@ fn main() {
 
     let rc = match cli.command {
         Command::Version => cmd_version(),
+
+        Command::Perf { regimes, prob, runtime, size, injector } => {
+            std::env::set_var("PERF_RUNTIME", runtime.to_string());
+            std::env::set_var("PERF_SIZE", &size);
+
+            let usb_verdicts = match usb_health::run() {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("beamfs-bench: USB pre-flight failed: {e:#}");
+                    std::process::exit(1);
+                }
+            };
+            let fs_mapping = usb_health::build_fs_mapping(&usb_verdicts);
+            if fs_mapping.is_empty() {
+                eprintln!("beamfs-bench: no healthy USB slots, perf cannot run");
+                std::process::exit(1);
+            }
+            let cfg = perf::PerfConfig {
+                fs_list: fs_mapping,
+                ssh_user: "hpcadmin".to_string(),
+                master_ip: "192.168.56.11".to_string(),
+                ssh_key_path: format!("{}/.ssh/hpclab_admin",
+                                      std::env::var("HOME").unwrap_or_default()),
+                injector,
+                prob,
+                regimes: regimes.split(',').map(|r| r.trim().to_string()).collect(),
+            };
+            match perf::run(&cfg) {
+                Ok(rows) => {
+                    let db = db::default_db_path();
+                    let cmd = std::env::args().collect::<Vec<_>>().join(" ");
+                    match db::init(&db)
+                        .and_then(|()| db::open_perf_run(&db, &cmd, env!("CARGO_PKG_VERSION")))
+                        .and_then(|id| db::ingest_perf(&db, id, &rows))
+                    {
+                        Ok(n) => println!("\n  {n} measurements stored in {}", db.display()),
+                        Err(e) => eprintln!("\n  {} measurements, ingest failed: {e:#}", rows.len()),
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("beamfs-bench: perf failed: {e:#}");
+                    1
+                }
+            }
+        }
 
         Command::Multifs { auto_confirm, dry_run, injector } => {
             // L5 : also probe USB health when Multifs is invoked standalone.

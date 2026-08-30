@@ -316,3 +316,83 @@ SELECT run_id, fs, region, zone,
        SUM(over_budget)    AS n_over_budget
 FROM flip_event
 GROUP BY run_id, fs, region, zone;
+
+-- ---------------------------------------------------------------- perf
+-- Performance characterisation, one row per filesystem per operation.
+--
+-- A filesystem that adds forward error correction is slower; the
+-- question a reviewer asks is by how much, on which operation, and how
+-- predictably. Hence one row per operation rather than an aggregate,
+-- and percentiles rather than means: beamfs trades median latency for a
+-- tighter distribution -- v2 measured a 1.74x p50/p99 spread against
+-- 5.00x for ext4 -- and a mean hides exactly that.
+--
+-- CPU time sits alongside throughput because on slow media the RS
+-- encode hides behind the device, while on fast media it is the cost.
+CREATE TABLE IF NOT EXISTS perf (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id        INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
+    fs            TEXT NOT NULL,
+    op            TEXT NOT NULL,   -- seqwrite | seqread | randwrite
+                                   -- | randread | fsyncwrite
+    /*
+     * nominal   : no injection, the cost of the format
+     * correcting: injection active, the cost of the format plus the
+     *             cost of doing the work it exists for
+     *
+     * The gap between the two is what resilience actually costs. A
+     * system under radiation keeps serving while upsets arrive, so the
+     * correcting figure is the one that sizes a deployment; the
+     * nominal figure alone would understate it. Measured accidentally
+     * on 2026-08-30 when a perf run overlapped an injection run: system
+     * CPU reached 94-97% on reads, against a much lower nominal load.
+     */
+    regime        TEXT NOT NULL DEFAULT 'nominal',
+    bw_bytes      INTEGER,         -- bytes per second
+    iops          REAL,
+    p50_ns        INTEGER,
+    p95_ns        INTEGER,
+    p99_ns        INTEGER,
+    p999_ns       INTEGER,
+    usr_cpu       REAL,            -- percent
+    sys_cpu       REAL,
+
+    -- Write amplification, filled on the 'amplification' pseudo-op:
+    -- how many device bytes one logical byte costs. INLINE stores 3824
+    -- logical bytes in a 4096-byte block, so 7% is structural before
+    -- any read-modify-write on partial writes.
+    logical_bytes INTEGER,
+    device_bytes  INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_perf_run ON perf(run_id, fs);
+
+-- Ratio against a baseline filesystem, which is what a reader wants:
+-- not "beamfs writes at 700 KB/s" but "beamfs writes at 0.4x ext4".
+CREATE VIEW IF NOT EXISTS v_perf_ratio AS
+SELECT p.run_id, p.op, p.fs,
+       p.bw_bytes, p.p50_ns, p.p99_ns,
+       ROUND(CAST(b.bw_bytes AS REAL) / NULLIF(p.bw_bytes, 0), 2) AS bw_slowdown,
+       ROUND(CAST(p.p50_ns  AS REAL) / NULLIF(b.p50_ns, 0),  2) AS p50_ratio,
+       ROUND(CAST(p.p99_ns  AS REAL) / NULLIF(b.p99_ns, 0),  2) AS p99_ratio,
+       ROUND(CAST(p.p99_ns  AS REAL) / NULLIF(p.p50_ns, 0),  2) AS spread
+FROM perf p
+JOIN perf b ON b.run_id = p.run_id AND b.op = p.op
+             AND b.fs = 'ext4' AND b.regime = p.regime
+WHERE p.fs != 'ext4';
+
+-- What resilience costs: the same filesystem, same operation, with and
+-- without the injector running.
+CREATE VIEW IF NOT EXISTS v_perf_regime_gap AS
+SELECT n.run_id, n.fs, n.op,
+       n.bw_bytes AS bw_nominal,
+       c.bw_bytes AS bw_correcting,
+       ROUND(CAST(n.bw_bytes AS REAL) / NULLIF(c.bw_bytes, 0), 2) AS bw_cost,
+       n.p99_ns   AS p99_nominal,
+       c.p99_ns   AS p99_correcting,
+       ROUND(CAST(c.p99_ns AS REAL) / NULLIF(n.p99_ns, 0), 2) AS p99_cost,
+       n.sys_cpu  AS cpu_nominal,
+       c.sys_cpu  AS cpu_correcting
+FROM perf n
+JOIN perf c ON c.run_id = n.run_id AND c.fs = n.fs AND c.op = n.op
+WHERE n.regime = 'nominal' AND c.regime = 'correcting';
