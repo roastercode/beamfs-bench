@@ -385,6 +385,18 @@ fn probe_slot(d: &DiskEntry) -> SlotVerdict {
         };
     }
 
+    // Wipe last, so every slot enters the run in the same state and the
+    // probes above have already established the medium responds. A stick
+    // that passes read and canary but cannot hold a wipe is failing in a
+    // way that would otherwise surface mid-campaign.
+    if let Err(e) = dd_wipe_and_verify(&resolved) {
+        return SlotVerdict::Dead {
+            slot: d.target.clone(),
+            source: d.source.clone(),
+            reason: format!("wipe failed: {e}"),
+        };
+    }
+
     let serial = lsblk_serial(&resolved).unwrap_or_else(|_| "?".to_string());
 
     SlotVerdict::Healthy {
@@ -423,6 +435,71 @@ fn blockdev_getsize64(dev: &Path) -> Result<u64> {
 
 /// Read 1 MiB from `dev` at `skip_mib` MiB offset, into /dev/null.
 /// Used to detect read-side faults (bad sectors, USB disconnects).
+/// Wipe the first megabytes of a slot, then confirm the wipe took.
+///
+/// Two reasons this is not optional before a campaign.
+///
+/// A stick carries whatever the previous run left on it -- a
+/// superblock, a partition table, a filesystem that mount(8) might
+/// still recognise. A run that starts from a residue is not measuring
+/// the format it thinks it is, and the residue differs per stick, which
+/// is the isolation-of-factors problem in miniature.
+///
+/// And a wipe that reports success without landing is how a failing
+/// stick hides: FC07216732067 accepted writes, returned zero, and had
+/// changed nothing on the medium. Reading the pattern back is what
+/// separates a stick that wrote from one that said it did.
+fn dd_wipe_and_verify(dev: &Path) -> Result<()> {
+    const WIPE_MIB: u64 = 8;
+
+    let out = Command::new("sudo")
+        .arg("-n")
+        .arg("dd")
+        .arg("if=/dev/zero")
+        .arg(format!("of={}", dev.display()))
+        .arg("bs=1M")
+        .arg(format!("count={WIPE_MIB}"))
+        .arg("conv=fsync")
+        .arg("status=none")
+        .output()
+        .context("spawn sudo dd (wipe)")?;
+    if !out.status.success() {
+        return Err(anyhow!(
+            "dd wipe of={} : {}",
+            dev.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+
+    // Read the first megabyte back. Anything non-zero means the write
+    // was acknowledged but not applied.
+    let out = Command::new("sudo")
+        .arg("-n")
+        .arg("dd")
+        .arg(format!("if={}", dev.display()))
+        .arg("of=/dev/stdout")
+        .arg("bs=1M")
+        .arg("count=1")
+        .arg("status=none")
+        .output()
+        .context("spawn sudo dd (wipe verify)")?;
+    if !out.status.success() {
+        return Err(anyhow!(
+            "dd verify if={} : {}",
+            dev.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    if out.stdout.iter().any(|b| *b != 0) {
+        return Err(anyhow!(
+            "{} still holds data after wipe: the medium acknowledged a write it did not apply",
+            dev.display()
+        ));
+    }
+
+    Ok(())
+}
+
 fn dd_read_probe(dev: &Path, skip_mib: u64) -> Result<()> {
     let out = Command::new("sudo")
         .arg("-n")

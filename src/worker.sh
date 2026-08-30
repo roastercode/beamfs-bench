@@ -2184,6 +2184,243 @@ tindirect_test)
     fi
     ;;
 
+indparity)
+    # Exercise the three indirection-parity modes against a flipped
+    # pointer, and report what each one did about it.
+    #
+    # An indirect block is 512 raw pointers with no room for a
+    # checksum. The bounds check in beamfs_check_intermediate_block
+    # catches a pointer that leaves the data range or lands on a free
+    # block; it cannot catch one that lands in range on an allocated
+    # block, which is the section 6.1 residual and the reason this
+    # feature exists.
+    #
+    # So the test corrupts a pointer twice over. A high byte sends it
+    # out of range, which even mode=none catches -- that is the control,
+    # and it proves the harness is hitting an indirect block at all. A
+    # low byte keeps it in range, which is the case only parity sees.
+    #
+    # Expected: none detects the first and misses the second; crc
+    # detects both and fails the read cleanly; rs corrects both and the
+    # file reads through intact.
+    FS="$ARG2"
+    VD="$ARG3"
+    DEV="/dev/$VD"
+    MNT="/mnt/test-$FS"
+
+    if [ "$FS" != "beamfs" ]; then
+        echo "INDP|FS=$FS|SKIP=beamfs_only"
+        exit 0
+    fi
+
+    sudo mkdir -p "$MNT"
+
+    for mode in none crc rs; do
+        for kind in out_of_range in_range; do
+            sudo umount "$MNT" 2>/dev/null
+            sudo mkfs.beamfs --indirect-parity="$mode" "$DEV" >/dev/null 2>&1
+            sudo mount -t beamfs "$DEV" "$MNT" 2>/dev/null || {
+                echo "INDP|MODE=$mode|KIND=$kind|ERROR=mount_failed"
+                continue
+            }
+
+            # 4 MiB reaches past the twelve direct blocks, so the file
+            # owns at least one indirect block.
+            sudo dd if=/dev/urandom of="$MNT/t.bin" bs=1M count=4 2>/dev/null
+            sudo sync
+            HASH_PRE=$(sudo sha256sum "$MNT/t.bin" | cut -d' ' -f1)
+
+            EXT12=$(sudo filefrag -v -b4096 "$MNT/t.bin" 2>/dev/null | \
+                    awk '/^ +12:/ {gsub(/[.:]/,"",$4); print $4}')
+            sudo umount "$MNT"
+            if [ -z "$EXT12" ]; then
+                echo "INDP|MODE=$mode|KIND=$kind|ERROR=no_indirect_extent"
+                continue
+            fi
+
+            # Sequential allocation puts the indirect block immediately
+            # before the block it first points at.
+            IBLK=$(( EXT12 - 1 ))
+            if [ "$kind" = "out_of_range" ]; then
+                # byte 3 of pointer 0: a high bit sends it past s_nblocks
+                OFF=$(( IBLK * 4096 + 3 ))
+            else
+                # byte 0 of pointer 0: stays inside the data range, so
+                # the bounds check has nothing to say about it
+                OFF=$(( IBLK * 4096 ))
+            fi
+            printf '\xFF' | sudo dd of="$DEV" bs=1 seek="$OFF" count=1 \
+                    conv=notrunc 2>/dev/null
+            sudo sync
+
+            sudo dmesg -C
+            echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
+            sudo mount -t beamfs "$DEV" "$MNT" 2>/dev/null
+            HASH_POST=$(sudo sha256sum "$MNT/t.bin" 2>/dev/null | cut -d' ' -f1)
+            READ_RC=$?
+
+            DETECT=$(sudo dmesg | grep -ciE "CRC mismatch|indirect block .* uncorrectable")
+            BOUNDS=$(sudo dmesg | grep -ci "corrupted indirect pointer")
+
+            if [ -n "$HASH_POST" ] && [ "$HASH_PRE" = "$HASH_POST" ]; then
+                OUTCOME=corrected
+            elif [ "$DETECT" -gt 0 ]; then
+                OUTCOME=detected
+            elif [ "$BOUNDS" -gt 0 ]; then
+                OUTCOME=bounds_caught
+            else
+                OUTCOME=silent
+            fi
+
+            echo "INDP|MODE=$mode|KIND=$kind|IBLK=$IBLK|READ_RC=$READ_RC|PARITY_HITS=$DETECT|BOUNDS_HITS=$BOUNDS|OUTCOME=$OUTCOME"
+            sudo umount "$MNT" 2>/dev/null
+        done
+    done
+
+    # Space each mode costs, read straight off the layout rather than
+    # computed: a claim about overhead should come from the filesystem
+    # that was built, not from arithmetic in a paper.
+    for mode in none crc rs; do
+        sudo mkfs.beamfs --indirect-parity="$mode" "$DEV" >/dev/null 2>&1
+        sudo dmesg -C
+        sudo mount -t beamfs "$DEV" "$MNT" 2>/dev/null
+        TOT=$(sudo dmesg | grep -oE 'blocks=[0-9]+' | tail -1 | cut -d= -f2)
+        FREE=$(sudo dmesg | grep -oE 'free=[0-9]+' | tail -1 | cut -d= -f2)
+        echo "INDP|MODE=$mode|TOTAL_BLOCKS=${TOT:-0}|USABLE_BLOCKS=${FREE:-0}|OVERHEAD_BLOCKS=$(( ${TOT:-0} - ${FREE:-0} ))"
+        sudo umount "$MNT" 2>/dev/null
+    done
+    ;;
+
+capacity)
+    # Establish the real limits by measurement, not by reading the
+    # format constants.
+    #
+    # The header says a volume can reach ~7.4 TiB and a file ~478 GiB.
+    # Those are addressing ceilings derived from BEAMFS_INDIRECT_PTRS
+    # and the bitmap block count; neither has ever been reached on
+    # hardware. What this measures is what the lab can actually
+    # demonstrate -- 14.6 GiB USB slots -- and says so, rather than
+    # quoting a constant as if it were a result.
+    #
+    # Sparse files are measured alongside real ones: truncate -s
+    # allocates nothing, so the gap between the two separates what the
+    # filesystem can address from what it can store. A reviewer will
+    # ask which number a claim refers to.
+    FS="$ARG2"
+    VD="$ARG3"
+    DEV="/dev/$VD"
+    MNT="/mnt/test-$FS"
+
+    if [ "$FS" != "beamfs" ]; then
+        echo "CAP|FS=$FS|SKIP=beamfs_only"
+        exit 0
+    fi
+
+    sudo mkdir -p "$MNT" /mnt/tiny
+
+    DEV_BYTES=$(sudo blockdev --getsize64 "$DEV" 2>/dev/null)
+    echo "CAP|FS=$FS|DEVICE_BYTES=$DEV_BYTES"
+
+    # --- Smallest volume that formats and mounts -------------------
+    # Binary search rather than trusting the "need >= 16 blocks" check
+    # in mkfs: formatting and mounting are different bars.
+    LO=4; HI=256; SMALLEST=0
+    while [ "$LO" -le "$HI" ]; do
+        MID=$(( (LO + HI) / 2 ))
+        rm -f /tmp/tiny.img
+        dd if=/dev/zero of=/tmp/tiny.img bs=4096 count="$MID" 2>/dev/null
+        if sudo mkfs.beamfs /tmp/tiny.img >/dev/null 2>&1 &&
+           sudo mount -o loop -t beamfs /tmp/tiny.img /mnt/tiny 2>/dev/null; then
+            sudo umount /mnt/tiny 2>/dev/null
+            SMALLEST=$MID; HI=$(( MID - 1 ))
+        else
+            LO=$(( MID + 1 ))
+        fi
+    done
+    rm -f /tmp/tiny.img
+    echo "CAP|FS=$FS|MIN_BLOCKS=$SMALLEST|MIN_BYTES=$(( SMALLEST * 4096 ))"
+
+    # --- Real volume ------------------------------------------------
+    # The mount line carries the counts, so clear the ring buffer
+    # BEFORE mounting, not after: the previous version wiped the very
+    # message it went on to parse.
+    sudo umount "$MNT" 2>/dev/null
+    sudo rm -f "$MNT"/real.bin "$MNT"/sparse.bin 2>/dev/null
+    sudo mkfs.beamfs "$DEV" >/dev/null 2>&1
+    sudo dmesg -C
+    sudo mount -t beamfs "$DEV" "$MNT" 2>/dev/null
+    TOTAL=$(sudo dmesg | grep -oE 'blocks=[0-9]+' | tail -1 | cut -d= -f2)
+    FREE0=$(sudo dmesg | grep -oE 'free=[0-9]+' | tail -1 | cut -d= -f2)
+    INODES=$(sudo dmesg | grep -oE 'inodes=[0-9]+' | tail -1 | cut -d= -f2)
+    echo "CAP|FS=$FS|TOTAL_BLOCKS=$TOTAL|FREE_BLOCKS=$FREE0|INODES=$INODES"
+    echo "CAP|FS=$FS|OVERHEAD_BLOCKS=$(( TOTAL - FREE0 ))"
+
+    # --- Sparse vs real at each indirection boundary ----------------
+    # 45 KiB direct, 2 MiB single, 1 GiB double. The sparse case shows
+    # whether the size is addressable; the real case whether it can be
+    # written and read back.
+    for spec in "direct:40K" "indirect:1900K" "dindirect:512M"; do
+        level="${spec%%:*}"
+        size="${spec##*:}"
+
+        sudo truncate -s "$size" "$MNT/sparse.bin" 2>/dev/null
+        SPARSE_RC=$?
+        SPARSE_SZ=$(sudo stat -c%s "$MNT/sparse.bin" 2>/dev/null)
+        sudo rm -f "$MNT/sparse.bin"
+
+        sudo umount "$MNT" 2>/dev/null
+        sudo dmesg -C
+        sudo mount -t beamfs "$DEV" "$MNT" 2>/dev/null
+        B0=$(sudo dmesg | grep -oE 'free=[0-9]+' | tail -1 | cut -d= -f2)
+        # bs=1M count=N rather than one huge block: a 512 MiB bs
+        # allocates the whole buffer up front and shows no progress,
+        # which is indistinguishable from a hang.
+        # Write in 1 MiB units so progress is visible; sizes under a
+        # megabyte go through bs=1K instead of rounding up to one.
+        case "$size" in
+            *K) BS=1K ; CNT="${size%K}" ;;
+            *M) BS=1M ; CNT="${size%M}" ;;
+            *G) BS=1M ; CNT=$(( ${size%G} * 1024 )) ;;
+            *)  BS=1M ; CNT=1 ;;
+        esac
+        echo "CAP|FS=$FS|LEVEL=$level|WRITING=${CNT}x${BS}"
+        sudo rm -f "$MNT/real.bin"
+        # status=progress writes bytes, rate and elapsed time to stderr
+        # as it goes. Without it a long write is indistinguishable from
+        # a hang, and the operator has no way to tell whether to wait.
+        sudo dd if=/dev/urandom of="$MNT/real.bin" bs="$BS" count="$CNT" \
+                status=progress
+        REAL_RC=$?
+        sudo sync
+        REAL_SZ=$(sudo stat -c%s "$MNT/real.bin" 2>/dev/null)
+        H1=$(sudo sha256sum "$MNT/real.bin" 2>/dev/null | cut -c1-16)
+        sudo umount "$MNT" 2>/dev/null
+        sudo dmesg -C
+        sudo mount -t beamfs "$DEV" "$MNT" 2>/dev/null
+        B1=$(sudo dmesg | grep -oE 'free=[0-9]+' | tail -1 | cut -d= -f2)
+        H2=$(sudo sha256sum "$MNT/real.bin" 2>/dev/null | cut -c1-16)
+        sudo rm -f "$MNT/real.bin"; sudo sync
+
+        echo "CAP|FS=$FS|LEVEL=$level|SIZE=$size|SPARSE_RC=$SPARSE_RC|SPARSE_BYTES=${SPARSE_SZ:-0}|REAL_RC=$REAL_RC|REAL_BYTES=${REAL_SZ:-0}|BLOCKS=$(( B0 - B1 ))|INTACT=$([ -n "$H2" ] && [ "$H1" = "$H2" ] && echo 1 || echo 0)"
+    done
+
+    # --- Inode exhaustion -------------------------------------------
+    # The count is fixed at mkfs, so a volume can run out of inodes
+    # with space to spare. That is a deployment constraint worth a
+    # number rather than a footnote.
+    sudo umount "$MNT" 2>/dev/null
+    sudo mount -t beamfs "$DEV" "$MNT" 2>/dev/null
+    N=0
+    while sudo touch "$MNT/f$N" 2>/dev/null; do
+        N=$(( N + 1 ))
+        [ "$N" -gt 2000 ] && break
+    done
+    echo "CAP|FS=$FS|FILES_CREATED=$N|INODES_DECLARED=${INODES:-0}"
+    sudo rm -f "$MNT"/f* 2>/dev/null
+
+    sudo umount "$MNT" 2>/dev/null
+    ;;
+
 conservation)
     # Space accounting checks.
     #
