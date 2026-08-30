@@ -2184,6 +2184,102 @@ tindirect_test)
     fi
     ;;
 
+xfstests)
+    # Run the kernel's own filesystem test suite against beamfs.
+    #
+    # Worth more than the checks written here, and by a wide margin: on
+    # 2026-08-30 two tests found four defects the local harness could
+    # not have found. rmdir walked the parent directory's blocks and so
+    # failed on everything; mkfs marked the canary block with an index
+    # computed from the wrong base and lost a block per format; a
+    # partial truncate freed an indirect block that still held live
+    # pointers, which the allocator then handed out as data, so a later
+    # read followed pointers into fsstress payload; and fsck read fast
+    # symlinks' inline targets as block numbers.
+    #
+    # None of them showed up in weeks of running the local scopes,
+    # because none of the local scopes empties a directory then removes
+    # it, or truncates partially at depth under concurrent load.
+    #
+    # The dispatch patch lives in the Yocto recipe, so it survives an
+    # image redeploy. Only local.config is written here, since the
+    # devices differ per node.
+    FS="$ARG2"
+    TEST_VD="$ARG3"
+    SCRATCH_VD="$ARG4"
+    GROUP="${XFSTESTS_GROUP:-}"
+    TESTS="${XFSTESTS_TESTS:-generic/001 generic/003 generic/013 generic/023}"
+
+    if [ "$FS" != "beamfs" ]; then
+        echo "XFS|FS=$FS|SKIP=beamfs_only"
+        exit 0
+    fi
+    if [ ! -x /usr/xfstests/check ]; then
+        echo "XFS|ERROR=suite_absent"
+        exit 0
+    fi
+
+    sudo mkdir -p /mnt/test /mnt/scratch
+    sudo umount /mnt/test /mnt/scratch 2>/dev/null
+
+    sudo tee /usr/xfstests/local.config >/dev/null <<CFG
+export FSTYP=beamfs
+export TEST_DEV=/dev/$TEST_VD
+export TEST_DIR=/mnt/test
+export SCRATCH_DEV=/dev/$SCRATCH_VD
+export SCRATCH_MNT=/mnt/scratch
+export MKFS_OPTIONS="${XFSTESTS_MKFS_OPTIONS:--N 16384}"
+export MOUNT_OPTIONS=""
+CFG
+
+    # TEST_DEV has to be mounted before check runs; SCRATCH_DEV is
+    # formatted and mounted by the suite itself, per test.
+    sudo mkfs.beamfs ${XFSTESTS_MKFS_OPTIONS:--N 16384} "/dev/$TEST_VD" >/dev/null 2>&1
+    sudo mount -t beamfs "/dev/$TEST_VD" /mnt/test 2>/dev/null || {
+        echo "XFS|ERROR=test_dev_mount_failed"
+        exit 0
+    }
+
+    sudo dmesg -C
+    cd /usr/xfstests
+
+    if [ -n "$GROUP" ]; then
+        OUT=$(sudo ./check -g "$GROUP" 2>&1)
+    else
+        OUT=$(sudo ./check $TESTS 2>&1)
+    fi
+
+    RAN=$(echo "$OUT"    | grep -oE "^Ran: .*" | sed "s/^Ran: //" | wc -w)
+    FAILED=$(echo "$OUT" | grep -oE "^Failures: .*" | sed "s/^Failures: //" | wc -w)
+    NOTRUN=$(echo "$OUT" | grep -oE "^Not run: .*" | sed "s/^Not run: //" | wc -w)
+    PASSED=$(( RAN - FAILED - NOTRUN ))
+
+    echo "XFS|RAN=$RAN|PASSED=$PASSED|FAILED=$FAILED|NOTRUN=$NOTRUN"
+
+    # Name them: a count says how it went, the names say what to look
+    # at. not-run is not failure -- it is a feature beamfs does not
+    # implement, and belongs in the paper's scope section rather than
+    # in a bug list.
+    for t in $(echo "$OUT" | grep -oE "^Failures: .*" | sed "s/^Failures: //"); do
+        echo "XFS|FAILED_TEST=$t"
+    done
+    echo "$OUT" | grep -oE "^[a-z]+/[0-9]+ +\[not run\].*" | while read -r l; do
+        echo "XFS|NOTRUN_TEST=$(echo "$l" | awk '{print $1}')|REASON=$(echo "$l" | sed 's/.*\[not run\] *//')"
+    done
+
+    # Timings, so a slow test is visible before it becomes a timeout.
+    echo "$OUT" | grep -oE "^[a-z]+/[0-9]+ +[0-9]+s" | while read -r l; do
+        echo "XFS|TEST=$(echo "$l" | awk '{print $1}')|SECONDS=$(echo "$l" | awk '{print $2}' | tr -d s)"
+    done
+
+    echo "XFS|DMESG_INCIDENTS=$(sudo dmesg | grep -ciE 'beamfs.*(corrupt|uncorrect|EIO|BUG|WARN)')"
+
+    sudo umount /mnt/test /mnt/scratch 2>/dev/null
+    # The last grep decides the exit status otherwise, and a clean run
+    # with nothing to report would look like a failure.
+    exit 0
+    ;;
+
 indparity)
     # Exercise the three indirection-parity modes against a flipped
     # pointer, and report what each one did about it.
