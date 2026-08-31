@@ -263,10 +263,31 @@ const CAMPAIGN_REMOTE: &str = "/tmp/emufi-campaign.bin";
 ///
 /// Returns the number of events generated.
 fn generate_campaign(ranges: &str, ssh: &SshTarget) -> Result<usize> {
-    let n = std::env::var("PHYSICS_EVENTS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(64);
+    // DEPLOYMENT, when set, derives the count from flux, cross-section
+    // and exposure time rather than taking it as given. A campaign
+    // then reads as "six months in a linac vault" instead of "64
+    // flips", which is the difference between a number an integrator
+    // can act on and one that only compares runs of this harness.
+    //
+    // PHYSICS_EVENTS still wins when DEPLOYMENT is absent: an operator
+    // who wants exactly 64 asks for 64.
+    let exposure = crate::dose::Exposure::from_env();
+    let n = if let Some(e) = exposure {
+        let c = e.event_count();
+        println!("[multifs] exposure: {}", e.manifest_line(0.0));
+        if e.deployment.is_estimated() {
+            println!(
+                "[multifs] WARN : the flux factor for {} is an estimate, not a site survey",
+                e.deployment.as_str()
+            );
+        }
+        usize::try_from(c).unwrap_or(usize::MAX)
+    } else {
+        std::env::var("PHYSICS_EVENTS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(64)
+    };
     let energy = std::env::var("PHYSICS_ENERGY_MEV").unwrap_or_else(|_| "14.0".into());
     let seed = std::env::var("PHYSICS_SEED").unwrap_or_else(|_| "3735928559".into());
 

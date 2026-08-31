@@ -64,6 +64,7 @@ mod synthesis;
 mod tindirect;
 mod usb_health;
 mod perf;
+mod dose;
 
 const BEAMFS_BENCH_VERSION: &str = env!("CARGO_PKG_VERSION");
 

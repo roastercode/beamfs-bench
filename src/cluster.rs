@@ -65,6 +65,11 @@ pub fn worker_cmd(injector: &str, action_args: &str) -> String {
         "FLIP_WIDTH",
         "MAX_FLIPS",                 // u64, injection budget (emufi 0.6.0+)
         "INJECT_SCOPE",              // "targeted" (default) or "uniform"
+        "DEPLOYMENT",                // named environment; derives the event
+                                     // count from flux and exposure time
+        "EXPOSURE_HOURS",            // f64, hours of modelled exposure
+        "EXPOSURE_BYTES",            // u64, medium under exposure
+        "SIGMA_CM2_PER_BIT",         // f64, measured SEU cross-section
         "FIXED_DOSE",                // 1 = every filtered bio injected until
         "PHYSICS_DRIVEN",            // 1 = placement from the generated
                                      // campaign in /tmp/emufi-campaign.bin
