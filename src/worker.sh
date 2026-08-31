@@ -2184,6 +2184,53 @@ tindirect_test)
     fi
     ;;
 
+rsbench)
+    # What the codec costs, with and without the emulator.
+    #
+    # Every other performance figure this harness produces contains the
+    # medium, the emulator and the codec at once, and cannot say which
+    # it is measuring. On this lab that ambiguity was total: beamfs
+    # writes at 1.8 MB/s on a USB stick and 1.5 MB/s on an SSD good for
+    # 700 MB/s, so the medium is plainly not the limit -- but nothing
+    # separated TCG emulation from Reed-Solomon.
+    #
+    # Two measurements settle it. The in-kernel one runs the codec the
+    # filesystem actually calls, inside the guest, so it is the ceiling
+    # beamfs cannot exceed here. The native one runs the same
+    # arithmetic on the host, and the ratio is the emulation factor --
+    # which is what lets a figure from this lab be read as a property
+    # of beamfs rather than of QEMU.
+    #
+    # The native encode is the trustworthy half. Its syndrome routine
+    # is a straightforward implementation and is not the optimised one
+    # in lib/reed_solomon, so the decode ratio should be read as an
+    # upper bound rather than a measurement.
+    ITERS="${RSBENCH_ITERS:-2000}"
+
+    # sudo test, not [ -r ]: /sys/kernel/debug is drwx------ root, so
+    # an unprivileged readability check fails on a file that is there
+    # and readable to the account that will actually read it.
+    if ! sudo test -r /sys/kernel/debug/beamfs/rs_bench; then
+        echo "RSB|ERROR=debugfs_absent"
+        exit 0
+    fi
+
+    echo "$ITERS" | sudo tee /sys/kernel/debug/beamfs/rs_bench_iters >/dev/null 2>&1
+    sudo cat /sys/kernel/debug/beamfs/rs_bench 2>/dev/null | while read -r l; do
+        echo "RSB|WHERE=guest|$l"
+    done
+
+    # The native half needs a compiler on whichever machine is running
+    # this; the guest images do not carry one. Absence is reported, not
+    # worked around, because a missing emulation factor is better than
+    # an invented one.
+    # The guest half stops here. Compiling and running the reference
+    # implementation inside the guest would measure the emulator
+    # twice: the images do carry gcc, and the first version of this
+    # labelled the result "native", which it was not. The host half is
+    # the orchestrator's job, where native means native.
+    ;;
+
 xfstests)
     # Run the kernel's own filesystem test suite against beamfs.
     #
