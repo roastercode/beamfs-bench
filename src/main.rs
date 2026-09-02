@@ -59,6 +59,7 @@ mod multifs;
 mod pipeline;
 mod regression_check;
 mod host_auth;
+mod scrub;
 mod ssh;
 mod synthesis;
 mod tindirect;
@@ -362,6 +363,19 @@ enum Command {
         /// Fault injector. Only "emufi" is supported.
         #[arg(long, default_value = "emufi")]
         injector: String,
+    },
+
+    /// Test G - scrubber under dose: does it repair, and does its rate
+    /// follow what it finds? Observes without reading the data, so only
+    /// the scrubber can act.
+    Scrub {
+        /// Deployment whose exposure sets the injection size.
+        #[arg(long, default_value = "medical-linac-vault")]
+        deployment: String,
+
+        /// Sweeps to observe after injection.
+        #[arg(long, default_value_t = 12)]
+        sweeps: u64,
     },
 
     /// Test C - bit-rot offline (dd random on offline partition, then read).
@@ -785,6 +799,15 @@ fn main() {
                 Ok(rc) => rc,
                 Err(e) => {
                     eprintln!("beamfs-bench: crash failed: {e:#}");
+                    1
+                }
+            }
+        }
+        Command::Scrub { deployment, sweeps } => {
+            match scrub::run_cli(&deployment, sweeps) {
+                Ok(rc) => rc,
+                Err(e) => {
+                    eprintln!("beamfs-bench: scrub failed: {e:#}");
                     1
                 }
             }
