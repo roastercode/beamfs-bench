@@ -124,6 +124,32 @@ filesystem under test on the node that coordinates the test.
 The sticks vary by a factor of nineteen in write throughput \(em 2.7 to
 51.7 MB/s measured on 2026-09-11 \(em which matters for any comparison
 spread across them.
+.SH THE BELL
+A full pipeline runs for the better part of an hour and ends in a
+terminal nobody is watching. Every subcommand that does real work rings
+when it is done, every four seconds, until Return is pressed.
+.PP
+The sound is compiled into the binary. What is needed is a player, and
+one of these has to be on PATH:
+.PP
+.RS
+.nf
+paplay      pulseaudio-utils, and what pipewire-pulse answers
+pw-play     pipewire
+aplay       alsa-utils
+play        sox
+ffplay      ffmpeg
+.fi
+.RE
+.PP
+With none of them installed the run is silent and nothing else changes.
+It also stays quiet when standard input is not a terminal, and when
+.B BEAMFS_NO_BELL
+is set.
+.PP
+When this is packaged, one of those players belongs in the dependencies
+as a suggests rather than a requires: the tool works without one.
+
 .SH FILES
 .TP
 .I Documentation/runs/manifest-*.json

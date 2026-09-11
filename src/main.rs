@@ -41,6 +41,7 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+mod bell;
 mod analyse;
 mod bitrot;
 mod bootstrap;
@@ -671,6 +672,10 @@ fn main() {
         }
     }
 
+    // Noted before the match consumes it: version returns at once and
+    // ringing after it would only be noise.
+    let worth_ringing = !matches!(cli.command, Command::Version);
+
     let rc = match cli.command {
         Command::Version => cmd_version(),
 
@@ -862,5 +867,12 @@ fn main() {
             }
         }
     };
+
+    // Ring, except after version, which returns at once and would only
+    // be noise. A full pipeline runs for the better part of an hour and
+    // ends in a terminal nobody is watching.
+    if worth_ringing {
+        bell::ring_until_acknowledged();
+    }
     std::process::exit(rc);
 }
