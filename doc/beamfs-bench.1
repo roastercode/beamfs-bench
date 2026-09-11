@@ -1,0 +1,147 @@
+.TH BEAMFS\-BENCH 1 "2026-09-11" "beamfs development tools" "beamfs development tools"
+.SH NAME
+beamfs\-bench \- measure beamfs under fault injection, and prove the lab
+was in a known state when it did
+.SH SYNOPSIS
+.B beamfs\-bench
+.RI [ options ]
+.I command
+.SH DESCRIPTION
+Runs resilience and performance measurements against beamfs on a cluster
+of four VMs, under live fault injection, and writes a GPG\-signed
+manifest of what ran and what the lab looked like while it ran.
+.PP
+The manifest is the point as much as the numbers. A measurement whose
+conditions nobody recorded cannot be defended, and a filesystem that
+claims to survive radiation has to be able to say what it survived and
+on what. Every run writes one to
+.I Documentation/runs/
+in the yocto layer, signed.
+.PP
+Before any measurement the pipeline verifies the lab itself: the VM disk
+architecture against the isolation contract, every USB stick by writing
+to it and reading it back, the source tree against its mirror, and the
+code through every static analyser installed. A run that starts on an
+unverified lab produces numbers nobody can use \(em on 2026-09-11 the USB
+pre\-flight caught a stick that acknowledged a 4 MiB write at 42 MB/s
+and left 213009 bytes of the old contents in place. It was one of five
+slots feeding the multi\-filesystem comparison.
+.SH COMMANDS
+.TP
+.B full
+The whole pipeline: lab verification, VM lifecycle, cluster bootstrap,
+then
+.B analyse
+at full scope. One command, autonomous. Must exit 0 before any commit or
+push.
+.TP
+.B multifs
+Head\-to\-head comparison of several filesystems under live injection,
+two filesystems and three probabilities by default. Requires the device
+validation prompt, or
+.BR \-\-auto\-confirm .
+.TP
+.B perf
+Performance characterisation of every filesystem, in two regimes.
+.TP
+.B analyse
+multifs plus forensic capture: dmesg, the injector's counters, ftrace,
+perf and the cluster state. Three scopes through
+.BR \-\-scope=quick|standard|full .
+.TP
+.B metadata
+Test A. Attacks the metadata specifically \(em superblock, inode bitmap,
+journal \(em rather than waiting for random injection to reach it.
+.TP
+.B crash
+Test B. Crash consistency: the VM is destroyed mid\-write and remounted.
+.TP
+.B bitrot
+Test C. Offline bit\-rot: random bytes written to an unmounted
+partition, then read back.
+.TP
+.B fsck
+Test D. What the offline checker makes of a filesystem after a panic.
+.TP
+.B tindirect
+Test F. Triple\-indirect addressing round trip: sparse writes across the
+dindirect\-to\-tindirect frontier, then sync, drop_caches, remount and a
+byte\-identical read. No injection; this one validates the addressing
+arithmetic and its bounds checks.
+.TP
+.B scrub
+Measures the scrubber itself rather than the read path.
+.TP
+.B mega
+Test E. Everything above into one tarball under
+.IR /tmp ,
+with the Yocto build logs, the kernel config, modinfo, the git HEADs and
+the post\-attack forensics. For handing an investigation to somebody
+else, or to yourself in a month.
+.TP
+.B db
+The measurement database: retroactive ingest of archived runs, and
+queries over the accumulated series.
+.TP
+.B version
+Version and build info.
+.SH OPTIONS
+.TP
+.B \-\-auto\-confirm
+Skip the device validation prompt. For scripted use only: the prompt
+exists because the commands below write to raw block devices by path,
+and a wrong path destroys whatever is on it.
+.TP
+.B \-\-scope=quick|standard|full
+How much forensic capture
+.B analyse
+collects.
+.TP
+.B \-\-injector \fIname\fR
+Which fault injector to drive.
+.TP
+.B \-\-flip\-width \fIn\fR
+Bits flipped per event, for multi\-bit upsets.
+.TP
+.B \-\-skip\-bitbake
+Use the image already built rather than rebuilding. Only when nothing in
+the sources has changed: the lockstep check will catch a tree that has,
+but not a stale image.
+.TP
+.B \-\-accept\-regression
+Let the pipeline continue past a result worse than the stored one.
+Records the acceptance in the manifest.
+.SH THE LAB
+Four VMs on the hpcnet network: one master at 192.168.56.10 and three
+compute nodes at .11 through .13. The master carries a rootfs and the
+cluster /data and nothing else; each compute node carries those two plus
+five USB sticks and a scratch image.
+.PP
+That split is the isolation contract, and the pipeline refuses to start
+if it does not hold. A USB attached to the master would put a
+filesystem under test on the node that coordinates the test.
+.PP
+The sticks vary by a factor of nineteen in write throughput \(em 2.7 to
+51.7 MB/s measured on 2026-09-11 \(em which matters for any comparison
+spread across them.
+.SH FILES
+.TP
+.I Documentation/runs/manifest-*.json
+What ran, on what, with what. GPG\-signed, one per run.
+.TP
+.I /tmp/beamfs-bench-current-run/
+The run in progress.
+.SH EXIT STATUS
+.TP
+.B 0
+Everything ran and nothing regressed.
+.TP
+.B 3
+A gate refused: the lab, the code analysis, or a regression against the
+stored result. The pipeline stops rather than measuring on a foundation
+it cannot vouch for.
+.SH SEE ALSO
+.BR beamfs-xfstests (1),
+.BR fsck.beamfs (8)
+.SH AUTHOR
+Aurelien Desbrieres <aurelien@hackers.camp>
