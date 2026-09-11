@@ -532,9 +532,8 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     pipeline::record(&mut manifest, "0.3_bitbake", 0);
 
     // Phase 0.4
-    let (ref_ko, beamfs_sha) = pipeline::extract_reference_ko_sha()
+    let beamfs_sha = pipeline::canonical_image_sha()
         .map_err(|e| pipeline::fail(&mut manifest, "0.4_extract_ref", &e))?;
-    manifest.reference_ko_sha256.clone_from(&ref_ko);
     manifest.canonical_beamfs_sha256 = beamfs_sha;
     pipeline::record(&mut manifest, "0.4_extract_ref", 0);
 
@@ -554,9 +553,9 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     pipeline::record(&mut manifest, "0.6_ssh_ready", 0);
 
     // Phase 0.7
-    let in_vm_shas = pipeline::verify_module_identity_in_vm(&ref_ko)
+    let stamps = pipeline::verify_kernel_identity_in_vm()
         .map_err(|e| pipeline::fail(&mut manifest, "0.7_identity", &e))?;
-    manifest.in_vm_ko_sha256 = in_vm_shas;
+    manifest.in_vm_kernel_stamp = stamps;
     pipeline::record(&mut manifest, "0.7_identity", 0);
 
     // Phase 1 lifecycle (legacy bring_cluster_up) is fully absorbed by

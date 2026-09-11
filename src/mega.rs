@@ -280,8 +280,7 @@ pub fn run(injector: &str) -> Result<i32> {
         pipeline::record(&mut manifest, "0.2_lockstep", 0);
         pipeline::bitbake_image_to(false, Some(&build_dir))?;
         pipeline::record(&mut manifest, "0.3_bitbake", 0);
-        let (ref_ko, beamfs_sha) = pipeline::extract_reference_ko_sha()?;
-        manifest.reference_ko_sha256.clone_from(&ref_ko);
+        let beamfs_sha = pipeline::canonical_image_sha()?;
         manifest.canonical_beamfs_sha256 = beamfs_sha;
         pipeline::record(&mut manifest, "0.4_extract_ref", 0);
         let resolved_vda = pipeline::redeploy_4_vms()?;
@@ -289,8 +288,8 @@ pub fn run(injector: &str) -> Result<i32> {
         pipeline::record(&mut manifest, "0.5_redeploy", 0);
         lifecycle::wait_ssh_ready_parallel()?;
         pipeline::record(&mut manifest, "0.6_ssh_ready", 0);
-        let in_vm_shas = pipeline::verify_module_identity_in_vm(&ref_ko)?;
-        manifest.in_vm_ko_sha256 = in_vm_shas;
+        let stamps = pipeline::verify_kernel_identity_in_vm()?;
+        manifest.in_vm_kernel_stamp = stamps;
         pipeline::record(&mut manifest, "0.7_identity", 0);
         let bootstrap_nodes: Vec<cluster::ClusterNode> = cluster::CLUSTER_NODES.iter()
             .map(|(ip, hostname)| cluster::ClusterNode {

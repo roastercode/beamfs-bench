@@ -73,13 +73,6 @@ const YOCTO_ONLY_SOURCES: &[&str] = &[
 const POKY_DIR:       &str = "/home/aurelien/yocto/poky";
 const BUILD_DIR_NAME: &str = "build-qemu-arm64";
 const CANONICAL_BEAMFS: &str = "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.beamfs";
-const KO_BUILD_DIR:   &str = "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/work/qemuarm64-poky-linux/hpc-arm64-research-beamfs/1.0/rootfs/lib/modules";
-/// Where beamfs.ko sits inside a node, relative to the modules
-/// directory for the running kernel. The kernel version is resolved on
-/// the node with `uname -r` rather than pinned here: it was pinned to
-/// 7.0.9 and silently broke the identity check the moment the target
-/// moved to 7.1.3, reporting a missing file instead of a version skew.
-const KO_NAME_IN_FS:  &str = "updates/beamfs.ko";
 
 const VM_NAMES: &[&str] = &["beamfs-master", "beamfs-compute01", "beamfs-compute02", "beamfs-compute03"];
 const VM_IPS:   &[&str] = &["192.168.56.10", "192.168.56.11", "192.168.56.12", "192.168.56.13"];
@@ -94,8 +87,8 @@ pub struct PipelineManifest {
     pub commit_bench:      String,
     pub source_sha256:     Vec<(String, String)>,
     pub canonical_beamfs_sha256: String,
-    pub reference_ko_sha256:   String,
-    pub in_vm_ko_sha256:   Vec<(String, String)>,
+    pub reference_image_sha256:   String,
+    pub in_vm_kernel_stamp:   Vec<(String, String)>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resolved_vda_paths: BTreeMap<String, String>,
     pub phases:            Vec<(String, String, i32)>,
@@ -249,36 +242,22 @@ pub fn bitbake_image_to(skip: bool, log_dir: Option<&Path>) -> Result<()> {
 // ---------------------------------------------------------------------
 // Phase 0.4
 // ---------------------------------------------------------------------
-pub fn extract_reference_ko_sha() -> Result<(String, String)> {
-    println!("[pipeline 0.4] extract reference beamfs.ko sha256 from rootfs build dir");
-    // The Gentoo host kernel doesn't include beamfs.ko, so we can't loop-mount
-    // a .beamfs image. Read the .ko directly from the Yocto rootfs build dir,
-    // which Yocto preserves (no rm_work) after image generation. The path is
-    // lib/modules/<kver>/updates/beamfs.ko; we discover <kver> via read_dir.
-    let modules_dir = std::path::Path::new(KO_BUILD_DIR);
-    if !modules_dir.exists() {
-        bail!("KO build dir missing: {} (rm_work enabled? rerun bitbake)", modules_dir.display());
-    }
-    let mut ko_candidate: Option<PathBuf> = None;
-    for entry in std::fs::read_dir(modules_dir)
-        .with_context(|| format!("read_dir {}", modules_dir.display()))?
-    {
-        let entry = entry?;
-        let kver_dir = entry.path();
-        if !kver_dir.is_dir() { continue; }
-        let candidate = kver_dir.join("updates").join("beamfs.ko");
-        if candidate.exists() {
-            ko_candidate = Some(candidate);
-            break;
-        }
-    }
-    let ko_path = ko_candidate
-        .ok_or_else(|| anyhow::anyhow!("beamfs.ko not found under {}/<kver>/updates/", modules_dir.display()))?;
-    let ko_sha = sha256_file(&ko_path).with_context(|| format!("hash {}", ko_path.display()))?;
-    let beamfs_sha = sha256_file(Path::new(CANONICAL_BEAMFS)).context("hash canonical .beamfs")?;
-    println!("  reference ko sha256:     {ko_sha}");
+/// The hash of the image the nodes will boot.
+///
+/// This used to also dig a beamfs.ko out of the rootfs build directory
+/// and hash it, for a check that compared it against each node. The
+/// filesystem is builtin -- CONFIG_BEAMFS_FS=y -- so that .ko is
+/// installed by the build and loaded by nobody; hashing it said nothing
+/// about the running kernel.
+///
+/// What matters is the image, and redeploy_4_vms verifies it lands on
+/// every node byte for byte.
+pub fn canonical_image_sha() -> Result<String> {
+    println!("[pipeline 0.4] hash the canonical image");
+    let beamfs_sha = sha256_file(Path::new(CANONICAL_BEAMFS))
+        .context("hash canonical .beamfs")?;
     println!("  canonical beamfs sha256: {beamfs_sha}");
-    Ok((ko_sha, beamfs_sha))
+    Ok(beamfs_sha)
 }
 
 // ---------------------------------------------------------------------
@@ -423,21 +402,55 @@ pub fn redeploy_4_vms() -> Result<BTreeMap<String, String>> {
 // ---------------------------------------------------------------------
 // Phase 0.7
 // ---------------------------------------------------------------------
-pub fn verify_module_identity_in_vm(reference_ko_sha: &str) -> Result<Vec<(String, String)>> {
-    println!("[pipeline 0.7] verify in-VM beamfs.ko sha256 == reference on 4 nodes");
-    let mut shas = Vec::new();
+/// Confirm each node is running the beamfs that was built.
+///
+/// This used to hash /lib/modules/<kver>/updates/beamfs.ko on every
+/// node and compare it to the one in the rootfs build directory. That
+/// stopped meaning anything when the filesystem became builtin:
+/// CONFIG_BEAMFS_FS=y, beamfs is listed in modules.builtin, lsmod shows
+/// nothing -- and the .ko is still installed by the build, never loaded
+/// by anyone. The check hashed a dead file and passed, whatever the
+/// kernel was actually executing. A green light on the wrong evidence
+/// is worse than no light.
+///
+/// What identifies the running code is the image the node booted, and
+/// redeploy_4_vms already verifies that byte for byte against the
+/// canonical .beamfs before the nodes start. What is left to confirm
+/// here is that the node came up on it, which is what the kernel build
+/// stamp in /proc/version says: it changes with every kernel build, so
+/// two nodes agreeing on it agree on the kernel, and disagreeing with
+/// the host's build means a node booted something else.
+pub fn verify_kernel_identity_in_vm() -> Result<Vec<(String, String)>> {
+    println!("[pipeline 0.7] verify the kernel build stamp on 4 nodes");
+    let mut stamps = Vec::new();
+    let mut first: Option<String> = None;
+
     for (i, ip) in VM_IPS.iter().enumerate() {
-        let cmd = format!("sudo sha256sum /lib/modules/$(uname -r)/{KO_NAME_IN_FS}");
-        let out = ssh_exec(ip, &cmd).with_context(|| format!("ssh {ip} sha256"))?;
-        let sha = out.split_whitespace().next().unwrap_or("").to_string();
-        if sha != reference_ko_sha {
-            bail!("identity FAIL on {} ({}): in-VM={sha}  reference={reference_ko_sha}",
-                  VM_NAMES[i], ip);
+        let out = ssh_exec(ip, "cat /proc/version")
+            .with_context(|| format!("ssh {ip} /proc/version"))?;
+        let stamp = out.trim().to_string();
+
+        // beamfs has to be in this kernel, not beside it.
+        let builtin = ssh_exec(ip, "grep -c '^fs/beamfs' /lib/modules/$(uname -r)/modules.builtin || true")
+            .unwrap_or_default();
+        if builtin.trim() == "0" {
+            bail!("{} ({ip}): beamfs is not builtin in the running kernel",
+                  VM_NAMES[i]);
         }
-        shas.push((VM_NAMES[i].to_string(), sha));
-        println!("  {} ({ip}) match", VM_NAMES[i]);
+
+        match &first {
+            None => first = Some(stamp.clone()),
+            Some(f) if *f != stamp => {
+                bail!("kernel skew: {} ({ip}) booted\n  {stamp}\nwhile {} booted\n  {f}",
+                      VM_NAMES[i], VM_NAMES[0]);
+            }
+            _ => {}
+        }
+
+        stamps.push((VM_NAMES[i].to_string(), stamp));
+        println!("  {} ({ip}) builtin, same build as {}", VM_NAMES[i], VM_NAMES[0]);
     }
-    Ok(shas)
+    Ok(stamps)
 }
 
 // ---------------------------------------------------------------------
@@ -504,8 +517,8 @@ pub fn build_initial_manifest() -> Result<PipelineManifest> {
         source_sha256: Vec::new(),
         resolved_vda_paths: BTreeMap::new(),
         canonical_beamfs_sha256: String::new(),
-        reference_ko_sha256:   String::new(),
-        in_vm_ko_sha256:       Vec::new(),
+        reference_image_sha256:   String::new(),
+        in_vm_kernel_stamp:       Vec::new(),
         phases:                Vec::new(),
         overall_rc:            -1,
     })
