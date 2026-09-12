@@ -431,7 +431,10 @@ pub fn verify_kernel_identity_in_vm() -> Result<Vec<(String, String)>> {
         let stamp = out.trim().to_string();
 
         // beamfs has to be in this kernel, not beside it.
-        let builtin = ssh_exec(ip, "grep -c '^fs/beamfs' /lib/modules/$(uname -r)/modules.builtin || true")
+        // The path in modules.builtin is kernel/fs/beamfs/beamfs.ko, not
+        // fs/beamfs: anchoring at the start matched nothing and failed
+        // a cluster that was correctly built.
+        let builtin = ssh_exec(ip, "grep -c '/beamfs/' /lib/modules/$(uname -r)/modules.builtin || true")
             .unwrap_or_default();
         if builtin.trim() == "0" {
             bail!("{} ({ip}): beamfs is not builtin in the running kernel",
