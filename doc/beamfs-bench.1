@@ -87,6 +87,11 @@ queries over the accumulated series.
 Version and build info.
 .SH OPTIONS
 .TP
+.B \-\-no\-bell
+Finish without ringing. Accepted on any subcommand. See
+.B THE BELL
+below.
+.TP
 .B \-\-auto\-confirm
 Skip the device validation prompt. For scripted use only: the prompt
 exists because the commands below write to raw block devices by path,
@@ -143,9 +148,14 @@ ffplay      ffmpeg
 .RE
 .PP
 With none of them installed the run is silent and nothing else changes.
-It also stays quiet when standard input is not a terminal, and when
+It also stays quiet when standard input is not a terminal -- under a
+scheduler, or through a pipe -- because there would be nobody to press
+Return and the loop would not end. Pass
+.B \-\-no\-bell
+for a single run, accepted on any subcommand, or set
 .B BEAMFS_NO_BELL
-is set.
+for a whole shell, which is what to use when one run is chained into
+another or when the sound would come out of the wrong machine.
 .PP
 When this is packaged, one of those players belongs in the dependencies
 as a suggests rather than a requires: the tool works without one.

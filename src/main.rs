@@ -83,6 +83,18 @@ struct Cli {
     #[command(subcommand)]
     command: Command,
 
+    /// Stay quiet when the run finishes.
+    ///
+    /// A campaign runs for the better part of an hour and ends in a
+    /// terminal nobody is watching, so it rings until Return is
+    /// pressed. Pass this when the run is chained into another, or
+    /// driven by a scheduler, or reached over a connection where the
+    /// sound would come out of the wrong machine.
+    ///
+    /// BEAMFS_NO_BELL does the same for a whole shell.
+    #[arg(long, global = true)]
+    no_bell: bool,
+
     /// emufi 0.3.2 attack-tuning flags. v0.8.0 expansion.
     /// Every flag here is GLOBAL: accepted on any subcommand, applied
     /// uniformly. Each flag, when present, is exported to the process
@@ -870,7 +882,7 @@ fn main() {
     // Ring, except after version, which returns at once and would only
     // be noise. A full pipeline runs for the better part of an hour and
     // ends in a terminal nobody is watching.
-    if worth_ringing {
+    if worth_ringing && !cli.no_bell {
         bell::ring_until_acknowledged();
     }
     std::process::exit(rc);
