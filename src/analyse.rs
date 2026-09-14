@@ -502,6 +502,22 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     }
 
     // ----------------------------------------------------------------
+    // ----------------------------------------------------------------
+    // Step 9b: one plain file with everything worth reading
+    // ----------------------------------------------------------------
+    //
+    // The run directory holds dozens of files and the tarball holds
+    // them again. Both are right for keeping and wrong for reading:
+    // whoever opens them reads the one they expect and concludes from
+    // the ones they did not.
+    match write_digest(&run_dir) {
+        Ok(p) => {
+            println!();
+            println!("[read]   {}", p.display());
+        }
+        Err(e) => println!("  could not write the digest: {e}"),
+    }
+
     // Step 10: Tarball (unless --no-tarball)
     // ----------------------------------------------------------------
     let mut archive_path: Option<PathBuf> = None;
@@ -634,6 +650,86 @@ fn verdict_is_pass(v: Option<&str>) -> bool {
         v,
         Some("RS_RECOVERED" | "RS_PASSTHROUGH" | "RS_FAIL_CLOSED")
     )
+}
+
+/// Everything worth reading from a run, as one file.
+///
+/// Not a replacement for the directory: it leaves out the volume
+/// images and the raw captures, which are what the archive is for.
+/// What it keeps is what a reader needs before deciding which of those
+/// to open.
+fn write_digest(run_dir: &Path) -> anyhow::Result<PathBuf> {
+    use std::io::Write;
+
+    let name = run_dir
+        .file_name()
+        .map(|x| x.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "run".into());
+    let out = PathBuf::from("/tmp").join(format!("{name}.md"));
+    let mut f = std::fs::File::create(&out)?;
+
+    writeln!(f, "# {name}")?;
+
+    let mut files: Vec<PathBuf> = std::fs::read_dir(run_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .collect();
+    files.sort();
+
+    for p in files {
+        let n = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+
+        // The bulk stays where it is: images, archives, raw captures.
+        if n.ends_with(".zst")
+            || n.ends_with(".img")
+            || n.ends_with(".tar.gz")
+            || n.ends_with(".trace")
+        {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&p) else { continue };
+        if body.trim().is_empty() {
+            continue;
+        }
+
+        writeln!(f, "\n## {n}\n```")?;
+
+        // A log repeating one sentence hundreds of times is a count,
+        // not a hundred lines.
+        let mut last = String::new();
+        let mut run = 0usize;
+        let mut written = 0usize;
+        for line in body.lines() {
+            let shape: String = line
+                .chars()
+                .map(|c| if c.is_ascii_digit() { '#' } else { c })
+                .collect();
+            if shape == last {
+                run += 1;
+                continue;
+            }
+            if run > 0 {
+                writeln!(f, "  ... x{}", run + 1)?;
+                run = 0;
+            }
+            last = shape;
+            writeln!(f, "{line}")?;
+            written += 1;
+            if written >= 80 {
+                writeln!(f, "  ... (truncated, the rest is in {n})")?;
+                break;
+            }
+        }
+        if run > 0 {
+            writeln!(f, "  ... x{}", run + 1)?;
+        }
+        writeln!(f, "```")?;
+    }
+
+    Ok(out)
 }
 
 pub fn make_tarball(run_dir: &Path) -> Result<PathBuf> {
