@@ -510,6 +510,11 @@ pub fn run(cfg: &AnalyseConfig) -> Result<i32> {
     // them again. Both are right for keeping and wrong for reading:
     // whoever opens them reads the one they expect and concludes from
     // the ones they did not.
+    match write_trace(&run_dir) {
+        Ok(p) => println!("[whole]  {}", p.display()),
+        Err(e) => println!("  could not write the trace: {e}"),
+    }
+
     match write_digest(&run_dir) {
         Ok(p) => {
             println!();
@@ -650,6 +655,50 @@ fn verdict_is_pass(v: Option<&str>) -> bool {
         v,
         Some("RS_RECOVERED" | "RS_PASSTHROUGH" | "RS_FAIL_CLOSED")
     )
+}
+
+/// Every text file of a run, concatenated, nothing dropped.
+///
+/// write_digest picks and cuts, which is right for a first read and
+/// wrong when the answer sits in a file it does not pick: on
+/// 2026-09-14 slabinfo held 413940 live buffer_heads after a volume
+/// was unmounted, three times what the volume has blocks, and no
+/// digest had ever shown it.
+fn write_trace(run_dir: &Path) -> anyhow::Result<PathBuf> {
+    use std::io::Write;
+
+    let name = run_dir
+        .file_name()
+        .map(|x| x.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "run".into());
+    let out = PathBuf::from("/tmp").join(format!("{name}.trace"));
+    let mut f = std::fs::File::create(&out)?;
+
+    let mut files: Vec<PathBuf> = std::fs::read_dir(run_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .collect();
+    files.sort();
+
+    for p in files {
+        let n = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        // Compressed images and archives belong where they are; the
+        // rest is text and stays whole.
+        if n.ends_with(".zst") || n.ends_with(".img") || n.ends_with(".tar.gz") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&p) else { continue };
+        if body.trim().is_empty() {
+            continue;
+        }
+        writeln!(f, "\n===== {n} ({} bytes) =====\n", body.len())?;
+        f.write_all(body.as_bytes())?;
+    }
+
+    Ok(out)
 }
 
 /// Everything worth reading from a run, as one file.
