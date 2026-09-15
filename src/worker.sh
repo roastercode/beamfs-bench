@@ -72,10 +72,23 @@ BEAMFS_INODE_COUNT="${BEAMFS_INODE_COUNT:-0}"
 # bit 4). Off by default so the canonical path stays byte-identical to v5.
 BEAMFS_DATA_CSUM="${BEAMFS_DATA_CSUM:-0}"
 
+# BEAMFS_INTERLEAVE: when 1, format with --interleave -- each codeword's
+# symbols spread across the block and the descriptor inside the coded
+# area. Nine consecutive bad bytes stop being fatal and 139 take their
+# place; measured on a live volume as a 100 kB file unreadable one way
+# and byte-for-byte intact the other.
+#
+# Off by default: the layout is incompatible, and a campaign comparing
+# the two has to ask for it rather than get it by surprise.
+BEAMFS_INTERLEAVE="${BEAMFS_INTERLEAVE:-0}"
+
 mkfs_beamfs_args() {
     local args="-s $BEAMFS_SCHEME -O per_inode_rs"
     if [ "$BEAMFS_DATA_CSUM" = "1" ]; then
         args="$args --data-csum"
+    fi
+    if [ "$BEAMFS_INTERLEAVE" = "1" ]; then
+        args="$args --interleave"
     fi
     if [ "$BEAMFS_INODE_COUNT" -gt 0 ] 2>/dev/null; then
         args="$args -N $BEAMFS_INODE_COUNT"

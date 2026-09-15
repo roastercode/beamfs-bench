@@ -109,6 +109,7 @@ pub fn worker_cmd(injector: &str, action_args: &str) -> String {
         "BEAMFS_SCHEME",             // string: "inline" | "inode-universal"
         "BEAMFS_INODE_COUNT",        // u64, total inodes at mkfs time (0=default 256)
         "BEAMFS_DATA_CSUM",          // "1" -> mkfs --data-csum (format-v6 DATA_CSUM)
+        "BEAMFS_INTERLEAVE",         // "1" -> mkfs --interleave (capsule layout)
         "BEAMFS_BENCH_FS_LIST",      // CSV: "beamfs,ext4,btrfs,xfs,ext2"
         "BEAMFS_BENCH_PROBS",        // CSV: "100,1000,10000,100000,500000,1000000"
     ] {
