@@ -158,9 +158,7 @@ pub fn wait_ssh_ready_parallel() -> Result<()> {
         let ip = ip.to_string();
         let progress = Arc::clone(&progress);
         let h = thread::spawn(move || -> Result<()> {
-            let key_path = std::env::var("HOME")
-                .map(|h| format!("{h}/.ssh/hpclab_admin"))
-                .context("HOME not set")?;
+            let key_path = crate::lab::ssh_key().to_string();
             let start = Instant::now();
             let timeout = Duration::from_secs(SSH_WAIT_TIMEOUT_SEC);
             let mut attempt = 0u32;

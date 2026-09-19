@@ -206,7 +206,7 @@ pub fn run(injector: &str) -> Result<i32> {
     let started_epoch = SystemTime::now().duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let run_dir = PathBuf::from(format!(
-        "/home/aurelien/git/yocto-beamfs/Documentation/runs/beamfs-bench-metadata-{stamp}"
+        "{}/beamfs-bench-metadata-{stamp}", crate::lab::runs_dir()
     ));
     fs::create_dir_all(&run_dir).context("create run dir")?;
     println!("Run dir: {}", run_dir.display());

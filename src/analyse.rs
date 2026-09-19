@@ -795,7 +795,7 @@ pub fn make_tarball(run_dir: &Path) -> Result<PathBuf> {
     {
         let host_dir = run_dir.join("host");
         let manifest_dir = std::path::Path::new(
-            "/home/aurelien/git/yocto-beamfs/Documentation/runs"
+            crate::lab::runs_dir()
         );
         if let Ok(entries) = std::fs::read_dir(manifest_dir) {
             // Bug C fix: filter STRICTLY on names ending in `.json` (not

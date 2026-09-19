@@ -54,6 +54,7 @@ mod devices;
 mod forensics;
 mod forensics_host;
 mod fsck;
+mod lab;
 mod lifecycle;
 mod mega;
 mod metadata;
@@ -736,10 +737,9 @@ fn main() {
             }
             let cfg = perf::PerfConfig {
                 fs_list: fs_mapping,
-                ssh_user: "hpcadmin".to_string(),
+                ssh_user: crate::lab::ssh_user().to_string(),
                 master_ip: "192.168.56.11".to_string(),
-                ssh_key_path: format!("{}/.ssh/hpclab_admin",
-                                      std::env::var("HOME").unwrap_or_default()),
+                ssh_key_path: crate::lab::ssh_key().to_string(),
                 injector,
                 prob,
                 regimes: regimes.split(',').map(|r| r.trim().to_string()).collect(),

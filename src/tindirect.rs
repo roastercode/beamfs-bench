@@ -58,10 +58,8 @@ pub struct TindirectObservation {
 }
 
 fn ssh_target() -> Result<SshTarget> {
-    let key = std::env::var("HOME")
-        .map(|h| format!("{h}/.ssh/hpclab_admin"))
-        .context("HOME not set")?;
-    Ok(SshTarget::new("hpcadmin", "192.168.56.11", &key))
+    let key = crate::lab::ssh_key().to_string();
+    Ok(SshTarget::new(crate::lab::ssh_user(), "192.168.56.11", &key))
 }
 
 fn ts_tag() -> String {
@@ -125,7 +123,7 @@ pub fn run(injector: &str) -> Result<i32> {
         .map_or(0, |d| d.as_secs());
     let ts_compact = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let run_dir = PathBuf::from(format!(
-        "/home/aurelien/git/yocto-beamfs/Documentation/runs/beamfs-bench-tindirect-{ts_compact}"
+        "{}/beamfs-bench-tindirect-{ts_compact}", crate::lab::runs_dir()
     ));
     fs::create_dir_all(&run_dir).context("create tindirect run dir")?;
     println!("Run dir: {}", run_dir.display());

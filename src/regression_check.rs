@@ -52,8 +52,6 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-const RUNS_DIR: &str = "/home/aurelien/git/yocto-beamfs/Documentation/runs";
-const BEAMFS_REPO: &str = "/home/aurelien/git/beamfs";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RegressionReport {
@@ -196,7 +194,7 @@ struct Baseline {
 }
 
 fn resolve_baseline() -> Result<Option<Baseline>> {
-    let runs_dir = PathBuf::from(RUNS_DIR);
+    let runs_dir = PathBuf::from(crate::lab::runs_dir());
     let baseline_txt = runs_dir.join("BASELINE.txt");
 
     // Pinned baseline takes precedence
@@ -244,7 +242,7 @@ fn load_manifest(path: &Path) -> Result<ManifestSnapshot> {
 
 fn git_upstream_sha() -> Result<String> {
     let out = std::process::Command::new("git").args([
-        "-C", BEAMFS_REPO, "rev-parse", "@{upstream}"
+        "-C", crate::lab::beamfs_repo(), "rev-parse", "@{upstream}"
     ]).output().context("git rev-parse upstream")?;
     if !out.status.success() {
         bail!("no upstream tracking on beamfs HEAD");

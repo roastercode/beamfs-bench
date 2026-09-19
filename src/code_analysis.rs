@@ -55,9 +55,6 @@ const FORBIDDEN_R16: &[(char, &str)] = &[
     ('\u{201D}', "right-double-quote U+201D"),
 ];
 
-const BEAMFS_REPO: &str = "/home/aurelien/git/beamfs";
-const YOCTO_REPO:  &str = "/home/aurelien/git/yocto-beamfs";
-const BENCH_REPO:  &str = "/home/aurelien/git/beamfs-bench";
 
 /// Tool execution outcome. `Skip` means the tool is unavailable on the
 /// host (logged but not fatal even at Tier 1, because partial coverage
@@ -231,7 +228,7 @@ pub fn run(mode: AnalysisMode, run_dir: &Path) -> Result<CodeAnalysisReport> {
 fn git_diff_base() -> Result<String> {
     // upstream of current branch
     let out = Command::new("git").args([
-        "-C", BEAMFS_REPO, "rev-parse", "--abbrev-ref", "@{upstream}"
+        "-C", crate::lab::beamfs_repo(), "rev-parse", "--abbrev-ref", "@{upstream}"
     ]).output().context("git rev-parse upstream")?;
     if !out.status.success() {
         bail!("no upstream tracking branch on beamfs HEAD");
@@ -243,18 +240,18 @@ fn files_in_scope(mode: AnalysisMode, diff_base: &str) -> Result<Vec<PathBuf>> {
     match mode {
         AnalysisMode::Incremental => {
             let out = Command::new("git").args([
-                "-C", BEAMFS_REPO, "diff", "--name-only", &format!("{diff_base}..HEAD")
+                "-C", crate::lab::beamfs_repo(), "diff", "--name-only", &format!("{diff_base}..HEAD")
             ]).output().context("git diff name-only")?;
             let raw = String::from_utf8_lossy(&out.stdout);
             Ok(raw.lines()
                 .filter(|f| f.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")) || f.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("h")) || f.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("rs")))
-                .map(|f| PathBuf::from(BEAMFS_REPO).join(f))
+                .map(|f| PathBuf::from(crate::lab::beamfs_repo()).join(f))
                 .filter(|p| p.exists())
                 .collect())
         }
         AnalysisMode::Full => {
             let mut v = Vec::new();
-            for repo in &[BEAMFS_REPO, BENCH_REPO] {
+            for repo in &[crate::lab::beamfs_repo(), crate::lab::bench_repo()] {
                 for entry in walkdir::WalkDir::new(repo).max_depth(4) {
                     let entry = entry?;
                     if let Some(ext) = entry.path().extension() {
@@ -403,12 +400,12 @@ fn which_tool(name: &str) -> Option<PathBuf> {
 fn which_kernel_source() -> Option<(PathBuf, Option<PathBuf>, &'static str)> {
     // 1. Try Yocto target (preferred)
     let yocto_ksrc = PathBuf::from(
-        "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/work-shared/qemuarm64/kernel-source",
+        crate::lab::kernel_source(),
     );
     if yocto_ksrc.join("Makefile").is_file() {
         // Find the most recent linux-mainline build dir for generated headers.
         let work_root = PathBuf::from(
-            "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/work/qemuarm64-poky-linux/linux-mainline",
+            &format!("{}/tmp/work/{}-poky-linux/linux-mainline", crate::lab::build_dir(), crate::lab::machine()),
         );
         let kbuild = if work_root.is_dir() {
             // Pick the highest-version subdirectory that contains build/include/generated/autoconf.h.
@@ -501,7 +498,7 @@ fn kernel_check_flags(
 
 /// Count diagnostics in stderr that originate from a beamfs source file
 /// (filename pattern <name>.c:<line>:<col>: -- when sparse/clang/gcc are
-/// invoked with `current_dir` = `BEAMFS_REPO`, paths are relative).
+/// invoked with `current_dir` = `crate::lab::beamfs_repo()`, paths are relative).
 fn count_beamfs_diagnostics(stderr: &str, beamfs_files: &[String]) -> (u32, u32) {
     let mut errors: u32 = 0;
     let mut warnings: u32 = 0;
@@ -522,7 +519,7 @@ fn count_beamfs_diagnostics(stderr: &str, beamfs_files: &[String]) -> (u32, u32)
 
 /// List beamfs source filenames (relative, just the basename).
 fn beamfs_source_basenames() -> Vec<String> {
-    let dir = PathBuf::from(BEAMFS_REPO);
+    let dir = PathBuf::from(crate::lab::beamfs_repo());
     let mut out: Vec<String> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
@@ -571,7 +568,7 @@ fn run_sparse(out: &Path) -> ToolReport {
             duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         };
     };
-    let beamfs_dir = PathBuf::from(BEAMFS_REPO);
+    let beamfs_dir = PathBuf::from(crate::lab::beamfs_repo());
     let basenames = beamfs_source_basenames();
     let c_files: Vec<String> = basenames.iter()
         .filter(|n| n.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")))
@@ -688,7 +685,7 @@ fn run_clang_werror(_files: &[PathBuf], out: &Path) -> ToolReport {
             duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         };
     };
-    let beamfs_dir = PathBuf::from(BEAMFS_REPO);
+    let beamfs_dir = PathBuf::from(crate::lab::beamfs_repo());
     let basenames = beamfs_source_basenames();
     let c_files: Vec<String> = basenames.iter()
         .filter(|n| n.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")))
@@ -846,7 +843,7 @@ fn run_cargo_clippy_pedantic(out: &Path) -> ToolReport {
             "--",
             "-D", "warnings",
         ])
-        .current_dir(BENCH_REPO)
+        .current_dir(crate::lab::bench_repo())
         .output();
     let mut log_buf = String::new();
     let mut findings: u32 = 0;
@@ -855,7 +852,7 @@ fn run_cargo_clippy_pedantic(out: &Path) -> ToolReport {
         let s = String::from_utf8_lossy(&o.stderr);
         log_buf.push_str(&s);
         for line in s.lines() {
-            if line.contains(BENCH_REPO) && line.contains("warning:") {
+            if line.contains(crate::lab::bench_repo()) && line.contains("warning:") {
                 findings += 1;
             }
         }
@@ -899,7 +896,7 @@ fn run_kernel_doc_validate(_files: &[PathBuf], out: &Path) -> ToolReport {
     }
     let mut log_buf = String::new();
     let mut findings: u32 = 0;
-    let beamfs_dir = PathBuf::from(BEAMFS_REPO);
+    let beamfs_dir = PathBuf::from(crate::lab::beamfs_repo());
     if let Ok(entries) = std::fs::read_dir(&beamfs_dir) {
         for entry in entries.flatten() {
             let p = entry.path();
@@ -957,7 +954,7 @@ fn run_gpg_verify_commits(out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
     let mut bad: Vec<String> = Vec::new();
     let mut checked: u32 = 0;
-    for repo in &[BEAMFS_REPO, BENCH_REPO] {
+    for repo in &[crate::lab::beamfs_repo(), crate::lab::bench_repo()] {
         let Ok(log_out) = Command::new("git")
             .args(["-C", repo, "log", "-20", "--format=%H"])
             .env("PAGER", "cat")
@@ -1063,7 +1060,7 @@ fn run_naming_r17_check(out: &Path) -> ToolReport {
         "BEAM Electromagnetic",
     ];
     let mut hits: Vec<String> = Vec::new();
-    for repo in &[BEAMFS_REPO, BENCH_REPO] {
+    for repo in &[crate::lab::beamfs_repo(), crate::lab::bench_repo()] {
         let walker = walkdir::WalkDir::new(repo).into_iter()
             .filter_entry(|e| {
                 let p = e.path().to_string_lossy().to_string();
@@ -1137,7 +1134,7 @@ fn run_naming_r17_check(out: &Path) -> ToolReport {
 fn run_emdash_r16_check(out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
     let mut hits: Vec<String> = Vec::new();
-    for repo in &[BEAMFS_REPO, BENCH_REPO] {
+    for repo in &[crate::lab::beamfs_repo(), crate::lab::bench_repo()] {
         let walker = walkdir::WalkDir::new(repo).into_iter()
             .filter_entry(|e| {
                 let p = e.path().to_string_lossy().to_string();
@@ -1194,7 +1191,7 @@ fn run_emdash_r16_check(out: &Path) -> ToolReport {
 
 fn run_lockstep_r9_sha256(out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
-    let yocto_dir = PathBuf::from(YOCTO_REPO)
+    let yocto_dir = PathBuf::from(crate::lab::yocto_repo())
         .join("recipes-kernel/beamfs/files/beamfs-0.1.3");
     if !yocto_dir.is_dir() {
         return ToolReport {
@@ -1206,7 +1203,7 @@ fn run_lockstep_r9_sha256(out: &Path) -> ToolReport {
             duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         };
     }
-    let beamfs_dir = PathBuf::from(BEAMFS_REPO);
+    let beamfs_dir = PathBuf::from(crate::lab::beamfs_repo());
     let mut divergences: Vec<String> = Vec::new();
     let mut checked: u32 = 0;
     if let Ok(entries) = std::fs::read_dir(&beamfs_dir) {
@@ -1301,7 +1298,7 @@ fn run_frama_c(_files: &[PathBuf], _out: &Path) -> ToolReport {
 }
 
 fn run_scan_build(_out: &Path) -> ToolReport {
-    // scan-build --status-bugs make M=$BEAMFS_REPO
+    // scan-build --status-bugs make M=$crate::lab::beamfs_repo()
     // Clang static analyzer full-module run.
     todo_tool("scan_build", 3)
 }

@@ -85,9 +85,7 @@ fn deploy_worker_to_compute01() -> Result<()> {
 }
 
 fn wait_ssh_compute01(timeout_secs: u64) -> Result<()> {
-    let key = std::env::var("HOME")
-        .map(|h| format!("{h}/.ssh/hpclab_admin"))
-        .context("HOME not set")?;
+    let key = crate::lab::ssh_key().to_string();
     let start = std::time::Instant::now();
     loop {
         if ssh_probe(COMPUTE01_IP, &key) {
@@ -230,7 +228,7 @@ pub fn run(injector: &str) -> Result<i32> {
     let started_epoch = SystemTime::now().duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let run_dir = PathBuf::from(format!(
-        "/home/aurelien/git/yocto-beamfs/Documentation/runs/beamfs-bench-crash-{stamp}"
+        "{}/beamfs-bench-crash-{stamp}", crate::lab::runs_dir()
     ));
     fs::create_dir_all(&run_dir).context("create run dir")?;
     println!("Run dir: {}", run_dir.display());

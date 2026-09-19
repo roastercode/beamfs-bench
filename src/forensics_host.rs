@@ -113,7 +113,7 @@ pub fn pre_capture_host(
         "canonical-ko.log",
         r#"
 set -e
-IMG=~/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.beamfs
+IMG={img}
 echo "image: $IMG"
 if [ -e "$IMG" ]; then
     echo "image-target: $(readlink -f "$IMG")"
@@ -305,11 +305,17 @@ fn stop_bpftrace_host(host_dir: &Path) {
 // whatever stdout we got, even on partial failure.
 // =====================================================================
 
-const REPOS: &[(&str, &str)] = &[
-    ("beamfs",       "/home/aurelien/git/beamfs"),
-    ("yocto-beamfs", "/home/aurelien/git/yocto-beamfs"),
-    ("beamfs-bench", "/home/aurelien/git/beamfs-bench"),
-];
+/// The three trees whose HEAD is recorded with a run.
+///
+/// A function rather than a constant: the paths come from the
+/// environment now, and a constant cannot call anything.
+fn repos() -> [(&'static str, &'static str); 3] {
+    [
+        ("beamfs",       crate::lab::beamfs_repo()),
+        ("yocto-beamfs", crate::lab::yocto_repo()),
+        ("beamfs-bench", crate::lab::bench_repo()),
+    ]
+}
 
 const VM_IPS: &[(&str, &str)] = &[
     ("beamfs-master",    "192.168.56.10"),
@@ -318,8 +324,6 @@ const VM_IPS: &[(&str, &str)] = &[
     ("beamfs-compute03", "192.168.56.13"),
 ];
 
-const SSH_KEY: &str = "/home/aurelien/.ssh/hpclab_admin";
-const SSH_USER: &str = "hpcadmin";
 
 fn ssh_capture(ip: &str, remote_cmd: &str) -> String {
     // Bug A fix: drop stale host key entry (R13: known_hosts desynchronisation
@@ -352,7 +356,9 @@ fn ssh_capture(ip: &str, remote_cmd: &str) -> String {
     };
 
     let cmd = format!(
-        "ssh -i {SSH_KEY} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/home/aurelien/.ssh/known_hosts -o BatchMode=yes -o ConnectTimeout=5 -o LogLevel=ERROR {SSH_USER}@{ip} 'echo {b64} | base64 -d | bash -s' 2>&1"
+        "ssh -i {key} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=5 -o LogLevel=ERROR {user}@{ip} 'echo {b64} | base64 -d | bash -s' 2>&1",
+        key = crate::lab::ssh_key(),
+        user = crate::lab::ssh_user()
     );
     run_host(&cmd).unwrap_or_else(|e| format!("ssh capture failed: {e:#}"))
 }
@@ -361,7 +367,7 @@ fn ssh_capture(ip: &str, remote_cmd: &str) -> String {
 /// One file per repo: `git-{label}.txt`.
 fn capture_git_provenance(host_dir: &Path) {
     println!("[pre]    Host capture: git provenance (4 repos)");
-    for (label, path) in REPOS {
+    for (label, path) in repos() {
         let cmd = format!(
             r#"
 echo "=== git rev-parse HEAD ==="
@@ -412,7 +418,7 @@ fn capture_vm_rootfs_format(host_dir: &Path) {
     let mut out = String::new();
 
     // Canonical .beamfs (yocto deploy/images).
-    let canonical_link = "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.beamfs";
+    let canonical_link = crate::lab::canonical_image();
     out.push_str("=== canonical ===\n");
     let canonical_resolved = match std::fs::canonicalize(canonical_link) {
         Ok(p) => p,

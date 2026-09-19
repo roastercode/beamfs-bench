@@ -207,10 +207,8 @@ impl ScrubObservation {
 /// four of them at once would measure the host's scheduler as much as
 /// the filesystem.
 fn lab_target() -> Result<SshTarget> {
-    let key = std::env::var("HOME")
-        .map(|h| format!("{h}/.ssh/hpclab_admin"))
-        .context("HOME not set")?;
-    Ok(SshTarget::new("hpcadmin", "192.168.56.11", &key))
+    let key = crate::lab::ssh_key().to_string();
+    Ok(SshTarget::new(crate::lab::ssh_user(), "192.168.56.11", &key))
 }
 
 /// Entry point for the `scrub` subcommand.

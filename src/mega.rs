@@ -51,11 +51,10 @@ fn list_recursive(dir: &Path, prefix: &str, out: &mut String, depth: usize) {
     }
 }
 
-const RUNS_DIR: &str = "/home/aurelien/git/yocto-beamfs/Documentation/runs";
 
 fn list_run_dirs_with_prefix(prefix: &str) -> Vec<String> {
     let mut out = Vec::new();
-    if let Ok(rd) = fs::read_dir(RUNS_DIR) {
+    if let Ok(rd) = fs::read_dir(crate::lab::runs_dir()) {
         for entry in rd.flatten() {
             if let Some(name) = entry.file_name().to_str() {
                 if name.starts_with(prefix) {
@@ -76,7 +75,7 @@ fn detect_new_run_dir(prefix: &str, before: &[String]) -> Option<String> {
 fn relocate_run_dir(prefix: &str, before: &[String], mega_dir: &Path, sub_name: &str) {
     match detect_new_run_dir(prefix, before) {
         Some(new_basename) => {
-            let src = Path::new(RUNS_DIR).join(&new_basename);
+            let src = Path::new(crate::lab::runs_dir()).join(&new_basename);
             let dst = mega_dir.join(sub_name);
             match fs::rename(&src, &dst) {
                 Ok(()) => println!("[mega]  relocated {sub_name}: {} -> {}",
@@ -107,9 +106,9 @@ fn capture_env(env_dir: &Path) -> Result<()> {
         format!("beamfs-bench {}\n", env!("CARGO_PKG_VERSION")))?;
 
     for (name, repo) in [
-        ("beamfs",       "/home/aurelien/git/beamfs"),
-        ("yocto-beamfs", "/home/aurelien/git/yocto-beamfs"),
-        ("beamfs-bench", "/home/aurelien/git/beamfs-bench"),
+        ("beamfs",       crate::lab::beamfs_repo()),
+        ("yocto-beamfs", crate::lab::yocto_repo()),
+        ("beamfs-bench", crate::lab::bench_repo()),
     ] {
         let head = Command::new("git").args(["-C", repo, "log", "-1", "--format=%H %s"])
             .output().with_context(|| format!("git log {repo}"))?;
@@ -130,11 +129,12 @@ fn capture_env(env_dir: &Path) -> Result<()> {
 
 fn capture_yocto_build_logs(build_dir: &Path) -> Result<()> {
     fs::create_dir_all(build_dir).context("create build dir")?;
+    let work = format!("{}/tmp/work/{}-poky-linux",
+                       crate::lab::build_dir(), crate::lab::machine());
+    let image = crate::lab::image_name().to_string();
     let yocto_temp = [
-        ("beamfs-module",
-         "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/work/qemuarm64-poky-linux/beamfs-module/0.1.0/temp"),
-        ("hpc-arm64-research-beamfs",
-         "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/work/qemuarm64-poky-linux/hpc-arm64-research-beamfs/1.0/temp"),
+        ("beamfs-module".to_string(), format!("{work}/beamfs-module/0.1.0/temp")),
+        (image.clone(), format!("{work}/{image}/1.0/temp")),
     ];
     for (recipe, src_temp) in &yocto_temp {
         let dst = build_dir.join(format!("yocto-{recipe}-temp"));
@@ -148,18 +148,28 @@ fn capture_yocto_build_logs(build_dir: &Path) -> Result<()> {
 
 fn capture_kernel_artifacts(build_dir: &Path) -> Result<()> {
     fs::create_dir_all(build_dir).context("create build dir")?;
-    let cfg_cmd = "ssh -i /home/aurelien/.ssh/hpclab_admin -o StrictHostKeyChecking=no \
-                   -o ConnectTimeout=5 hpcadmin@192.168.56.11 \
-                   'sudo cat /proc/config.gz' 2>/dev/null";
-    if let Ok(out) = Command::new("bash").arg("-c").arg(cfg_cmd).output() {
+    let cfg_cmd = format!(
+        "ssh -i {key} -o StrictHostKeyChecking=no \
+         -o ConnectTimeout=5 {user}@{ip} \
+         'sudo cat /proc/config.gz' 2>/dev/null",
+        key = crate::lab::ssh_key(),
+        user = crate::lab::ssh_user(),
+        ip = crate::cluster::CLUSTER_NODES[1].0,
+    );
+    if let Ok(out) = Command::new("bash").arg("-c").arg(&cfg_cmd).output() {
         if out.status.success() && !out.stdout.is_empty() {
             let _ = fs::write(build_dir.join("proc-config.gz"), &out.stdout);
         }
     }
-    let mod_cmd = "ssh -i /home/aurelien/.ssh/hpclab_admin -o StrictHostKeyChecking=no \
-                   -o ConnectTimeout=5 hpcadmin@192.168.56.11 \
-                   'sudo modinfo beamfs; echo ---; sudo modinfo emufi'";
-    if let Ok(out) = Command::new("bash").arg("-c").arg(mod_cmd).output() {
+    let mod_cmd = format!(
+        "ssh -i {key} -o StrictHostKeyChecking=no \
+         -o ConnectTimeout=5 {user}@{ip} \
+         'sudo modinfo beamfs; echo ---; sudo modinfo emufi'",
+        key = crate::lab::ssh_key(),
+        user = crate::lab::ssh_user(),
+        ip = crate::cluster::CLUSTER_NODES[1].0,
+    );
+    if let Ok(out) = Command::new("bash").arg("-c").arg(&mod_cmd).output() {
         let _ = fs::write(build_dir.join("modinfo.txt"), out.stdout);
     }
     Ok(())
@@ -235,7 +245,7 @@ pub fn run(injector: &str) -> Result<i32> {
     let started_inst = Instant::now();
     let ts_compact = started_ts.format("%Y%m%d-%H%M%S").to_string();
     let mega_basename = format!("beamfs-bench-mega-{ts_compact}");
-    let mega_dir = Path::new(RUNS_DIR).join(&mega_basename);
+    let mega_dir = Path::new(crate::lab::runs_dir()).join(&mega_basename);
     fs::create_dir_all(&mega_dir).context("create mega run dir")?;
     println!("[mega] Run dir: {}", mega_dir.display());
 

@@ -23,10 +23,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const BEAMFS_REPO:        &str = "/home/aurelien/git/beamfs";
-const YOCTO_REPO:         &str = "/home/aurelien/git/yocto-beamfs";
-const BENCH_REPO:         &str = "/home/aurelien/git/beamfs-bench";
-const YOCTO_KERNEL_FILES: &str = "/home/aurelien/git/yocto-beamfs/recipes-kernel/beamfs/files/beamfs-0.1.3";
 /// Every file that goes into the kernel, not a list written once.
 ///
 /// The list held twelve names while the tree grew to twenty-two, and
@@ -40,8 +36,8 @@ const YOCTO_KERNEL_FILES: &str = "/home/aurelien/git/yocto-beamfs/recipes-kernel
 fn kernel_sources() -> Result<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
 
-    for entry in std::fs::read_dir(BEAMFS_REPO)
-        .with_context(|| format!("read {BEAMFS_REPO}"))?
+    for entry in std::fs::read_dir(crate::lab::beamfs_repo())
+        .with_context(|| format!("read {}", crate::lab::beamfs_repo()))?
     {
         let name = entry?.file_name().to_string_lossy().into_owned();
         let keep = name.ends_with(".c")
@@ -56,7 +52,7 @@ fn kernel_sources() -> Result<Vec<String>> {
     }
     out.sort();
     if out.is_empty() {
-        bail!("no kernel sources found in {BEAMFS_REPO}");
+        bail!("no kernel sources found in {}", crate::lab::beamfs_repo());
     }
     Ok(out)
 }
@@ -70,13 +66,9 @@ const YOCTO_ONLY_SOURCES: &[&str] = &[
     "mkfs.beamfs.c", "rs_decode.c", "rs_decode.h", "rs_decode_internal.h",
 ];
 
-const POKY_DIR:       &str = "/home/aurelien/yocto/poky";
-const BUILD_DIR_NAME: &str = "build-qemu-arm64";
-const CANONICAL_BEAMFS: &str = "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.beamfs";
 
 const VM_NAMES: &[&str] = &["beamfs-master", "beamfs-compute01", "beamfs-compute02", "beamfs-compute03"];
 const VM_IPS:   &[&str] = &["192.168.56.10", "192.168.56.11", "192.168.56.12", "192.168.56.13"];
-const SSH_KEY:  &str = "/home/aurelien/.ssh/hpclab_admin";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PipelineManifest {
@@ -116,7 +108,7 @@ fn git_head_sha(repo: &str) -> Result<String> {
 
 fn ssh_exec(ip: &str, cmd: &str) -> Result<String> {
     let out = Command::new("ssh")
-        .args(["-T", "-i", SSH_KEY, "-o", "StrictHostKeyChecking=no",
+        .args(["-T", "-i", crate::lab::ssh_key(), "-o", "StrictHostKeyChecking=no",
                "-o", "ConnectTimeout=10", "-o", "BatchMode=yes",
                &format!("hpcadmin@{ip}"), cmd])
         .stdin(Stdio::null())
@@ -137,7 +129,7 @@ pub fn verify_clean_working_trees() -> Result<()> {
     // must be byte-identical between the two repos). beamfs-bench is the bench
     // tool itself; it is intentionally excluded so that bench refactors can
     // run their own validation chain without requiring a self-commit first.
-    for repo in &[BEAMFS_REPO, YOCTO_REPO] {
+    for repo in &[crate::lab::beamfs_repo(), crate::lab::yocto_repo()] {
         let out = Command::new("git").args(["-C", repo, "status", "-s"]).output()
             .with_context(|| format!("git status in {repo}"))?;
         let dirty = String::from_utf8_lossy(&out.stdout);
@@ -148,13 +140,13 @@ pub fn verify_clean_working_trees() -> Result<()> {
     }
     // beamfs-bench check downgraded from blocking to informative WARN.
     {
-        let out = Command::new("git").args(["-C", BENCH_REPO, "status", "-s"]).output()
-            .with_context(|| format!("git status in {BENCH_REPO}"))?;
+        let out = Command::new("git").args(["-C", crate::lab::bench_repo(), "status", "-s"]).output()
+            .with_context(|| format!("git status in {}", crate::lab::bench_repo()))?;
         let dirty = String::from_utf8_lossy(&out.stdout);
         if dirty.trim().is_empty() {
-            println!("  {BENCH_REPO} clean");
+            println!("  {} clean", crate::lab::bench_repo());
         } else {
-            println!("  {BENCH_REPO} dirty (informative, non-blocking):");
+            println!("  {} dirty (informative, non-blocking):", crate::lab::bench_repo());
             for line in dirty.lines().take(20) {
                 println!("    {line}");
             }
@@ -172,8 +164,8 @@ pub fn verify_lockstep_sources() -> Result<Vec<(String, String)>> {
 
     let mut manifest = Vec::new();
     for f in &sources {
-        let p1 = PathBuf::from(BEAMFS_REPO).join(f);
-        let p2 = PathBuf::from(YOCTO_KERNEL_FILES).join(f);
+        let p1 = PathBuf::from(crate::lab::beamfs_repo()).join(f);
+        let p2 = PathBuf::from(crate::lab::yocto_kernel_files()).join(f);
         let s1 = sha256_file(&p1).with_context(|| format!("hash beamfs/{f}"))?;
         // A source present in beamfs and absent from the layer is a
         // divergence of the worst kind: the build takes what the layer
@@ -189,7 +181,7 @@ pub fn verify_lockstep_sources() -> Result<Vec<(String, String)>> {
 
     // Hashed but not compared: these have one copy, in the layer.
     for f in YOCTO_ONLY_SOURCES {
-        let p = PathBuf::from(YOCTO_KERNEL_FILES).join(f);
+        let p = PathBuf::from(crate::lab::yocto_kernel_files()).join(f);
         if p.exists() {
             manifest.push((format!("yocto:{f}"), sha256_file(&p)?));
         }
@@ -211,10 +203,13 @@ pub fn bitbake_image_to(skip: bool, log_dir: Option<&Path>) -> Result<()> {
         println!("[pipeline 0.3] bitbake SKIPPED (--skip-bitbake)");
         return Ok(());
     }
-    println!("[pipeline 0.3] bitbake hpc-arm64-research-beamfs (streaming)");
+    let image = crate::lab::image_name();
+    println!("[pipeline 0.3] bitbake {image} (streaming)");
     let mut cmd = format!(
-        "cd {POKY_DIR} && source oe-init-build-env {BUILD_DIR_NAME} > /dev/null 2>&1 && \
-         bitbake hpc-arm64-research-beamfs 2>&1"
+        "cd {poky} && source oe-init-build-env {build} > /dev/null 2>&1 && \
+         bitbake {image} 2>&1",
+        poky = crate::lab::poky_dir(),
+        build = crate::lab::build_dir_name(),
     );
     if let Some(dir) = log_dir {
         std::fs::create_dir_all(dir).context("create bitbake log dir")?;
@@ -222,16 +217,20 @@ pub fn bitbake_image_to(skip: bool, log_dir: Option<&Path>) -> Result<()> {
         // tee: keep streaming visible AND capture to file.
         cmd = format!("({cmd}) | tee {}", log_path.display());
     }
+    let home_env = format!(
+        "HOME={}",
+        std::env::var("HOME").unwrap_or_else(|_| "/home/aurelien".to_string())
+    );
     let status = Command::new("env")
-        .args(["-i", "HOME=/home/aurelien", "TERM=xterm",
+        .args(["-i", &home_env, "TERM=xterm",
                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                "bash", "-c", &cmd])
         .status()
         .context("bitbake spawn")?;
     if !status.success() {
-        bail!("bitbake hpc-arm64-research-beamfs failed (exit {:?})", status.code());
+        bail!("bitbake {image} failed (exit {:?})", status.code());
     }
-    let p = PathBuf::from(CANONICAL_BEAMFS);
+    let p = PathBuf::from(crate::lab::canonical_image());
     if !p.exists() {
         bail!("canonical beamfs not produced: {}", p.display());
     }
@@ -254,7 +253,7 @@ pub fn bitbake_image_to(skip: bool, log_dir: Option<&Path>) -> Result<()> {
 /// every node byte for byte.
 pub fn canonical_image_sha() -> Result<String> {
     println!("[pipeline 0.4] hash the canonical image");
-    let beamfs_sha = sha256_file(Path::new(CANONICAL_BEAMFS))
+    let beamfs_sha = sha256_file(Path::new(crate::lab::canonical_image()))
         .context("hash canonical .beamfs")?;
     println!("  canonical beamfs sha256: {beamfs_sha}");
     Ok(beamfs_sha)
@@ -365,14 +364,14 @@ pub fn redeploy_4_vms() -> Result<BTreeMap<String, String>> {
 
     let _ = Command::new("sync").status();
 
-    let canonical_sha = sha256_file(Path::new(CANONICAL_BEAMFS))
+    let canonical_sha = sha256_file(Path::new(crate::lab::canonical_image()))
         .context("hash canonical .beamfs")?;
     println!("  canonical .beamfs sha256: {canonical_sha}");
 
     for vm in VM_NAMES {
         let dst = &resolved[*vm];
         let st = Command::new("sudo")
-            .args(["cp", CANONICAL_BEAMFS, dst])
+            .args(["cp", crate::lab::canonical_image(), dst])
             .status().with_context(|| format!("cp beamfs -> {dst}"))?;
         if !st.success() { bail!("cp failed for {dst}"); }
         let st = Command::new("sudo")
@@ -484,7 +483,7 @@ pub fn verify_dmesg_clean() -> Result<()> {
 // ---------------------------------------------------------------------
 pub fn emit_manifest(m: &PipelineManifest) -> Result<PathBuf> {
     let stamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let path = PathBuf::from(format!("/home/aurelien/git/yocto-beamfs/Documentation/runs/manifest-{stamp}.json"));
+    let path = PathBuf::from(format!("{}/manifest-{stamp}.json", crate::lab::runs_dir()));
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -514,9 +513,9 @@ pub fn build_initial_manifest() -> Result<PipelineManifest> {
     Ok(PipelineManifest {
         started_at:  now_iso(),
         finished_at: String::new(),
-        commit_beamfs: git_head_sha(BEAMFS_REPO)?,
-        commit_yocto:  git_head_sha(YOCTO_REPO)?,
-        commit_bench:  git_head_sha(BENCH_REPO)?,
+        commit_beamfs: git_head_sha(crate::lab::beamfs_repo())?,
+        commit_yocto:  git_head_sha(crate::lab::yocto_repo())?,
+        commit_bench:  git_head_sha(crate::lab::bench_repo())?,
         source_sha256: Vec::new(),
         resolved_vda_paths: BTreeMap::new(),
         canonical_beamfs_sha256: String::new(),

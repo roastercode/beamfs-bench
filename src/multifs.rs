@@ -118,7 +118,6 @@ pub fn resolve_probs() -> Vec<u32> {
     }
 }
 
-pub const SSH_USER: &str = "hpcadmin";
 pub const MULTIFS_TARGET_IP: &str = "192.168.56.11";  // compute01 holds the 5 USB sticks (isolation per recadrage R-isolation)
 pub const REMOTE_WORKER_PATH: &str = "/tmp/beamfs-bench-worker.sh";
 pub const DEFAULT_VM_NAME: &str = "beamfs-compute01";
@@ -159,7 +158,7 @@ pub struct MultifsConfig {
 
 impl Default for MultifsConfig {
     fn default() -> Self {
-        let key_path = std::env::var("HOME").map_or_else(|_| "/root/.ssh/hpclab_admin".to_string(), |h| format!("{h}/.ssh/hpclab_admin"));
+        let key_path = crate::lab::ssh_key().to_string();
         Self {
             vm_name: DEFAULT_VM_NAME.to_string(),
             // L5 : fs_list is now built at runtime by usb_health::build_fs_mapping
@@ -169,7 +168,7 @@ impl Default for MultifsConfig {
             probs: resolve_probs(),
             injector: "emufi".to_string(),
             run_dir_prefix: "beamfs-bench-multifs".to_string(),
-            ssh_user: SSH_USER.to_string(),
+            ssh_user: crate::lab::ssh_user().to_string(),
             master_ip: MULTIFS_TARGET_IP.to_string(),
             ssh_key_path: key_path,
             auto_confirm: false,
@@ -245,11 +244,20 @@ pub fn run_with_mapping(
     Ok(0)
 }
 
-/// Full API used by analyse.rs.
-/// Path to the campaign generator, built from the emufi-physics crate
-/// that lives alongside the injector it feeds.
-const RADSIM: &str =
-    "/home/aurelien/git/emufi/userspace/emufi-physics/target/release/emufi-radsim";
+/// Where the physics simulator lives.
+///
+/// A sibling checkout of this repository, which is where it is on the
+/// station and where anybody reproducing a campaign would put it.
+/// BEAMFS_BENCH_RADSIM names it elsewhere.
+fn radsim_path() -> String {
+    if let Ok(v) = std::env::var("BEAMFS_BENCH_RADSIM") {
+        if !v.trim().is_empty() {
+            return v.trim().to_string();
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/aurelien".to_string());
+    format!("{home}/git/emufi/userspace/emufi-physics/target/release/emufi-radsim")
+}
 
 /// Where the node expects the campaign blob.
 const CAMPAIGN_REMOTE: &str = "/tmp/emufi-campaign.bin";
@@ -292,7 +300,7 @@ fn generate_campaign(ranges: &str, ssh: &SshTarget) -> Result<usize> {
     let seed = std::env::var("PHYSICS_SEED").unwrap_or_else(|_| "3735928559".into());
 
     let local = "/tmp/emufi-campaign.bin";
-    let out = std::process::Command::new(RADSIM)
+    let out = std::process::Command::new(radsim_path())
         .args([
             "--seed", &seed,
             "campaign",
@@ -301,7 +309,7 @@ fn generate_campaign(ranges: &str, ssh: &SshTarget) -> Result<usize> {
             "--energy-mev", &energy,
         ])
         .output()
-        .with_context(|| format!("spawn {RADSIM}"))?;
+        .with_context(|| format!("spawn {}", radsim_path()))?;
     if !out.status.success() {
         anyhow::bail!(
             "emufi-radsim failed: {}",

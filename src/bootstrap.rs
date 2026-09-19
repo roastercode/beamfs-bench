@@ -19,7 +19,7 @@
 //! or the new `full` subcommand). This module does NOT scp the worker;
 //! it just invokes it.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Result};
 use std::sync::Arc;
 use std::thread;
 
@@ -36,10 +36,8 @@ pub struct BootstrapResult {
 
 /// Build `SshTarget` for an IP using the standard hpcadmin key.
 fn ssh_for(ip: &str) -> Result<SshTarget> {
-    let key_path = std::env::var("HOME")
-        .map(|h| format!("{h}/.ssh/hpclab_admin"))
-        .context("HOME not set")?;
-    Ok(SshTarget::new("hpcadmin", ip, &key_path))
+    let key_path = crate::lab::ssh_key().to_string();
+    Ok(SshTarget::new(crate::lab::ssh_user(), ip, &key_path))
 }
 
 /// Run `bootstrap_data` on every reachable node in parallel.

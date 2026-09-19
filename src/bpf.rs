@@ -187,10 +187,8 @@ impl Target {
 
 /// Build the SSH target for a node, with the lab's standard key.
 fn ssh_for(ip: &str) -> Result<SshTarget> {
-    let key = std::env::var("HOME")
-        .map(|h| format!("{h}/.ssh/hpclab_admin"))
-        .context("HOME not set")?;
-    Ok(SshTarget::new("hpcadmin", ip, &key))
+    let key = crate::lab::ssh_key().to_string();
+    Ok(SshTarget::new(crate::lab::ssh_user(), ip, &key))
 }
 
 /// Attach a script for a while and return what it printed.
