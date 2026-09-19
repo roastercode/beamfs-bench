@@ -79,6 +79,29 @@ with the Yocto build logs, the kernel config, modinfo, the git HEADs and
 the post\-attack forensics. For handing an investigation to somebody
 else, or to yourself in a month.
 .TP
+.B trace
+Attaches a bpftrace script while something happens, on a cluster node
+or on the station, and keeps what it printed.
+.IP
+Every other command here reads state after the fact \(em a dmesg, a
+frozen volume, counters sampled before and after. None of that shows a
+sequence, and a sequence is what the open defects are made of: a pointer
+installed into an indirect block and read back as zero twenty\-five
+seconds later by a different task. The trace of a race is not the race.
+.IP
+The scripts are not in this package. They live in beamfs\-xfstests
+under
+.IR scripts/ ,
+twenty of them, each written against a specific defect, and they are
+found by name on a search path rather than copied here \(em two
+collections drifting apart would leave the wrong one installed.
+.B \-\-list
+says which ones were found and what each watches.
+.IP
+Needs bpftrace on the target. It entered the arm64 image on 2026\-09\-19,
+when meta\-clang was added to that build directory; before that the
+probes could only run on the station.
+.TP
 .B db
 The measurement database: retroactive ingest of archived runs, and
 queries over the accumulated series.
@@ -108,6 +131,28 @@ Which fault injector to drive.
 .B \-\-flip\-width \fIn\fR
 Bits flipped per event, for multi\-bit upsets.
 .TP
+.B \-\-script \fIname\fR
+Which script
+.B trace
+attaches, with or without its
+.I .bt
+suffix. Default
+.IR lostptr .
+.TP
+.B \-\-target \fIname\fR
+Where it attaches:
+.IR host ,
+or a cluster node by hostname or address. Default
+.IR compute01 .
+.TP
+.B \-\-seconds \fIn\fR
+How long the probe stays attached. It is stopped with INT rather than
+KILL, so bpftrace prints its maps on the way out.
+.TP
+.B \-\-list
+List the scripts found, with the first line of each one's header, and
+exit.
+.TP
 .B \-\-skip\-bitbake
 Use the image already built rather than rebuilding. Only when nothing in
 the sources has changed: the lockstep check will catch a tree that has,
@@ -116,6 +161,21 @@ but not a stale image.
 .B \-\-accept\-regression
 Let the pipeline continue past a result worse than the stored one.
 Records the acceptance in the manifest.
+.SH ENVIRONMENT
+.TP
+.B BEAMFS_BENCH_BPF_SCRIPTS
+Where
+.B trace
+looks for scripts first. Without it the search runs through this
+repository, the beamfs\-xfstests checkout under the home directory, and
+the installed copies of both. A script edited for one run is the normal
+case, which is why the environment comes first and nothing needs
+reinstalling.
+.TP
+.B BEAMFS_NO_BELL
+Stay quiet for a whole shell. See
+.B THE BELL
+below.
 .SH THE LAB
 Four VMs on the hpcnet network: one master at 192.168.56.10 and three
 compute nodes at .11 through .13. The master carries a rootfs and the

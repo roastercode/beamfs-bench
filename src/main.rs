@@ -45,6 +45,7 @@ mod bell;
 mod analyse;
 mod bitrot;
 mod bootstrap;
+mod bpf;
 mod cluster;
 mod db;
 mod code_analysis;
@@ -422,6 +423,33 @@ enum Command {
         /// Fault injector to use (kept for worker.sh module-loading uniformity).
         #[arg(long, default_value = "emufi")]
         injector: String,
+    },
+
+    /// Attach a bpftrace script while something happens, on a node or
+    /// on the station.
+    ///
+    /// Every other scope reads state after the fact. This one watches a
+    /// sequence -- a pointer installed and read back as zero by another
+    /// task -- which is the shape of every defect still open.
+    ///
+    /// The scripts live in beamfs-xfstests under scripts/ and are found
+    /// by name; --list says which ones and what each watches.
+    Trace {
+        /// Script name, with or without its .bt suffix.
+        #[arg(long, default_value = "lostptr")]
+        script: String,
+
+        /// host, or a cluster node by name or address.
+        #[arg(long, default_value = "compute01")]
+        target: String,
+
+        /// How long to keep the probe attached.
+        #[arg(long, default_value_t = 60)]
+        seconds: u64,
+
+        /// List the scripts found and exit.
+        #[arg(long)]
+        list: bool,
     },
 
     /// Test E - mega: pipeline + analyse Full + bitrot + metadata + crash + fsck.
@@ -864,6 +892,15 @@ fn main() {
                 Ok(rc) => rc,
                 Err(e) => {
                     eprintln!("beamfs-bench: tindirect failed: {e:#}");
+                    1
+                }
+            }
+        }
+        Command::Trace { script, target, seconds, list } => {
+            match bpf::run_cli(&script, &target, seconds, list) {
+                Ok(rc) => rc,
+                Err(e) => {
+                    eprintln!("beamfs-bench: trace failed: {e:#}");
                     1
                 }
             }
