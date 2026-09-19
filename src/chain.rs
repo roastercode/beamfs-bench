@@ -30,6 +30,11 @@ use serde::{Deserialize, Serialize};
 
 /// Where the seal lives. Outside both repos: it belongs to the lab,
 /// not to either tool, and it must survive a clean checkout of both.
+///
+/// One seal per machine. The two architectures are two chains, run
+/// independently or one without the other; a single file would have
+/// each deploy overwrite the other's, and this bench would refuse the
+/// image it was right to use because the other lab had run last.
 #[must_use]
 pub fn seal_path() -> PathBuf {
     if let Ok(p) = std::env::var("BEAMFS_CHAIN_SEAL") {
@@ -38,7 +43,8 @@ pub fn seal_path() -> PathBuf {
         }
     }
     PathBuf::from(std::env::var("HOME").unwrap_or_default())
-        .join(".local/share/beamfs-chain/seal.json")
+        .join(".local/share/beamfs-chain")
+        .join(format!("seal-{}.json", crate::lab::machine()))
 }
 
 /// What the previous link of the chain recorded. Written by

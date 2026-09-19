@@ -76,9 +76,26 @@ fn calc_poky_dir() -> String {
 /// Two exist on this station -- one per architecture -- and the
 /// pipeline has always built the arm64 one while the x86 machines run
 /// an image from the other. Naming it here is what makes that visible.
+///
+/// Derived from the machine unless said otherwise. The two are a pair,
+/// and setting one without the other yields a path that does not
+/// exist -- a poor way to learn that a campaign is aimed at the wrong
+/// architecture. One variable selects a chain.
 #[must_use]
 fn calc_build_dir_name() -> String {
-    from_env("BEAMFS_BENCH_BUILD_DIR", "build-qemu-arm64")
+    if let Ok(v) = std::env::var("BEAMFS_BENCH_BUILD_DIR") {
+        let v = v.trim();
+        if !v.is_empty() {
+            return v.to_string();
+        }
+    }
+    match calc_machine().as_str() {
+        "qemuarm64" => "build-qemu-arm64".to_string(),
+        "qemux86-64" => "build-qemux86".to_string(),
+        // An unknown machine gets bitbake's own layout rather than a
+        // guess.
+        m => format!("build-{m}"),
+    }
 }
 
 /// The Yocto MACHINE the build targets.
@@ -212,6 +229,35 @@ mod tests {
     /// The station's HOME is /home/aurelien, so these are the literals
     /// that were compiled in before this module existed. That equality
     /// is the whole safety argument for the change.
+    #[test]
+    fn the_machine_alone_selects_a_chain() {
+        // Setting the machine without the build directory used to give
+        // a path that does not exist. One variable now names a chain,
+        // which is what running the x86 one without the arm64 one
+        // requires.
+        let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for v in ["BEAMFS_BENCH_MACHINE", "BEAMFS_BENCH_BUILD_DIR"] {
+            unsafe { std::env::remove_var(v) };
+        }
+        assert_eq!(calc_build_dir_name(), "build-qemu-arm64");
+        unsafe { std::env::set_var("BEAMFS_BENCH_MACHINE", "qemux86-64") };
+        assert_eq!(calc_build_dir_name(), "build-qemux86");
+        assert!(calc_canonical_image().contains("build-qemux86"));
+        assert!(calc_canonical_image().ends_with("qemux86-64.beamfs"));
+        unsafe { std::env::remove_var("BEAMFS_BENCH_MACHINE") };
+    }
+
+    #[test]
+    fn an_explicit_build_dir_still_wins() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe { std::env::set_var("BEAMFS_BENCH_MACHINE", "qemux86-64") };
+        unsafe { std::env::set_var("BEAMFS_BENCH_BUILD_DIR", "build-ailleurs") };
+        assert_eq!(calc_build_dir_name(), "build-ailleurs");
+        for v in ["BEAMFS_BENCH_MACHINE", "BEAMFS_BENCH_BUILD_DIR"] {
+            unsafe { std::env::remove_var(v) };
+        }
+    }
+
     #[test]
     fn the_defaults_are_the_old_constants() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
