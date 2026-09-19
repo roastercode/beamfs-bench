@@ -86,6 +86,16 @@ struct Cli {
     #[command(subcommand)]
     command: Command,
 
+    /// Which chain this run belongs to: qemux86-64 or qemuarm64.
+    ///
+    /// The two architectures are two validation chains, each sealed
+    /// end to end, run together or one without the other. This names
+    /// one for a single run; BEAMFS_BENCH_MACHINE does the same for a
+    /// whole shell. The build directory and the canonical image path
+    /// follow from it, so there is no second value to keep in step.
+    #[arg(long, global = true, value_name = "MACHINE")]
+    machine: Option<String>,
+
     /// Stay quiet when the run finishes.
     ///
     /// A campaign runs for the better part of an hour and ends in a
@@ -708,6 +718,18 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
 
 fn main() {
     let cli = Cli::parse();
+
+    // Before anything reads a path: the accessors in lab.rs memoise on
+    // first call, so a machine settled later would arrive after the
+    // paths it was meant to change.
+    if let Some(m) = cli.machine.as_deref() {
+        let m = m.trim();
+        if m.is_empty() {
+            eprintln!("--machine needs a value, for instance qemux86-64 or qemuarm64");
+            std::process::exit(2);
+        }
+        unsafe { std::env::set_var("BEAMFS_BENCH_MACHINE", m) };
+    }
 
     // v0.8.0: cumulative-simultaneous emufi 0.3.2 attack flags.
     // Export to process env BEFORE any subcommand dispatches, so
