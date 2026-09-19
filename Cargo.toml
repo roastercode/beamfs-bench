@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Aurelien DESBRIERES <aurelien@hackers.camp>"]
 license = "GPL-2.0-only"
 description = "Unified bench harness for beamfs - resilient filesystem - testing under RadFI fault injection"
-repository = "https://github.com/roastercode/yocto-beamfs"
+repository = "https://github.com/roastercode/beamfs-bench"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
