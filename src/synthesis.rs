@@ -1,12 +1,17 @@
 //! synthesis.rs - generate synthesis.md + synthesis.json from a completed run.
 //!
-//! Output format byte-identical to Tir-multifs.sh phase 4. Reference target:
+//! Derived from Tir-multifs.sh phase 4. Reference target:
 //! Documentation/runs/beamfs-bench-analyse-20260430-141008/{synthesis.md,synthesis.json}.
 //!
-//! Critical parity points:
+//! Parity with the bash script was the rule until 2026-09-19 and is no
+//! longer: the Topology table is rendered from `fs_list` rather than from
+//! the literal rows the script wrote, because those rows named, for every
+//! one of the five filesystems, another one's device. A report that cannot
+//! contradict its own records is worth more than one that matches a script
+//! byte for byte. Do not restore the literals.
+//!
+//! Remaining parity points:
 //!   - synthesis.md table headers, column widths, padding match bash printf.
-//!   - The Topology table keeps "BEAMFS" UPPERCASE (matches bash; will be
-//!     normalized in a separate lowercase pass per beamfs-devel TODO 1).
 //!   - The Head-to-head table row labels are lowercase fs names from `FS_LIST`.
 //!   - synthesis.json keeps the leading empty string element matching the
 //!     `echo "" > all-records.txt` blank line in bash.
@@ -60,13 +65,18 @@ pub fn write_synthesis_md(
     writeln!(f)?;
     writeln!(f, "5 USB physical disks attached to beamfs-compute01 VM (cache='none' io='threads'); master is isolated orchestrator:")?;
     writeln!(f)?;
-    writeln!(f, "| FS       | Device | USB by-id (truncated)             |")?;
-    writeln!(f, "|----------|--------|-----------------------------------|")?;
-    writeln!(f, "| ext4     | vdc    | Kingston DataTraveler ...DA006B   |")?;
-    writeln!(f, "| ext3     | vdd    | Kingston DataTraveler ...D70052   |")?;
-    writeln!(f, "| btrfs    | vde    | Kingston DataTraveler ...E60058   |")?;
-    writeln!(f, "| squashfs | vdf    | Kingston DataTraveler ...0ED05    |")?;
-    writeln!(f, "| beamfs   | vdg    | SanDisk Cruzer ...09503233        |")?;
+    // Rendered from fs_list, which is the mapping the run actually used.
+    // These five rows were literals until 2026-09-19, and every one of
+    // them named another filesystem's device: the report said beamfs ran
+    // on vdg while the records said vdc. A table that cannot be wrong is
+    // one that is not written twice.
+    writeln!(f, "| FS       | Device |")?;
+    writeln!(f, "|----------|--------|")?;
+    for &(fs_name, vd) in fs_list {
+        writeln!(f, "| {fs_name:<8} | {vd:<6} |")?;
+    }
+    writeln!(f)?;
+    writeln!(f, "The by-id path and size of each disk are in the device validation table emitted at setup.")?;
     writeln!(f)?;
     writeln!(f, "Test layout per partition: 3 dirs (A/B/C) x 3 files of 3KB + HASHES.sha256.")?;
     writeln!(f, "Attack target: dir-B/file-B2.bin.")?;
@@ -466,6 +476,12 @@ fn extract_verify_state(records: &str, fs_name: &str, prob: u32) -> Option<Strin
 }
 
 /// Derive bench-2 verdict for FS=beamfs (FEC-protected).
+/// The counters were appended rather than folded into a struct, which
+/// keeps five consecutive u32 parameters that the compiler cannot tell
+/// apart. Grouping them is the right shape and is a change of six
+/// signatures; it belongs in its own commit, not in the one that stops
+/// a report calling an un-attacked volume a survivor.
+#[allow(clippy::too_many_arguments)]
 fn derive_verdict_beamfs(
     mount_state: &str,
     cat_rc: i32,
@@ -473,9 +489,18 @@ fn derive_verdict_beamfs(
     hash_post: &str,
     rs_corrected: u32,
     dmesg_uncorrectable: u32,
+    call_delta: u32,
+    flip_delta: u32,
 ) -> &'static str {
     if mount_state == "FS_PANIC" {
         return "FS_PANIC";
+    }
+    // A run where the injector never fired measured nothing. Saying
+    // RS_PASSTHROUGH here would make an un-attacked volume look like one
+    // that withstood the campaign -- the 2026-09-19 multifs run scored
+    // beamfs RS_PASSTHROUGH on CALL_DELTA=0, FLIP_DELTA=0.
+    if call_delta == 0 && flip_delta == 0 {
+        return "NOT_EXERCISED";
     }
     if cat_rc != 0 {
         // fail-closed taxonomy: beamfs detected corruption and refused
@@ -573,6 +598,12 @@ fn derive_verdict_legacy(
 /// Phase A.1: fine-grained verdict for FS=beamfs (FEC-protected).
 /// Exploits dmesg signals to distinguish detected-fail-closed from
 /// inaccessible-but-silent and from silent corruption.
+/// The counters were appended rather than folded into a struct, which
+/// keeps five consecutive u32 parameters that the compiler cannot tell
+/// apart. Grouping them is the right shape and is a change of six
+/// signatures; it belongs in its own commit, not in the one that stops
+/// a report calling an un-attacked volume a survivor.
+#[allow(clippy::too_many_arguments)]
 fn derive_verdict_detail_beamfs(
     mount_state: &str,
     cat_rc: i32,
@@ -581,9 +612,18 @@ fn derive_verdict_detail_beamfs(
     rs_corrected: u32,
     dmesg_uncorrectable: u32,
     dmesg_eio: u32,
+    call_delta: u32,
+    flip_delta: u32,
 ) -> &'static str {
     if mount_state == "FS_PANIC" {
         return "KERNEL_PANIC";
+    }
+    // A run where the injector never fired measured nothing. Saying
+    // RS_PASSTHROUGH here would make an un-attacked volume look like one
+    // that withstood the campaign -- the 2026-09-19 multifs run scored
+    // beamfs RS_PASSTHROUGH on CALL_DELTA=0, FLIP_DELTA=0.
+    if call_delta == 0 && flip_delta == 0 {
+        return "NOT_EXERCISED";
     }
     let dmesg_signal = dmesg_uncorrectable > 0 || dmesg_eio > 0;
     if cat_rc != 0 {
@@ -622,6 +662,12 @@ fn derive_verdict_detail_beamfs(
 /// Phase A.1: fine-grained verdict for FS != beamfs (no FEC).
 /// Without FEC, the only differentiation is between detected (FS panic
 /// or kernel signal) and silent (hash mismatch with no kernel signal).
+/// The counters were appended rather than folded into a struct, which
+/// keeps five consecutive u32 parameters that the compiler cannot tell
+/// apart. Grouping them is the right shape and is a change of six
+/// signatures; it belongs in its own commit, not in the one that stops
+/// a report calling an un-attacked volume a survivor.
+#[allow(clippy::too_many_arguments)]
 fn derive_verdict_detail_legacy(
     mount_state: &str,
     cat_rc: i32,
@@ -629,9 +675,18 @@ fn derive_verdict_detail_legacy(
     hash_post: &str,
     dmesg_uncorrectable: u32,
     dmesg_eio: u32,
+    call_delta: u32,
+    flip_delta: u32,
 ) -> &'static str {
     if mount_state == "FS_PANIC" {
         return "KERNEL_PANIC";
+    }
+    // A run where the injector never fired measured nothing. Saying
+    // RS_PASSTHROUGH here would make an un-attacked volume look like one
+    // that withstood the campaign -- the 2026-09-19 multifs run scored
+    // beamfs RS_PASSTHROUGH on CALL_DELTA=0, FLIP_DELTA=0.
+    if call_delta == 0 && flip_delta == 0 {
+        return "NOT_EXERCISED";
     }
     let dmesg_signal = dmesg_uncorrectable > 0 || dmesg_eio > 0;
     if cat_rc != 0 {
@@ -742,7 +797,21 @@ pub fn extract_cluster_verdict(records: &str, host: &str, prob: u32) -> String {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    derive_verdict_beamfs(&mount_state, cat_rc, &hash_pre, &hash_post, rs_corrected, dmesg_uncorrectable).to_string()
+    // An attack the worker skipped leaves no ATTACK record, so every
+    // field above falls back and the verdict came out RS_FAILED: the
+    // filesystem blamed for a hook that never loaded. The counters say
+    // whether anything was injected at all.
+    let call_delta: u32 = extract_cluster_attack_field(records, host, prob, "CALL_DELTA")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let flip_delta: u32 = extract_cluster_attack_field(records, host, prob, "FLIP_DELTA")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    derive_verdict_beamfs(
+        &mount_state, cat_rc, &hash_pre, &hash_post,
+        rs_corrected, dmesg_uncorrectable, call_delta, flip_delta,
+    ).to_string()
 }
 
 /// Phase A.1: fine-grained cluster verdict. Same sources as
@@ -770,9 +839,17 @@ pub fn extract_cluster_verdict_detail(records: &str, host: &str, prob: u32) -> S
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
+    let call_delta: u32 = extract_cluster_attack_field(records, host, prob, "CALL_DELTA")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let flip_delta: u32 = extract_cluster_attack_field(records, host, prob, "FLIP_DELTA")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
     derive_verdict_detail_beamfs(
         &mount_state, cat_rc, &hash_pre, &hash_post,
         rs_corrected, dmesg_uncorrectable, dmesg_eio,
+        call_delta, flip_delta,
     ).to_string()
 }
 
@@ -801,7 +878,7 @@ pub fn extract_verdict(records: &str, fs_name: &str, prob: u32) -> Option<String
         .unwrap_or(0);
 
     let verdict = if fs_name == "beamfs" {
-        derive_verdict_beamfs(&mount_state, cat_rc, &hash_pre, &hash_post, rs_corrected, dmesg_uncorrectable)
+        derive_verdict_beamfs(&mount_state, cat_rc, &hash_pre, &hash_post, rs_corrected, dmesg_uncorrectable, call_delta, flip_delta)
     } else {
         derive_verdict_legacy(&mount_state, cat_rc, &hash_pre, &hash_post, call_delta, flip_delta)
     };
@@ -830,16 +907,24 @@ pub fn extract_verdict_detail(records: &str, fs_name: &str, prob: u32) -> Option
     let dmesg_eio: u32 = extract_attack_field(records, fs_name, prob, "DMESG_EIO")
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
+    let call_delta: u32 = extract_attack_field(records, fs_name, prob, "CALL_DELTA")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let flip_delta: u32 = extract_attack_field(records, fs_name, prob, "FLIP_DELTA")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
 
     let verdict = if fs_name == "beamfs" {
         derive_verdict_detail_beamfs(
             &mount_state, cat_rc, &hash_pre, &hash_post,
             rs_corrected, dmesg_uncorrectable, dmesg_eio,
+            call_delta, flip_delta,
         )
     } else {
         derive_verdict_detail_legacy(
             &mount_state, cat_rc, &hash_pre, &hash_post,
             dmesg_uncorrectable, dmesg_eio,
+            call_delta, flip_delta,
         )
     };
     Some(verdict.to_string())
@@ -916,6 +1001,66 @@ mod tests {
     #[test]
     fn beamfs_rs_passthrough() {
         // hash matches + RS_CORRECTED == 0 -> RS_PASSTHROUGH (no flip hit the file)
+        let r = rec(
+            "ATTACK|FS=beamfs|PROB=1000|CALL_DELTA=2|FLIP_DELTA=0|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
+            "VERIFY|fs=beamfs|prob=1000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
+        );
+        assert_eq!(extract_verdict(&r, "beamfs", 1000).as_deref(), Some("RS_PASSTHROUGH"));
+    }
+
+    #[test]
+    fn an_injector_that_never_fired_is_not_a_survivor() {
+        // CALL_DELTA=0 AND FLIP_DELTA=0: emufi was never called and
+        // delivered no bit. The file reads back identical because nothing
+        // touched it, which says nothing about beamfs. The 2026-09-19
+        // multifs run scored RS_PASSTHROUGH on exactly this.
+        let r = rec(
+            "ATTACK|FS=beamfs|PROB=1000000|CALL_DELTA=0|FLIP_DELTA=0|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
+            "VERIFY|fs=beamfs|prob=1000000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
+        );
+        assert_eq!(extract_verdict(&r, "beamfs", 1_000_000).as_deref(), Some("NOT_EXERCISED"));
+        assert_eq!(
+            extract_verdict_detail(&r, "beamfs", 1_000_000).as_deref(),
+            Some("NOT_EXERCISED")
+        );
+    }
+
+    #[test]
+    fn a_legacy_fs_that_was_never_attacked_is_not_recovered() {
+        // Same for the detailed verdict of a non-beamfs filesystem: the
+        // legacy verdict already returned NOT_EXERCISED, phase A.1 still
+        // said RECOVERED on the same record.
+        let r = rec(
+            "ATTACK|FS=ext4|PROB=1000|CALL_DELTA=0|FLIP_DELTA=0|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
+            "VERIFY|fs=ext4|prob=1000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",
+        );
+        assert_eq!(extract_verdict(&r, "ext4", 1000).as_deref(), Some("NOT_EXERCISED"));
+        assert_eq!(
+            extract_verdict_detail(&r, "ext4", 1000).as_deref(),
+            Some("NOT_EXERCISED")
+        );
+    }
+
+    #[test]
+    fn a_skipped_cluster_attack_does_not_blame_the_filesystem() {
+        // What every node answered on 2026-09-19: the injector could not
+        // load, cluster_attack emitted SKIP and no ATTACK record at all,
+        // so every field fell back to its default and the verdict came
+        // out RS_FAILED -- the pipeline failed, blaming beamfs for a
+        // kernel hook that never registered.
+        let r = "\nCLUSTER|HOST=beamfs-master|ATTACK=SKIP|reason=emufi_debugfs_unavailable\nCLUSTER|HOST=beamfs-master|VERDICT=VERIFIED|DIFFS=0|N_FILES_CHANGED=0|details=diff counted\n";
+        assert_eq!(extract_cluster_verdict(r, "beamfs-master", 1000), "NOT_EXERCISED");
+        assert_eq!(
+            extract_cluster_verdict_detail(r, "beamfs-master", 1000),
+            "NOT_EXERCISED"
+        );
+    }
+
+    #[test]
+    fn a_call_without_a_flip_is_still_a_measurement() {
+        // CALL_DELTA > 0 with FLIP_DELTA == 0 is the injector running and
+        // landing nothing on the file: that IS a measurement, and must
+        // keep its old verdict. The guard is a conjunction for this reason.
         let r = rec(
             "ATTACK|FS=beamfs|PROB=1000|CALL_DELTA=2|FLIP_DELTA=0|TARGET=dir-B/file-B2.bin|HASH_PRE=abc|HASH_POST=abc|CAT_RC=0|RS_CORRECTED=0|DMESG_UNCORRECTABLE=0|DMESG_EIO=0",
             "VERIFY|fs=beamfs|prob=1000|VERDICT=MOUNTED|DIFFS_PRE_POST=0|DIFFS_PRE_REMOUNT=0|N_FILES_CHANGED=0|details=ok",

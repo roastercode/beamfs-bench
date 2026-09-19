@@ -90,9 +90,45 @@ fn sql_num(v: Option<i64>) -> String {
     v.map_or_else(|| "NULL".into(), |n| n.to_string())
 }
 
+/// Where the schema lives, in order: an explicit override, the installed
+/// copy, then the source tree. `CARGO_MANIFEST_DIR` alone is a build-time
+/// path: under Portage it points into /var/tmp/portage, which is gone by
+/// the time the binary runs. Same cascade as `bpf::script_roots`.
+///
+/// # Errors
+/// When no candidate holds the file.
+fn schema_path() -> Result<std::path::PathBuf> {
+    let mut cands: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(p) = std::env::var("BEAMFS_BENCH_SCHEMA") {
+        cands.push(std::path::PathBuf::from(p));
+    }
+    cands.push(std::path::PathBuf::from(
+        "/usr/share/beamfs-bench/schema/beamfs-bench.sql",
+    ));
+    cands.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("schema/beamfs-bench.sql"));
+    if let Ok(home) = std::env::var("HOME") {
+        cands.push(std::path::PathBuf::from(format!(
+            "{home}/git/beamfs-bench/schema/beamfs-bench.sql"
+        )));
+    }
+    for c in &cands {
+        if c.is_file() {
+            return Ok(c.clone());
+        }
+    }
+    anyhow::bail!(
+        "schema beamfs-bench.sql introuvable; cherche dans : {}",
+        cands
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 /// Apply the schema. Idempotent: every statement is CREATE ... IF NOT EXISTS.
 pub fn init(db: &Path) -> Result<()> {
-    let schema = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema/beamfs-bench.sql");
+    let schema = schema_path()?;
     let sql = std::fs::read_to_string(&schema)
         .with_context(|| format!("read schema {}", schema.display()))?;
     if let Some(dir) = db.parent() {
