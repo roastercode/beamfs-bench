@@ -79,6 +79,10 @@ pub struct PipelineManifest {
     pub commit_bench:      String,
     pub source_sha256:     Vec<(String, String)>,
     pub canonical_beamfs_sha256: String,
+    /// "Matched" or "Ignored". Empty when the phase did not run.
+    pub chain_verdict:     String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain_seal:        Option<crate::chain::Seal>,
     pub reference_image_sha256:   String,
     pub in_vm_kernel_stamp:   Vec<(String, String)>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -257,6 +261,24 @@ pub fn canonical_image_sha() -> Result<String> {
         .context("hash canonical .beamfs")?;
     println!("  canonical beamfs sha256: {beamfs_sha}");
     Ok(beamfs_sha)
+}
+
+// ---------------------------------------------------------------------
+// Phase 0.4bis -- the chain seal.
+// BX deploys first and writes down which image it measured. This bench
+// is the second half of that campaign or it is not part of it; see
+// chain.rs for what the 2026-09-19 run cost.
+// ---------------------------------------------------------------------
+/// Check the canonical image against the seal beamfs-xfstests left.
+///
+/// # Errors
+/// When no seal exists or it names another image, unless
+/// `BEAMFS_CHAIN_IGNORE` is set.
+pub fn verify_chain_seal(
+    canonical_sha: &str,
+) -> Result<(crate::chain::Verdict, Option<crate::chain::Seal>)> {
+    println!("[pipeline 0.4bis] verify the chain seal left by beamfs-xfstests");
+    crate::chain::verify(canonical_sha, Path::new(crate::lab::canonical_image()))
 }
 
 // ---------------------------------------------------------------------
@@ -519,6 +541,8 @@ pub fn build_initial_manifest() -> Result<PipelineManifest> {
         source_sha256: Vec::new(),
         resolved_vda_paths: BTreeMap::new(),
         canonical_beamfs_sha256: String::new(),
+        chain_verdict: String::new(),
+        chain_seal:    None,
         reference_image_sha256:   String::new(),
         in_vm_kernel_stamp:       Vec::new(),
         phases:                Vec::new(),

@@ -46,6 +46,7 @@ mod analyse;
 mod bitrot;
 mod bootstrap;
 mod bpf;
+mod chain;
 mod cluster;
 mod db;
 mod code_analysis;
@@ -575,8 +576,19 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     // Phase 0.4
     let beamfs_sha = pipeline::canonical_image_sha()
         .map_err(|e| pipeline::fail(&mut manifest, "0.4_extract_ref", &e))?;
-    manifest.canonical_beamfs_sha256 = beamfs_sha;
     pipeline::record(&mut manifest, "0.4_extract_ref", 0);
+
+    // Phase 0.4bis -- this bench is the second half of a BX campaign
+    // or it is not part of one. See chain.rs.
+    match pipeline::verify_chain_seal(&beamfs_sha) {
+        Ok((verdict, seal)) => {
+            manifest.chain_verdict = format!("{verdict:?}");
+            manifest.chain_seal = seal;
+            pipeline::record(&mut manifest, "0.4bis_chain_seal", 0);
+        }
+        Err(e) => return Err(pipeline::fail(&mut manifest, "0.4bis_chain_seal", &e)),
+    }
+    manifest.canonical_beamfs_sha256 = beamfs_sha;
 
     // Phase 0.5
     match pipeline::redeploy_4_vms() {

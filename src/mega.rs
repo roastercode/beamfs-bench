@@ -291,6 +291,10 @@ pub fn run(injector: &str) -> Result<i32> {
         pipeline::bitbake_image_to(false, Some(&build_dir))?;
         pipeline::record(&mut manifest, "0.3_bitbake", 0);
         let beamfs_sha = pipeline::canonical_image_sha()?;
+        let (chain_verdict, chain_seal) = pipeline::verify_chain_seal(&beamfs_sha)?;
+        manifest.chain_verdict = format!("{chain_verdict:?}");
+        manifest.chain_seal = chain_seal;
+        pipeline::record(&mut manifest, "0.4bis_chain_seal", 0);
         manifest.canonical_beamfs_sha256 = beamfs_sha;
         pipeline::record(&mut manifest, "0.4_extract_ref", 0);
         let resolved_vda = pipeline::redeploy_4_vms()?;
