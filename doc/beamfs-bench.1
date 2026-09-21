@@ -28,6 +28,22 @@ and left 213009 bytes of the old contents in place. It was one of five
 slots feeding the multi\-filesystem comparison.
 .SH COMMANDS
 .TP
+.B checkpoint
+Say whether this repository, what was pushed, and the installed binary
+still describe the same code.
+.sp
+This tool does not run from its repository. It is emerged, and what
+runs is /usr/bin/beamfs-bench, built by the ebuild from the remote. An
+edit reaches a measurement only after a commit, a push and an emerge,
+and any of the three can be skipped without a word: asked for the first
+time, the answer was four files uncommitted, seven commits never
+pushed, and a binary forty-nine hours older than the last commit.
+.sp
+Since 0.13.0 the same links are checked before every measurement and a
+broken one refuses the run.
+.B BEAMFS_BENCH_FORCE=1
+takes it anyway.
+.TP
 .B full
 The whole pipeline: lab verification, VM lifecycle, cluster bootstrap,
 then

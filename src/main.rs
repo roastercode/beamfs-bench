@@ -41,6 +41,7 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 
+mod checkpoint;
 mod bell;
 mod analyse;
 mod bitrot;
@@ -258,6 +259,15 @@ enum DbAction {
 enum Command {
     /// Print version and build info, then exit.
     Version,
+
+    /// Say whether this repository, what was pushed, and the installed
+    /// binary still describe the same code.
+    ///
+    /// This tool runs from /usr/bin, built by emerge from the remote,
+    /// so an edit reaches a measurement only after a commit, a push
+    /// and an emerge. Any of the three can be skipped without a word,
+    /// and the run then measures the build before.
+    Checkpoint,
 
     /// Multi-FS head-to-head bench under `RadFI` live injection.
     /// Targets 2 FS x 3 probabilities by default.
@@ -739,9 +749,18 @@ fn main() {
     // Session priming : sudo + GPG + ssh-agent caches populated once,
     // refreshed by keep-alive thread for the lifetime of the process.
     // Skipped for Version subcommand which performs no privileged I/O.
-    if !matches!(cli.command, Command::Version) {
+    if !matches!(cli.command, Command::Version | Command::Checkpoint) {
         if let Err(e) = host_auth::prime_session() {
             eprintln!("beamfs-bench: session priming failed: {e:#}");
+            std::process::exit(1);
+        }
+    }
+
+    // Nothing is measured until the chain from this repository to the
+    // installed binary agrees with itself.
+    if !matches!(cli.command, Command::Version | Command::Checkpoint) {
+        if let Err(e) = checkpoint::gate() {
+            eprintln!("beamfs-bench: {e}");
             std::process::exit(1);
         }
     }
@@ -752,6 +771,11 @@ fn main() {
 
     let rc = match cli.command {
         Command::Version => cmd_version(),
+
+        Command::Checkpoint => {
+            checkpoint::report();
+            0
+        }
 
         Command::Perf { regimes, prob, runtime, size, injector } => {
             std::env::set_var("PERF_RUNTIME", runtime.to_string());
