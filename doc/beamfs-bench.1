@@ -26,6 +26,13 @@ unverified lab produces numbers nobody can use \(em on 2026-09-11 the USB
 pre\-flight caught a stick that acknowledged a 4 MiB write at 42 MB/s
 and left 213009 bytes of the old contents in place. It was one of five
 slots feeding the multi\-filesystem comparison.
+.IP
+Since 0.14.1 the USB pre-flight wipes each slot and reads it back in
+O_DIRECT, so that the read comes from the medium and not from the page
+cache that the wipe just filled; and a slot that reads back anything
+but zeros is reported with the count of non-zero bytes, the offset of
+the first, its first 32 bytes, and the running domain the device is
+attached to, if any.
 .SH COMMANDS
 .TP
 .B checkpoint

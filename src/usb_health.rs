@@ -459,6 +459,7 @@ fn dd_wipe_and_verify(dev: &Path) -> Result<()> {
         .arg(format!("of={}", dev.display()))
         .arg("bs=1M")
         .arg(format!("count={WIPE_MIB}"))
+        .arg("oflag=direct")
         .arg("conv=fsync")
         .arg("status=none")
         .output()
@@ -471,8 +472,15 @@ fn dd_wipe_and_verify(dev: &Path) -> Result<()> {
         ));
     }
 
-    // Read the first megabyte back. Anything non-zero means the write
-    // was acknowledged but not applied.
+    // Read the first megabyte back, from the medium: through the page
+    // cache the read returns what the wipe just put there whatever the
+    // stick did with it, and proves nothing. Until 0.14.1 both the
+    // wipe and the read went through the cache, and on 2026-09-27 the
+    // slot vdc of compute01 was declared dead on a read that saw
+    // something else than zeros; the same stick, written and read in
+    // O_DIRECT from the host, took and gave back every byte. What it
+    // saw was not kept, so which it was cannot be said: this version
+    // says it.
     let out = Command::new("sudo")
         .arg("-n")
         .arg("dd")
@@ -480,6 +488,7 @@ fn dd_wipe_and_verify(dev: &Path) -> Result<()> {
         .arg("of=/dev/stdout")
         .arg("bs=1M")
         .arg("count=1")
+        .arg("iflag=direct")
         .arg("status=none")
         .output()
         .context("spawn sudo dd (wipe verify)")?;
@@ -490,14 +499,49 @@ fn dd_wipe_and_verify(dev: &Path) -> Result<()> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    if out.stdout.iter().any(|b| *b != 0) {
+    let nz: Vec<usize> = out.stdout.iter().enumerate()
+        .filter(|(_, b)| **b != 0)
+        .map(|(i, _)| i)
+        .collect();
+    if let Some(&first) = nz.first() {
+        let end = (first + 32).min(out.stdout.len());
+        let hex: Vec<String> = out.stdout[first..end].iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         return Err(anyhow!(
-            "{} still holds data after wipe: the medium acknowledged a write it did not apply",
-            dev.display()
+            "{} still holds data after wipe: {} non-zero byte(s) in the first MiB read \
+             in O_DIRECT, the first at offset {}: {}; the device is {}",
+            dev.display(), nz.len(), first, hex.join(" "), holder_of(dev)
         ));
     }
 
     Ok(())
+}
+
+/// Which running domain has this device attached, if any.
+///
+/// A wipe on a device a guest is writing to measures the guest, not
+/// the medium; a verdict on the stick has to say whether one was.
+fn holder_of(dev: &Path) -> String {
+    let name = dev.to_string_lossy();
+    let doms = Command::new("sudo")
+        .args(["-n", "virsh", "list", "--name"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    for d in doms.lines().map(str::trim).filter(|d| !d.is_empty()) {
+        let bl = Command::new("sudo")
+            .args(["-n", "virsh", "domblklist", d])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        if bl.lines().any(|l| l.contains(&*name)) {
+            return format!("attached to the running domain {d}");
+        }
+    }
+    "attached to no running domain".to_string()
 }
 
 fn dd_read_probe(dev: &Path, skip_mib: u64) -> Result<()> {
