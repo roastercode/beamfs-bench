@@ -105,9 +105,14 @@ fn calc_machine() -> String {
 }
 
 /// The image recipe name.
+///
+/// The layer builds beamfs-research-image, for both machines; the
+/// default here was hpc-arm64-research-beamfs, a recipe the layer no
+/// longer has, and on 2026-09-28 phase 0.3 asked bitbake for it and
+/// stopped on "Nothing PROVIDES". BEAMFS_BENCH_IMAGE still wins.
 #[must_use]
 fn calc_image_name() -> String {
-    from_env("BEAMFS_BENCH_IMAGE", "hpc-arm64-research-beamfs")
+    from_env("BEAMFS_BENCH_IMAGE", "beamfs-research-image")
 }
 
 /// Full path of the build directory.
@@ -120,7 +125,7 @@ fn calc_build_dir() -> String {
 #[must_use]
 fn calc_canonical_image() -> String {
     format!(
-        "{}/tmp/deploy/images/{m}/{i}-{m}.beamfs",
+        "{}/tmp/deploy/images/{m}/{i}-{m}.rootfs.beamfs",
         calc_build_dir(),
         m = calc_machine(),
         i = calc_image_name()
@@ -269,7 +274,7 @@ mod tests {
         unsafe { std::env::set_var("BEAMFS_BENCH_MACHINE", "qemux86-64") };
         assert_eq!(calc_build_dir_name(), "build-qemux86");
         assert!(calc_canonical_image().contains("build-qemux86"));
-        assert!(calc_canonical_image().ends_with("qemux86-64.beamfs"));
+        assert!(calc_canonical_image().ends_with("qemux86-64.rootfs.beamfs"));
         unsafe { std::env::remove_var("BEAMFS_BENCH_MACHINE") };
     }
 
@@ -311,7 +316,7 @@ mod tests {
         assert_eq!(calc_ssh_user(), "hpcadmin");
         assert_eq!(
             calc_canonical_image(),
-            "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/hpc-arm64-research-beamfs-qemuarm64.beamfs"
+            "/home/aurelien/yocto/poky/build-qemu-arm64/tmp/deploy/images/qemuarm64/beamfs-research-image-qemuarm64.rootfs.beamfs"
         );
         assert_eq!(
             calc_kernel_source(),
@@ -353,7 +358,7 @@ mod tests {
         unsafe { std::env::set_var("BEAMFS_BENCH_MACHINE", "qemux86-64") };
         assert_eq!(
             calc_canonical_image(),
-            "/home/aurelien/yocto/poky/build-qemux86/tmp/deploy/images/qemux86-64/hpc-arm64-research-beamfs-qemux86-64.beamfs"
+            "/home/aurelien/yocto/poky/build-qemux86/tmp/deploy/images/qemux86-64/beamfs-research-image-qemux86-64.rootfs.beamfs"
         );
         unsafe { std::env::remove_var("BEAMFS_BENCH_BUILD_DIR") };
         unsafe { std::env::remove_var("BEAMFS_BENCH_MACHINE") };

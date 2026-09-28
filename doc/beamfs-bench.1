@@ -40,6 +40,13 @@ directory, unless BEAMFS_BENCH_MODULE_VERSION is set; it was a default
 of 0.1.3, and a clean run failed on it once the layer had moved on. The
 domain a slot is attached to is found by comparing what the paths point
 at, not the paths themselves.
+.IP
+Since 0.14.3 the image the pipeline builds and treats as canonical is
+beamfs-research-image, read from
+tmp/deploy/images/<machine>/beamfs-research-image-<machine>.rootfs.beamfs;
+the default had stayed hpc-arm64-research-beamfs, which the layer no
+longer builds, and phase 0.3 stopped on it. BEAMFS_BENCH_IMAGE still
+overrides the name.
 .SH COMMANDS
 .TP
 .B checkpoint
