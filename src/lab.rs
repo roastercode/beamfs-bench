@@ -163,12 +163,38 @@ fn calc_ssh_user() -> String {
 
 /// The module version the Yocto recipe mirrors.
 ///
-/// It appears in a path -- recipes-kernel/beamfs/files/beamfs-0.1.3 --
-/// so a version bump moves a directory the lockstep check reads. It was
-/// a literal inside that path, which meant the check silently compared
-/// nothing once the sources moved on.
+/// It appears in a path -- recipes-kernel/beamfs/files/beamfs-<v> --
+/// so a version bump moves a directory the lockstep check reads. It
+/// was a literal inside that path, which meant the check silently
+/// compared nothing once the sources moved on; then it was a default
+/// of "0.1.3" behind an environment variable, and on 2026-09-28 the
+/// lockstep phase failed a clean run because the layer held 0.1.22.
+/// Now it is read from the layer: the highest beamfs-<v> directory
+/// under recipes-kernel/beamfs/files. The environment still wins when
+/// set, for a run against another layer.
 fn calc_module_version() -> String {
-    from_env("BEAMFS_BENCH_MODULE_VERSION", "0.1.3")
+    if let Ok(v) = std::env::var("BEAMFS_BENCH_MODULE_VERSION") {
+        if !v.trim().is_empty() {
+            return v;
+        }
+    }
+    let files = format!("{}/recipes-kernel/beamfs/files", calc_yocto_repo());
+    let mut versions: Vec<Vec<u32>> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&files) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if let Some(v) = name.strip_prefix("beamfs-") {
+                let parts: Vec<u32> = v.split('.').filter_map(|p| p.parse().ok()).collect();
+                if !parts.is_empty() && parts.len() == v.split('.').count() {
+                    versions.push(parts);
+                }
+            }
+        }
+    }
+    versions.sort();
+    versions.last().map_or_else(
+        || "0.1.3".to_string(),
+        |v| v.iter().map(ToString::to_string).collect::<Vec<_>>().join("."))
 }
 
 /// The mirrored kernel sources inside the Yocto layer.

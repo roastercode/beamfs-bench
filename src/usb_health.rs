@@ -523,7 +523,11 @@ fn dd_wipe_and_verify(dev: &Path) -> Result<()> {
 /// A wipe on a device a guest is writing to measures the guest, not
 /// the medium; a verdict on the stick has to say whether one was.
 fn holder_of(dev: &Path) -> String {
-    let name = dev.to_string_lossy();
+    // The XML names the device by its /dev/disk/by-id path and the
+    // caller by what that resolves to; compared as strings they never
+    // matched, and 0.14.1 answered "no running domain" while compute01
+    // was running with the stick attached.
+    let want = std::fs::canonicalize(dev).unwrap_or_else(|_| dev.to_path_buf());
     let doms = Command::new("sudo")
         .args(["-n", "virsh", "list", "--name"])
         .output()
@@ -537,7 +541,13 @@ fn holder_of(dev: &Path) -> String {
             .ok()
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
             .unwrap_or_default();
-        if bl.lines().any(|l| l.contains(&*name)) {
+        let holds = bl.lines().any(|l| {
+            l.split_whitespace().nth(1).is_some_and(|src| {
+                src.starts_with('/')
+                    && std::fs::canonicalize(src).is_ok_and(|p| p == want)
+            })
+        });
+        if holds {
             return format!("attached to the running domain {d}");
         }
     }

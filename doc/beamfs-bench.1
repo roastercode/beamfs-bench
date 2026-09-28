@@ -33,6 +33,13 @@ cache that the wipe just filled; and a slot that reads back anything
 but zeros is reported with the count of non-zero bytes, the offset of
 the first, its first 32 bytes, and the running domain the device is
 attached to, if any.
+.IP
+Since 0.14.2 the module version the lockstep phases compare against is
+read from the layer, the highest recipes-kernel/beamfs/files/beamfs-<v>
+directory, unless BEAMFS_BENCH_MODULE_VERSION is set; it was a default
+of 0.1.3, and a clean run failed on it once the layer had moved on. The
+domain a slot is attached to is found by comparing what the paths point
+at, not the paths themselves.
 .SH COMMANDS
 .TP
 .B checkpoint
