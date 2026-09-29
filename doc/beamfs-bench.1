@@ -47,6 +47,19 @@ tmp/deploy/images/<machine>/beamfs-research-image-<machine>.rootfs.beamfs;
 the default had stayed hpc-arm64-research-beamfs, which the layer no
 longer builds, and phase 0.3 stopped on it. BEAMFS_BENCH_IMAGE still
 overrides the name.
+.IP
+Since 0.14.4 the scrub scenario (Test G) reads the damaged block back
+raw from the medium, volume unmounted and in O_DIRECT, before the
+injection, after it and after the sweeps, and reports how many bytes
+the injection changed, how many are still different after the sweeps,
+and whether the block on the medium is the clean one again. The digest
+of the file, all it reported about the data until then, goes through a
+read, which corrects in memory, and holds with or without a repair.
+--node and --device run it on another node than compute01, x86-01
+included, with BEAMFS_BENCH_SSH_KEY and BEAMFS_BENCH_SSH_USER for that
+node. full refuses a --machine other than the cluster's (qemuarm64, or
+BEAMFS_BENCH_CLUSTER_MACHINE): the cluster's domains are aarch64, and
+an x86-64 image deployed on them boots nothing.
 .SH COMMANDS
 .TP
 .B checkpoint

@@ -403,7 +403,7 @@ enum Command {
 
     /// Test G - scrubber under dose: does it repair, and does its rate
     /// follow what it finds? Observes without reading the data, so only
-    /// the scrubber can act.
+    /// the scrubber can act; the repair is read back from the medium.
     Scrub {
         /// Deployment whose exposure sets the injection size.
         #[arg(long, default_value = "medical-linac-vault")]
@@ -412,6 +412,16 @@ enum Command {
         /// Sweeps to observe after injection.
         #[arg(long, default_value_t = 12)]
         sweeps: u64,
+
+        /// Node to run on: compute01 by default. x86-01 is 192.168.122.99,
+        /// reached with `BEAMFS_BENCH_SSH_KEY` and `BEAMFS_BENCH_SSH_USER`
+        /// set to what beamfs-xfstests uses.
+        #[arg(long, default_value = "192.168.56.11")]
+        node: String,
+
+        /// Device on that node the scenario formats.
+        #[arg(long, default_value = "vdh")]
+        device: String,
     },
 
     /// Test C - bit-rot offline (dd random on offline partition, then read).
@@ -741,6 +751,18 @@ fn main() {
         unsafe { std::env::set_var("BEAMFS_BENCH_MACHINE", m) };
     }
 
+    // A full run deploys the canonical image of its machine onto the
+    // cluster's four domains, which are aarch64: on 2026-09-28
+    // --machine qemux86-64 put the x86-64 image on them, four guests at
+    // 100% for 2 h 37 booting nothing. The x86-64 chain is measured by
+    // beamfs-xfstests on x86-01.
+    if matches!(cli.command, Command::Full { .. }) {
+        if let Err(e) = lab::check_cluster_machine() {
+            eprintln!("beamfs-bench: {e}");
+            std::process::exit(2);
+        }
+    }
+
     // v0.8.0: cumulative-simultaneous emufi 0.3.2 attack flags.
     // Export to process env BEFORE any subcommand dispatches, so
     // that cluster::worker_cmd's std::env::var(...) picks them up.
@@ -905,8 +927,8 @@ fn main() {
                 }
             }
         }
-        Command::Scrub { deployment, sweeps } => {
-            match scrub::run_cli(&deployment, sweeps) {
+        Command::Scrub { deployment, sweeps, node, device } => {
+            match scrub::run_cli(&deployment, sweeps, &node, &device) {
                 Ok(rc) => rc,
                 Err(e) => {
                     eprintln!("beamfs-bench: scrub failed: {e:#}");

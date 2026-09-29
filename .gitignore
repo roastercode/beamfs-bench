@@ -1,2 +1,3 @@
 target/
 beamfs-bench-scrub-*/
+.checkpatch-camelcase.*

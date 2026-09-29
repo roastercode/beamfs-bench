@@ -165,6 +165,15 @@ fn calc_ssh_user() -> String {
     from_env("BEAMFS_BENCH_SSH_USER", "hpcadmin")
 }
 
+/// The Yocto machine the cluster's four domains run.
+///
+/// beamfs-master and beamfs-compute01 to 03 are aarch64 domains, and an
+/// image built for another machine does not boot on them.
+#[must_use]
+fn calc_cluster_machine() -> String {
+    from_env("BEAMFS_BENCH_CLUSTER_MACHINE", "qemuarm64")
+}
+
 
 /// The module version the Yocto recipe mirrors.
 ///
@@ -243,6 +252,31 @@ once!(pub runs_dir, calc_runs_dir);
 once!(pub ssh_key, calc_ssh_key);
 once!(pub ssh_user, calc_ssh_user);
 once!(pub yocto_kernel_files, calc_yocto_kernel_files);
+once!(pub cluster_machine, calc_cluster_machine);
+
+/// Whether an image built for `machine` can go on a cluster of `cluster`.
+fn machine_fits(machine: &str, cluster: &str) -> Result<(), String> {
+    if machine == cluster {
+        return Ok(());
+    }
+    Err(format!(
+        "the cluster runs {cluster} and this run would deploy the {machine} image onto it, \
+         which does not boot there; {machine} is measured by beamfs-xfstests on its own node \
+         (BEAMFS_BENCH_CLUSTER_MACHINE names the cluster's machine if the cluster changes)"
+    ))
+}
+
+/// Refuse a run that would deploy onto the cluster an image it cannot boot.
+///
+/// On 2026-09-28 `full --machine qemux86-64` put the x86-64 image on the
+/// four aarch64 domains: four guests at 100% for 2 h 37, booting nothing.
+///
+/// # Errors
+///
+/// When the machine the run builds for is not the cluster's.
+pub fn check_cluster_machine() -> Result<(), String> {
+    machine_fits(machine(), cluster_machine())
+}
 
 #[cfg(test)]
 mod tests {
@@ -362,5 +396,13 @@ mod tests {
         );
         unsafe { std::env::remove_var("BEAMFS_BENCH_BUILD_DIR") };
         unsafe { std::env::remove_var("BEAMFS_BENCH_MACHINE") };
+    }
+
+    /// An image is refused on a cluster of another machine.
+    #[test]
+    fn an_image_for_another_machine_is_refused() {
+        assert!(machine_fits("qemuarm64", "qemuarm64").is_ok());
+        let e = machine_fits("qemux86-64", "qemuarm64").unwrap_err();
+        assert!(e.contains("qemux86-64") && e.contains("qemuarm64"));
     }
 }

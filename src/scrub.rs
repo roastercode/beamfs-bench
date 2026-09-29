@@ -42,6 +42,22 @@
 //! same volume is the only comparison that means anything under emulation
 //! where wall-clock rates vary with host load.
 //!
+//! What counts as a repair is the block on the medium. It is read raw,
+//! volume unmounted and in `O_DIRECT`, before the injection, after it, and
+//! after the sweeps; a repair is the third reading equal to the first.
+//! The digest of the file at the end goes through a read, and a read
+//! corrects in memory whatever the scrubber did or did not write: it says
+//! the data can be read, not that the scrubber repaired it. Until 0.14.4
+//! it was all this scenario said about the data.
+//!
+//! ## Where
+//!
+//! compute01 by default. `--node` and `--device` run it on another node:
+//! the scrubber is the same code on both architectures, but it is built
+//! and run on each, and x86-01 is where the x86-64 chain is measured.
+//! Reaching that node takes the key and account beamfs-xfstests uses,
+//! given through `BEAMFS_BENCH_SSH_KEY` and `BEAMFS_BENCH_SSH_USER`.
+//!
 //! As everywhere in this harness: observations are recorded, judgment is
 //! left to synthesis.
 
@@ -109,7 +125,15 @@ impl ScrubSample {
 #[derive(Debug, Clone)]
 pub struct ScrubObservation {
     pub deployment: Deployment,
+    /// The node and device the observation was made on.
+    pub node: String,
     pub symbols_injected: u32,
+    /// Bytes of the damaged block that differ from the clean one, read
+    /// from the medium: what the injection actually changed.
+    pub injected_bytes: u64,
+    /// Bytes still different from the clean block on the medium after
+    /// the sweeps, or `None` when the block could not be read back.
+    pub left_bytes: Option<u64>,
     pub samples: Vec<ScrubSample>,
     /// Data digest before injection and at the end.
     pub digest_before: String,
@@ -149,10 +173,22 @@ impl ScrubObservation {
         self.samples.last().map_or(1, ScrubSample::factor)
     }
 
-    /// Did the data come back to what it was?
+    /// Did the data come back to what it was, as a read sees it?
+    ///
+    /// A read corrects in memory: this is true whether or not the
+    /// scrubber repaired anything on the medium.
     #[must_use]
     pub fn data_intact(&self) -> bool {
         !self.digest_before.is_empty() && self.digest_before == self.digest_after
+    }
+
+    /// Is the damaged block, on the medium, the clean block again?
+    ///
+    /// Only the scrubber can have written it: nothing reads the file
+    /// between the injection and the last raw reading.
+    #[must_use]
+    pub fn repaired_on_medium(&self) -> bool {
+        self.injected_bytes > 0 && self.left_bytes == Some(0)
     }
 
     /// The observation record, in the harness's usual form.
@@ -161,6 +197,7 @@ impl ScrubObservation {
         let mut s = String::new();
         s.push_str("# Test G -- scrubber under dose\n\n");
         s.push_str(&format!("- deployment: {}\n", self.deployment.as_str()));
+        s.push_str(&format!("- node: {}\n", self.node));
         s.push_str(&format!("- symbols injected: {}\n", self.symbols_injected));
         s.push_str(&format!("- samples: {}\n\n", self.samples.len()));
 
@@ -182,6 +219,12 @@ impl ScrubObservation {
         s.push_str(&format!("- digest before: {}\n", self.digest_before));
         s.push_str(&format!("- digest after:  {}\n", self.digest_after));
         s.push_str(&format!("- data identical: {}\n", self.data_intact()));
+        s.push_str(&format!(
+            "- block on the medium: {} byte(s) changed by the injection, {} still different after the sweeps\n",
+            self.injected_bytes,
+            self.left_bytes.map_or_else(|| "unreadable".to_string(), |n| n.to_string())
+        ));
+        s.push_str(&format!("- repaired on the medium: {}\n", self.repaired_on_medium()));
 
         s.push_str("\n## Reading these numbers\n\n");
         s.push_str(
@@ -194,6 +237,10 @@ impl ScrubObservation {
              final factor of 1 means it settled once there was nothing left to\n\
              find. Peak 1 under a non-zero injection means the loop did not\n\
              engage, which is a defect in the loop rather than in the volume.\n\n\
+             Repaired on the medium is the damaged block read back raw, volume\n\
+             unmounted, equal to the clean one: the scrubber wrote its repair and\n\
+             it reached the disk. Data identical goes through a read, which\n\
+             corrects in memory, and holds with or without a repair.\n\n\
              Whether these values are acceptable for a given deployment is a\n\
              question for synthesis, not for this file.\n",
         );
@@ -201,21 +248,21 @@ impl ScrubObservation {
     }
 }
 
-/// The lab node this scenario runs on.
+/// The node this scenario runs on.
 ///
 /// One node, not the cluster: the scrubber is per-mount, and observing
 /// four of them at once would measure the host's scheduler as much as
 /// the filesystem.
-fn lab_target() -> Result<SshTarget> {
+fn lab_target(node: &str) -> SshTarget {
     let key = crate::lab::ssh_key().to_string();
-    Ok(SshTarget::new(crate::lab::ssh_user(), "192.168.56.11", &key))
+    SshTarget::new(crate::lab::ssh_user(), node, &key)
 }
 
 /// Entry point for the `scrub` subcommand.
-pub fn run_cli(deployment: &str, sweeps: u64) -> Result<i32> {
+pub fn run_cli(deployment: &str, sweeps: u64, node: &str, device: &str) -> Result<i32> {
     let dep = Deployment::parse(deployment)
         .with_context(|| format!("unknown deployment {deployment}"))?;
-    let ssh = lab_target()?;
+    let ssh = lab_target(node);
 
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -227,7 +274,8 @@ pub fn run_cli(deployment: &str, sweeps: u64) -> Result<i32> {
 
     let cfg = ScrubConfig {
         ssh: &ssh,
-        device: "vdh".into(),
+        node: node.to_string(),
+        device: device.to_string(),
         mount: "/mnt/k".into(),
         deployment: dep,
         sweeps,
@@ -236,13 +284,20 @@ pub fn run_cli(deployment: &str, sweeps: u64) -> Result<i32> {
 
     let obs = run(&cfg)?;
     println!();
+    println!("  node              {} /dev/{device}", obs.node);
     println!("  deployment        {}", obs.deployment.as_str());
     println!("  symbols injected  {}", obs.symbols_injected);
     println!("  sweeps observed   {}", obs.samples.len());
     println!("  corr/sweep        {:.2}", obs.corrections_per_sweep());
     println!("  peak factor       {}", obs.peak_factor());
     println!("  final factor      {}", obs.final_factor());
-    println!("  data identical    {}", obs.data_intact());
+    println!("  data identical    {}  (through a read, which corrects in memory)", obs.data_intact());
+    println!("  injected bytes    {}  (on the medium)", obs.injected_bytes);
+    println!(
+        "  left on medium    {}",
+        obs.left_bytes.map_or_else(|| "unreadable".to_string(), |n| n.to_string())
+    );
+    println!("  repaired on disk  {}", obs.repaired_on_medium());
     println!();
     println!("  record: {}", run_dir.join("test-g-scrub.md").display());
 
@@ -254,6 +309,7 @@ pub fn run_cli(deployment: &str, sweeps: u64) -> Result<i32> {
 /// Configuration for one observation.
 pub struct ScrubConfig<'a> {
     pub ssh: &'a SshTarget,
+    pub node: String,
     pub device: String,
     pub mount: String,
     pub deployment: Deployment,
@@ -298,6 +354,17 @@ pub fn run(cfg: &ScrubConfig) -> Result<ScrubObservation> {
 
     // Offline: the scrubber must be the only thing that repairs this.
     s.exec(&format!("sudo umount {mnt}"))?;
+
+    // The block as the medium holds it, clean, then damaged: raw, the
+    // volume unmounted, in O_DIRECT so that the page cache answers for
+    // nothing.
+    let raw = |tag: &str| {
+        format!(
+            "sudo dd if=/dev/{dev} of=/tmp/testg-{dev}-{tag}.blk bs=4096 skip={phys} \
+             count=1 iflag=direct status=none"
+        )
+    };
+    s.exec(&raw("clean")).context("raw read of the clean block")?;
     for k in 0..symbols {
         let off = phys * 4096 + u64::from(k) * 7;
         s.exec(&format!(
@@ -305,6 +372,8 @@ pub fn run(cfg: &ScrubConfig) -> Result<ScrubObservation> {
         ))?;
     }
     s.exec("sudo sync")?;
+    s.exec(&raw("damaged")).context("raw read of the damaged block")?;
+    let injected_bytes = differing_bytes(s, dev, "damaged")?;
     s.exec(&format!("sudo mount -t beamfs /dev/{dev} {mnt}"))?;
 
     // Watch. Nothing here reads the file: only the scrubber can act.
@@ -336,7 +405,16 @@ pub fn run(cfg: &ScrubConfig) -> Result<ScrubObservation> {
         }
     }
 
+    // The medium first, before anything reads the file: a read corrects
+    // in memory, and what it returns says nothing about what the
+    // scrubber wrote.
     s.exec("sudo sync")?;
+    s.exec(&format!("sudo umount {mnt}"))?;
+    let left_bytes = s
+        .exec(&raw("after"))
+        .and_then(|_| differing_bytes(s, dev, "after"))
+        .ok();
+    s.exec(&format!("sudo mount -t beamfs /dev/{dev} {mnt}")).context("remount")?;
     let digest_after = s
         .exec_lenient(&format!("sudo md5sum {mnt}/probe | cut -d' ' -f1"))?
         .trim()
@@ -345,7 +423,10 @@ pub fn run(cfg: &ScrubConfig) -> Result<ScrubObservation> {
 
     let obs = ScrubObservation {
         deployment: cfg.deployment,
+        node: cfg.node.clone(),
         symbols_injected: symbols,
+        injected_bytes,
+        left_bytes,
         samples,
         digest_before,
         digest_after,
@@ -356,6 +437,14 @@ pub fn run(cfg: &ScrubConfig) -> Result<ScrubObservation> {
         .with_context(|| format!("writing {}", out.display()))?;
 
     Ok(obs)
+}
+
+/// Bytes of a raw reading that differ from the clean one.
+fn differing_bytes(s: &SshTarget, dev: &str, tag: &str) -> Result<u64> {
+    let out = s.exec(&format!(
+        "sudo cmp -l /tmp/testg-{dev}-clean.blk /tmp/testg-{dev}-{tag}.blk | wc -l"
+    ))?;
+    out.trim().parse().context("count of differing bytes")
 }
 
 /// Symbols to inject for a deployment.
@@ -408,7 +497,10 @@ mod tests {
         // One damaged block, repaired once: corrections stop climbing.
         let obs = ScrubObservation {
             deployment: Deployment::MedicalLinacVault,
+            node: "192.168.56.11".into(),
             symbols_injected: 6,
+            injected_bytes: 6,
+            left_bytes: Some(0),
             samples: vec![
                 ScrubSample { passes: 1, corrected: 1, interval_ms: 50, base_ms: 100,
                               ..Default::default() },
@@ -422,6 +514,7 @@ mod tests {
         assert_eq!(obs.peak_factor(), 2);
         assert_eq!(obs.final_factor(), 1);
         assert!(obs.data_intact());
+        assert!(obs.repaired_on_medium());
     }
 
     #[test]
@@ -430,7 +523,10 @@ mod tests {
         // forever, and the rate pinned because it never comes clean.
         let obs = ScrubObservation {
             deployment: Deployment::MedicalLinacVault,
+            node: "192.168.56.11".into(),
             symbols_injected: 6,
+            injected_bytes: 6,
+            left_bytes: Some(6),
             samples: vec![
                 ScrubSample { passes: 1, corrected: 1, interval_ms: 50, base_ms: 100,
                               ..Default::default() },
@@ -442,6 +538,25 @@ mod tests {
         };
         assert_eq!(obs.corrections_per_sweep(), 1.0);
         assert_eq!(obs.peak_factor(), 100);
+        // The shape 0.14.3 could not tell apart: the read gives the
+        // data back, the medium still holds the damage.
+        assert!(obs.data_intact());
+        assert!(!obs.repaired_on_medium());
+    }
+
+    #[test]
+    fn nothing_injected_is_not_a_repair() {
+        let obs = ScrubObservation {
+            deployment: Deployment::Terrestrial,
+            node: "192.168.122.99".into(),
+            symbols_injected: 1,
+            injected_bytes: 0,
+            left_bytes: Some(0),
+            samples: Vec::new(),
+            digest_before: "abc".into(),
+            digest_after: "abc".into(),
+        };
+        assert!(!obs.repaired_on_medium());
     }
 
     #[test]
