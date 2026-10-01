@@ -70,9 +70,13 @@ pub fn prime_session() -> Result<()> {
     prime_sudo().context("sudo session priming")?;
 
     // 2. GPG cache (best-effort : warn but do not fail if gpg unavailable)
-    if let Err(e) = prime_gpg() {
-        eprintln!("[priming] GPG cache priming skipped: {e:#}");
-    }
+    let gpg_ready = match prime_gpg() {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("[priming] GPG cache priming skipped: {e:#}");
+            false
+        }
+    };
 
     // 3. ssh-agent (best-effort)
     if let Err(e) = prime_ssh() {
@@ -83,7 +87,20 @@ pub fn prime_session() -> Result<()> {
     let alive = Arc::new(AtomicBool::new(true));
     spawn_keepalive(&alive);
 
-    println!("[priming] credentials primed, keep-alive thread spawned");
+    /*
+     * Not "credentials primed" when one was not.
+     *
+     * On 2026-10-01 the GPG step timed out with nobody at the keyboard,
+     * this line said every credential was primed, and the pipeline ran
+     * for hours towards a signature it could not make.
+     */
+    if gpg_ready {
+        println!("[priming] credentials primed, keep-alive thread spawned");
+    } else {
+        println!("[priming] credentials primed except the GPG key: a manifest \
+                  written by this run is signed only if a key is cached by then; \
+                  keep-alive thread spawned");
+    }
     println!();
     Ok(())
 }

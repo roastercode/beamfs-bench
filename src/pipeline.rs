@@ -503,6 +503,86 @@ pub fn verify_dmesg_clean() -> Result<()> {
 // ---------------------------------------------------------------------
 // Phase 8.2
 // ---------------------------------------------------------------------
+/// How long gpg is given to sign a manifest.
+const SIGN_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(2);
+
+/// Whether gpg-agent holds a key it can sign with, without asking.
+///
+/// The question session priming asks at start, asked again here: the
+/// cache has a lifetime of its own (max-cache-ttl), and a pipeline that
+/// started with the key cached can end after it has expired.
+fn gpg_key_cached() -> bool {
+    Command::new("gpg-connect-agent")
+        .args(["KEYINFO --list", "/bye"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| {
+            String::from_utf8_lossy(&o.stdout).lines().any(|l| {
+                let t: Vec<&str> = l.split_whitespace().collect();
+                l.starts_with("S KEYINFO ") && t.len() >= 7 && t[6] == "1"
+            })
+        })
+}
+
+/// Sign `path` into `<path>.asc` with `gpg` (the program and its leading
+/// arguments), within `timeout`.
+///
+/// The signature is written to `<path>.asc.part` and renamed once gpg has
+/// succeeded. On a refusal or a timeout gpg is killed and nothing is
+/// left beside the manifest.
+fn sign_manifest(gpg: &[&str], path: &std::path::Path, timeout: std::time::Duration)
+    -> std::result::Result<PathBuf, String>
+{
+    let asc = PathBuf::from(format!("{}.asc", path.display()));
+    let part = PathBuf::from(format!("{}.asc.part", path.display()));
+    let _ = std::fs::remove_file(&part);
+    let (prog, lead) = gpg.split_first().ok_or("no signing program")?;
+    let mut child = Command::new(prog)
+        .args(lead)
+        .args(["--batch", "--pinentry-mode", "loopback",
+               "--detach-sign", "--armor", "--yes", "--output"])
+        .arg(&part)
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{prog} did not start: {e}"))?;
+    let t0 = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) if t0.elapsed() < timeout => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = std::fs::remove_file(&part);
+                return Err(format!("{prog} did not finish within {}s and was killed",
+                                   timeout.as_secs()));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = std::fs::remove_file(&part);
+                return Err(format!("waiting for {prog}: {e}"));
+            }
+        }
+    };
+    let mut said = String::new();
+    if let Some(mut err) = child.stderr.take() {
+        let _ = std::io::Read::read_to_string(&mut err, &mut said);
+    }
+    if !status.success() {
+        let _ = std::fs::remove_file(&part);
+        return Err(format!("{prog} exited with {status}: {}", said.trim()));
+    }
+    std::fs::rename(&part, &asc).map_err(|e| format!("rename {}: {e}", part.display()))?;
+    Ok(asc)
+}
+
 pub fn emit_manifest(m: &PipelineManifest) -> Result<PathBuf> {
     let stamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     let path = PathBuf::from(format!("{}/manifest-{stamp}.json", crate::lab::runs_dir()));
@@ -513,18 +593,28 @@ pub fn emit_manifest(m: &PipelineManifest) -> Result<PathBuf> {
     std::fs::write(&path, &json).with_context(|| format!("write {}", path.display()))?;
     println!("[pipeline 8.2] manifest written: {}", path.display());
 
-    // Use --batch --pinentry-mode loopback to avoid pinentry timeout when
-    // gpg-agent cache is empty. This requires either a populated agent
-    // cache (preauth via dummy sign) or a configured passphrase source.
-    // Without these flags, gpg blocks on pinentry-curses for 30s then fails.
-    let st = Command::new("gpg")
-        .args(["--batch", "--pinentry-mode", "loopback",
-               "--detach-sign", "--armor", "--yes", "--output",
-               &format!("{}.asc", path.display()), &path.to_string_lossy()])
-        .status();
-    match st {
-        Ok(s) if s.success() => println!("  manifest GPG-signed: {}.asc", path.display()),
-        _ => eprintln!("  WARNING: gpg detach-sign failed (manifest unsigned)"),
+    /*
+     * Signed only when a key can sign with nobody at the keyboard, and
+     * never for longer than SIGN_TIMEOUT.
+     *
+     * On 2026-10-01 a `full --auto-confirm` that had run for hours got
+     * here with gpg-agent's cache empty: gpg said "Sorry, we are in
+     * batchmode - can't get input" and did not exit, the pipeline waited
+     * on it for forty minutes until it was killed, and a 0-byte .asc was
+     * left beside the manifest. The manifest itself is the measurement
+     * and is kept either way; the signature can be added afterwards.
+     */
+    if gpg_key_cached() {
+        match sign_manifest(&["gpg"], &path, SIGN_TIMEOUT) {
+            Ok(asc) => println!("  manifest GPG-signed: {}", asc.display()),
+            Err(e) => {
+                eprintln!("  WARNING: manifest NOT signed: {e}; sign it with");
+                eprintln!("    gpg --detach-sign --armor {}", path.display());
+            }
+        }
+    } else {
+        eprintln!("  manifest NOT signed: no key in gpg-agent's cache; sign it with");
+        eprintln!("    gpg --detach-sign --armor {}", path.display());
     }
     Ok(path)
 }
@@ -560,4 +650,60 @@ pub fn fail(m: &mut PipelineManifest, name: &str, e: &anyhow::Error) -> anyhow::
     m.finished_at = now_iso();
     let _ = emit_manifest(m);
     anyhow!("pipeline phase {name} FAILED: {e:#}")
+}
+
+#[cfg(test)]
+mod sign_tests {
+    use super::sign_manifest;
+    use std::time::{Duration, Instant};
+
+    fn scratch(name: &str, script: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let d = std::env::temp_dir().join(format!("bb-sign-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("scratch dir");
+        std::fs::write(d.join("gpg.sh"), script).expect("fake gpg");
+        let m = d.join("manifest.json");
+        std::fs::write(&m, "{}\n").expect("manifest");
+        (d, m)
+    }
+
+    fn gpg(d: &std::path::Path) -> String {
+        d.join("gpg.sh").to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_signature_lands_whole() {
+        let (d, m) = scratch("ok", "while [ $# -gt 1 ]; do [ \"$1\" = --output ] && out=$2; shift; done\necho sig > \"$out\"\n");
+        let g = gpg(&d);
+        let asc = sign_manifest(&["sh", &g], &m, Duration::from_secs(20)).expect("signed");
+        assert_eq!(asc, d.join("manifest.json.asc"));
+        assert!(asc.exists());
+        assert!(!d.join("manifest.json.asc.part").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_refusal_leaves_nothing() {
+        // What gpg said on 2026-10-01, before it stopped answering.
+        let (d, m) = scratch("refused", "echo \"gpg: Sorry, we are in batchmode - can't get input\" >&2\nexit 2\n");
+        let g = gpg(&d);
+        let e = sign_manifest(&["sh", &g], &m, Duration::from_secs(20)).expect_err("refused");
+        assert!(e.contains("can't get input"), "{e}");
+        assert!(!d.join("manifest.json.asc").exists());
+        assert!(!d.join("manifest.json.asc.part").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_gpg_that_never_answers_is_killed() {
+        let (d, m) = scratch("hang", "exec sleep 30\n");
+        let g = gpg(&d);
+        let t0 = Instant::now();
+        let e = sign_manifest(&["sh", &g], &m, Duration::from_secs(1)).expect_err("killed");
+        assert!(e.contains("did not finish"), "{e}");
+        assert!(t0.elapsed() < Duration::from_secs(10));
+        assert!(!d.join("manifest.json.asc").exists());
+        assert!(!d.join("manifest.json.asc.part").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

@@ -68,6 +68,14 @@ image refuses, and every phase that waits for SSH timed out on domains
 that were up. BEAMFS_BENCH_SSH_KEY still overrides it. When the wait
 for SSH times out, the error says what ssh answered on the last
 attempt.
+.IP
+Since 0.14.6 the manifest of a pipeline is signed only when a key is in
+gpg-agent's cache at that moment, and gpg is given two minutes: otherwise
+the manifest is kept unsigned and the reason is printed with the command
+that signs it. The signature is written to a .part file and renamed once
+gpg has succeeded, so no empty or partial .asc is left. When session
+priming cannot cache the key it says so, instead of reporting every
+credential primed.
 .SH COMMANDS
 .TP
 .B checkpoint

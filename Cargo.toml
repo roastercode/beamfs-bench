@@ -1,6 +1,6 @@
 [package]
 name = "beamfs-bench"
-version = "0.14.5"
+version = "0.14.6"
 edition = "2021"
 authors = ["Aurelien DESBRIERES <aurelien@hackers.camp>"]
 license = "GPL-2.0-only"
