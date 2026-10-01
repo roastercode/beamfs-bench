@@ -154,9 +154,24 @@ fn calc_runs_dir() -> String {
 /// reproduce a campaign needs one that opens the machines the campaign
 /// describes, and one that opens nothing else costs nothing to give
 /// away.
+///
+/// The one the image authorizes. beamfs-research-image installs
+/// `files/beamfs-release.pub`, and only it, for hpcadmin and for root
+/// (`HPC_ADMIN_PUBKEY_FILE` in `hpc-config.inc`). The default was
+/// `~/.ssh/hpclab_admin`, the key of the image this harness built before
+/// 0.14.3; on 2026-10-01 the pipeline deployed beamfs-research-image,
+/// the four domains booted, took their leases and answered on port 22,
+/// and refused that key, and phase 1.5 reported a timeout. The release
+/// key is committed in the layer on purpose, for machines that are
+/// never exposed to a network. `BEAMFS_BENCH_SSH_KEY` still wins.
 #[must_use]
 fn calc_ssh_key() -> String {
-    from_home("BEAMFS_BENCH_SSH_KEY", "/.ssh/hpclab_admin")
+    if let Ok(v) = std::env::var("BEAMFS_BENCH_SSH_KEY") {
+        if !v.trim().is_empty() {
+            return v.trim().to_string();
+        }
+    }
+    format!("{}/recipes-core/images/files/beamfs-release", calc_yocto_repo())
 }
 
 /// The account the harness logs in as.
@@ -346,7 +361,11 @@ mod tests {
         assert_eq!(calc_bench_repo(), "/home/aurelien/git/beamfs-bench");
         assert_eq!(calc_poky_dir(), "/home/aurelien/yocto/poky");
         assert_eq!(calc_runs_dir(), "/home/aurelien/git/yocto-beamfs/Documentation/runs");
-        assert_eq!(calc_ssh_key(), "/home/aurelien/.ssh/hpclab_admin");
+        // Not an old constant: the key the image authorizes, since 0.14.5.
+        assert_eq!(
+            calc_ssh_key(),
+            "/home/aurelien/git/yocto-beamfs/recipes-core/images/files/beamfs-release"
+        );
         assert_eq!(calc_ssh_user(), "hpcadmin");
         assert_eq!(
             calc_canonical_image(),

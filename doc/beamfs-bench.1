@@ -60,6 +60,14 @@ included, with BEAMFS_BENCH_SSH_KEY and BEAMFS_BENCH_SSH_USER for that
 node. full refuses a --machine other than the cluster's (qemuarm64, or
 BEAMFS_BENCH_CLUSTER_MACHINE): the cluster's domains are aarch64, and
 an x86-64 image deployed on them boots nothing.
+.IP
+Since 0.14.5 the key that reaches the lab is by default the layer's
+recipes-core/images/files/beamfs-release, the one beamfs-research-image
+authorizes for hpcadmin and root; it was ~/.ssh/hpclab_admin, which the
+image refuses, and every phase that waits for SSH timed out on domains
+that were up. BEAMFS_BENCH_SSH_KEY still overrides it. When the wait
+for SSH times out, the error says what ssh answered on the last
+attempt.
 .SH COMMANDS
 .TP
 .B checkpoint

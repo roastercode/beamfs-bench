@@ -168,7 +168,10 @@ pub fn wait_ssh_ready_parallel() -> Result<()> {
                 if elapsed >= timeout {
                     let _g = progress.lock();
                     eprintln!("  [{vm}] TIMEOUT after {}s (attempt {attempt})", elapsed.as_secs());
-                    return Err(anyhow!("SSH wait timeout for {vm} ({ip})"));
+                    return Err(anyhow!(
+                        "SSH wait timeout for {vm} ({ip}); ssh said: {}",
+                        last_probe_error(&ip)
+                    ));
                 }
                 let ok = ssh_probe(&ip, &key_path);
                 {
@@ -208,8 +211,12 @@ pub fn wait_ssh_ready_parallel() -> Result<()> {
 
 /// Single SSH probe: ssh -`BatchMode` -ConnectTimeout=2 'true'.
 /// Returns true on exit 0, false otherwise.
+///
+/// What ssh printed on a failure is kept, per address, for the timeout
+/// to report: until 0.14.5 stderr went to /dev/null, and four domains
+/// refusing the key read as four domains that never came up.
 pub(crate) fn ssh_probe(ip: &str, key_path: &str) -> bool {
-    let status = Command::new("ssh")
+    let out = Command::new("ssh")
         .args([
             "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=no",
@@ -221,10 +228,43 @@ pub(crate) fn ssh_probe(ip: &str, key_path: &str) -> bool {
             "true",
         ])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .stdin(std::process::Stdio::null())
-        .status();
-    matches!(status, Ok(s) if s.success())
+        .output();
+    let (ok, why) = match out {
+        Ok(o) if o.status.success() => (true, String::new()),
+        Ok(o) => {
+            let said = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            let status = o.status;
+            (false, if said.is_empty() { format!("nothing, and exited with {status}") } else { said })
+        }
+        Err(e) => (false, format!("ssh did not start: {e}")),
+    };
+    if let Ok(mut m) = last_probe_errors().lock() {
+        if ok {
+            m.remove(ip);
+        } else {
+            m.insert(ip.to_string(), why);
+        }
+    }
+    ok
+}
+
+/// The last thing ssh said, per address, when a probe failed.
+fn last_probe_errors() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+    static M: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    M.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// What ssh said the last time a probe of `ip` failed.
+#[must_use]
+pub(crate) fn last_probe_error(ip: &str) -> String {
+    last_probe_errors()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(ip).cloned())
+        .unwrap_or_else(|| "no failed probe recorded".to_string())
 }
 
 /// Top-level entry: run the full Phase 1 lifecycle pipeline.
