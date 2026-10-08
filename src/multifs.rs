@@ -488,9 +488,7 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
         }
     }
     drop(all_records);
-    // S3.1: cleanup file-precise injection env vars.
-    std::env::remove_var("TARGET_BLOCK_RANGE_START");
-    std::env::remove_var("TARGET_BLOCK_RANGE_END");
+    clear_target_env();
 
     // ----------------------------------------------------------------
     // Phase 4: synthesis report
@@ -610,6 +608,21 @@ fn write_text(path: &Path, content: &str) -> Result<()> {
     fs::write(path, content).with_context(|| format!("write {}", path.display()))
 }
 
+/// Remove every targeting variable the per-filesystem loop sets.
+///
+/// Until 0.14.7 this removed `TARGET_BLOCK_RANGE_START` and `_END` and
+/// left `TARGET_RANGES` behind. On 2026-10-05 it still held btrfs's
+/// extents (28672:29184, a USB stick on compute01) when the cluster
+/// phase ran; `worker_cmd` forwarded it to the four nodes, emufi gives
+/// the list precedence over the interval, and every read of /data was
+/// rejected by the filter: `call_count` 0 and `skipped_filter` 12863 on
+/// the master, twelve cluster cells `NOT_EXERCISED`.
+pub(crate) fn clear_target_env() {
+    for var in ["TARGET_BLOCK_RANGE_START", "TARGET_BLOCK_RANGE_END", "TARGET_RANGES"] {
+        std::env::remove_var(var);
+    }
+}
+
 pub fn locate_repo_root() -> Result<PathBuf> {
     let cwd = std::env::current_dir().context("getcwd")?;
     if let Some(root) = walk_up_for_repo(&cwd) {
@@ -658,5 +671,114 @@ mod tests_phase_a5 {
             w.contains("A.5 SB burst"),
             "worker.sh must include the A.5 INFO marker for run logs"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests_cluster_targeting {
+    use super::*;
+
+    /// worker.sh's `fiemap_ranges`, run by bash on a `filefrag -v -b4096`
+    /// listing.
+    fn fiemap_ranges(listing: &str) -> String {
+        let w = worker_sh();
+        let start = w
+            .find("fiemap_ranges() {")
+            .expect("worker.sh defines fiemap_ranges");
+        let len = w[start..]
+            .find("\n}\n")
+            .expect("fiemap_ranges is closed");
+        let script = format!(
+            "{}\n}}\nprintf '%s\\n' \"$LISTING\" | fiemap_ranges",
+            &w[start..start + len]
+        );
+        let out = std::process::Command::new("bash")
+            .args(["-c", &script])
+            .env("LISTING", listing)
+            .output()
+            .expect("bash runs");
+        assert!(out.status.success(), "fiemap_ranges failed: {out:?}");
+        String::from_utf8(out.stdout).expect("utf-8")
+    }
+
+    /// The `cluster_attack` branch of worker.sh, up to its `;;`.
+    fn cluster_attack_section() -> &'static str {
+        let w = worker_sh();
+        let start = w
+            .find("\ncluster_attack)")
+            .expect("worker.sh has a cluster_attack action");
+        let len = w[start..]
+            .find("\n    ;;\n")
+            .expect("cluster_attack ends with ;;");
+        &w[start..start + len]
+    }
+
+    #[test]
+    fn fiemap_ranges_gives_each_extent_in_sectors() {
+        // Two extents of a fragmented file, as ext3 laid one out in the
+        // 2026-08-28 campaign: 16 blocks at 3277377, 48 at 18160.
+        let ext3 = "\
+Filesystem type is: ef53
+File size of /mnt/f is 262144 (64 blocks of 4096 bytes)
+ ext:     logical_offset:        physical_offset: length:   expected: flags:
+   0:        0..      15:    3277377..   3277392:     16:
+   1:       16..      63:      18160..     18207:     48:    3277393: last,eof
+/mnt/f: 2 extents found
+";
+        assert_eq!(fiemap_ranges(ext3), "26219016:26219144,145280:145664");
+
+        // beamfs reports one extent per block: the form the multifs
+        // records carry, 2052992:2053000,2053000:2053008,...
+        let beamfs = "\
+ ext:     logical_offset:        physical_offset: length:   expected: flags:
+   0:        0..       0:     256624..    256624:      1:
+   1:        1..       1:     256625..    256625:      1:
+";
+        assert_eq!(fiemap_ranges(beamfs), "2052992:2053000,2053000:2053008");
+
+        // No extent, no list: the caller must not mistake it for one.
+        assert_eq!(fiemap_ranges("/data/x: No such file or directory\n"), "");
+    }
+
+    #[test]
+    fn cluster_attack_targets_its_own_extents_not_the_environment() {
+        let a = cluster_attack_section();
+        assert!(
+            !a.contains("${TARGET_RANGES}"),
+            "cluster_attack must not pose the TARGET_RANGES forwarded from the \
+             host: that is the multifs loop's last filesystem, not this node's file"
+        );
+        assert!(
+            a.contains("fiemap_ranges"),
+            "cluster_attack must compute the list from this node's own file"
+        );
+        assert!(
+            a.contains("reason=target_extents_unavailable"),
+            "without a list, the attack must not run under the module's previous one"
+        );
+    }
+
+    #[test]
+    fn cluster_attack_reports_the_ranges_it_posed() {
+        let a = cluster_attack_section();
+        let line = a
+            .lines()
+            .find(|l| l.contains("echo \"CLUSTER|HOST=$(hostname)|PROB="))
+            .expect("cluster_attack emits its CLUSTER record");
+        assert!(
+            line.contains("|TARGET_RANGES=$CL_TARGET_RANGES"),
+            "the record must say which sectors the injector was told to hit"
+        );
+    }
+
+    #[test]
+    fn the_multifs_loop_leaves_no_target_behind() {
+        for var in ["TARGET_BLOCK_RANGE_START", "TARGET_BLOCK_RANGE_END", "TARGET_RANGES"] {
+            std::env::set_var(var, "28672");
+        }
+        clear_target_env();
+        for var in ["TARGET_BLOCK_RANGE_START", "TARGET_BLOCK_RANGE_END", "TARGET_RANGES"] {
+            assert!(std::env::var(var).is_err(), "{var} survived the multifs loop");
+        }
     }
 }

@@ -240,6 +240,18 @@ fs_is_supported() {
     return 0
 }
 
+# Each extent of a file as start:end in 512-byte sectors, end exclusive,
+# comma separated: the form emufi's target_ranges takes. Reads the output
+# of `filefrag -v -b4096` on stdin; prints nothing when no extent is
+# listed. One definition for the multifs setup and cluster_attack, which
+# had each their own copy of the arithmetic until 0.14.7.
+fiemap_ranges() {
+    awk '/^ +[0-9]+:/ {
+        s=$4; e=$5; gsub(/[.:]/, "", s); gsub(/[.:]/, "", e);
+        printf "%s%d:%d", (NR_OUT++ ? "," : ""), s*8, (e+1)*8
+    }'
+}
+
 filefrag_phys() {
     local fs="$1" tgt="$2"
     # Phase C-fix: skip filefrag for zfs (ZFS pool block allocation
@@ -391,10 +403,7 @@ setup)
             # file size, and the injections never reached the data. Emit each
             # extent as start:end in sectors so the injector targets the
             # file's own blocks.
-            TARGET_RANGES=$(echo "$FRAG_OUT" | awk '/^ +[0-9]+:/ {
-                s=$4; e=$5; gsub(/[.:]/, "", s); gsub(/[.:]/, "", e);
-                printf "%s%d:%d", (NR_OUT++ ? "," : ""), s*8, (e+1)*8
-            }')
+            TARGET_RANGES=$(echo "$FRAG_OUT" | fiemap_ranges)
         fi
         [ -z "$TARGET_BLOCK" ] && TARGET_BLOCK=0
 
@@ -1312,11 +1321,8 @@ cluster_attack)
     # them already crossed SSH through the cluster.rs whitelist, so an
     # invocation setting any of them looked like it applied everywhere while
     # the four cluster nodes silently ran a different configuration.
-    # target_ranges is the consequential one: without it the cluster path
-    # kept using the enclosing interval that the per-extent fix replaced.
-    if [ -n "${TARGET_RANGES:-}" ] && sudo test -e ${INJECTOR_DBG}/target_ranges; then
-        printf '%s' "${TARGET_RANGES}" | sudo tee ${INJECTOR_DBG}/target_ranges >/dev/null
-    fi
+    # target_ranges is not among them since 0.14.7: it is computed below
+    # from this node's own file.
     if [ -n "${LET_CLASS:-}" ] && sudo test -e ${INJECTOR_DBG}/let_class; then
         echo ${LET_CLASS} | sudo tee ${INJECTOR_DBG}/let_class >/dev/null
     fi
@@ -1344,18 +1350,41 @@ cluster_attack)
     # (call_count=0). Recompute from filefrag on this node's own target file
     # (no cross-SSH var propagation) and apply, mirroring the multifs site.
     CL_TARGET_FILE="$SUBDIR/dir-B/file-B2.bin"
-    if command -v filefrag >/dev/null 2>&1 && [ -f "$CL_TARGET_FILE" ] \
-           && sudo test -e ${INJECTOR_DBG}/target_block_range_start; then
+    CL_TARGET_RANGES=""
+    if command -v filefrag >/dev/null 2>&1 && [ -f "$CL_TARGET_FILE" ]; then
         CA_FRAG=$(sudo filefrag -v -b4096 "$CL_TARGET_FILE" 2>/dev/null)
-        CA_STARTS=$(echo "$CA_FRAG" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $4); print $4}')
-        CA_ENDS=$(echo "$CA_FRAG" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $5); print $5}')
-        CA_EXTENTS="$CA_STARTS"
-        if [ -n "$CA_EXTENTS" ]; then
-            CA_RMIN=$(echo "$CA_STARTS" | sort -n | head -1)
-            CA_RMAX=$(echo "$CA_ENDS" | sort -n | tail -1)
-            echo $((CA_RMIN * 8))       | sudo tee ${INJECTOR_DBG}/target_block_range_start >/dev/null
-            echo $(((CA_RMAX + 1) * 8)) | sudo tee ${INJECTOR_DBG}/target_block_range_end   >/dev/null
+        CL_TARGET_RANGES=$(echo "$CA_FRAG" | fiemap_ranges)
+        if sudo test -e ${INJECTOR_DBG}/target_block_range_start; then
+            CA_STARTS=$(echo "$CA_FRAG" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $4); print $4}')
+            CA_ENDS=$(echo "$CA_FRAG" | awk '/^ +[0-9]+:/ {gsub(/[.:]/, "", $5); print $5}')
+            CA_EXTENTS="$CA_STARTS"
+            if [ -n "$CA_EXTENTS" ]; then
+                CA_RMIN=$(echo "$CA_STARTS" | sort -n | head -1)
+                CA_RMAX=$(echo "$CA_ENDS" | sort -n | tail -1)
+                echo $((CA_RMIN * 8))       | sudo tee ${INJECTOR_DBG}/target_block_range_start >/dev/null
+                echo $(((CA_RMAX + 1) * 8)) | sudo tee ${INJECTOR_DBG}/target_block_range_end   >/dev/null
+            fi
         fi
+    fi
+
+    # 0.14.7 : the per-extent list, from this node's own file, every time.
+    #
+    # emufi gives target_ranges precedence over the interval above. Until
+    # 0.14.7 the list came from the environment, where nothing on the
+    # cluster side ever set it: what arrived was whatever the host's
+    # multifs loop had left, btrfs's extents on a USB stick of compute01.
+    # On 2026-10-05 every read of /data was rejected by the filter
+    # (call_count 0, skipped_filter 12863 on the master) and the twelve
+    # cluster cells came out NOT_EXERCISED. The module also keeps its
+    # list between runs, so on compute01 the multifs one would stay in
+    # force even with a clean environment: the list is written here each
+    # time, or the attack does not run.
+    if sudo test -e ${INJECTOR_DBG}/target_ranges; then
+        if [ -z "$CL_TARGET_RANGES" ]; then
+            echo "CLUSTER|HOST=$(hostname)|ATTACK=SKIP|reason=target_extents_unavailable"
+            exit 0
+        fi
+        printf '%s' "$CL_TARGET_RANGES" | sudo tee ${INJECTOR_DBG}/target_ranges >/dev/null
     fi
 
     # v0.7.4 : emufi 0.3.0 envvars (no auto-compute on metadata site).
@@ -1502,7 +1531,7 @@ print(f'{bits} {frac_bp} {len(blocks)}')
 
     sudo rm -f /tmp/pre-cat-cluster-$$.bin /tmp/post-cat-cluster-$$.bin /tmp/cat-err-cluster-$$.log 2>/dev/null || true
 
-    echo "CLUSTER|HOST=$(hostname)|PROB=$PROB_VAL|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_PRECAT=$HASH_PRECAT|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE"
+    echo "CLUSTER|HOST=$(hostname)|PROB=$PROB_VAL|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_PRECAT=$HASH_PRECAT|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|TARGET_RANGES=$CL_TARGET_RANGES"
     ;;
 
 cluster_verify)

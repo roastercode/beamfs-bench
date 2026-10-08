@@ -1,4 +1,4 @@
-.TH BEAMFS\-BENCH 1 "2026-09-11" "beamfs development tools" "beamfs development tools"
+.TH BEAMFS\-BENCH 1 "2026-10-08" "beamfs development tools" "beamfs development tools"
 .SH NAME
 beamfs\-bench \- measure beamfs under fault injection, and prove the lab
 was in a known state when it did
@@ -114,6 +114,14 @@ Performance characterisation of every filesystem, in two regimes.
 multifs plus forensic capture: dmesg, the injector's counters, ftrace,
 perf and the cluster state. Three scopes through
 .BR \-\-scope=quick|standard|full .
+.sp
+Since 0.14.7 each node's cluster attack poses the extents of that node's
+own target file, read with filefrag, and its CLUSTER record carries them
+as TARGET_RANGES. Before, the list came from the environment, where the
+multifs loop had left its last filesystem's extents: on 2026\-10\-05 every
+read of /data was filtered out and the twelve cluster cells came out
+NOT_EXERCISED. A node whose extents cannot be read skips the attack with
+reason=target_extents_unavailable.
 .TP
 .B metadata
 Test A. Attacks the metadata specifically \(em superblock, inode bitmap,
