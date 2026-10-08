@@ -122,6 +122,16 @@ multifs loop had left its last filesystem's extents: on 2026\-10\-05 every
 read of /data was filtered out and the twelve cluster cells came out
 NOT_EXERCISED. A node whose extents cannot be read skips the attack with
 reason=target_extents_unavailable.
+.sp
+Since 0.14.8 the extent list is merged before it is posed, and every
+write of it into emufi is read back. emufi refuses a list longer than 512
+bytes and keeps at most 8 ranges; beamfs reports one extent per block, so
+its 69\-range lists were refused on 2026\-10\-08 and compute01 stayed under
+the list the multifs loop had left (NOT_EXERCISED). Contiguous extents now
+make one range. A list over 8 ranges or 512 bytes, or one the module does
+not hold after the write, skips the attack with
+reason=target_ranges_over_limit or reason=target_ranges_not_applied, the
+list cleared. Clearing the list is a real write.
 .TP
 .B metadata
 Test A. Attacks the metadata specifically \(em superblock, inode bitmap,

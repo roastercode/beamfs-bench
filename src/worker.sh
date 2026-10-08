@@ -246,10 +246,52 @@ fs_is_supported() {
 # listed. One definition for the multifs setup and cluster_attack, which
 # had each their own copy of the arithmetic until 0.14.7.
 fiemap_ranges() {
+    # 0.14.8: sorted, and contiguous or overlapping extents merged. beamfs
+    # reports one extent per block, and emufi refuses a list longer than
+    # 512 bytes and keeps at most 8 ranges: the 69 one-block extents of the
+    # cluster file (965 bytes) were refused on 2026-10-08.
     awk '/^ +[0-9]+:/ {
         s=$4; e=$5; gsub(/[.:]/, "", s); gsub(/[.:]/, "", e);
-        printf "%s%d:%d", (NR_OUT++ ? "," : ""), s*8, (e+1)*8
-    }'
+        printf "%d %d\n", s*8, (e+1)*8
+    }' | sort -n -k1,1 | awk '
+        n && $1 <= pe { if ($2 > pe) pe = $2; next }
+        { if (n) printf "%s%d:%d", (n > 1 ? "," : ""), ps, pe; ps = $1; pe = $2; n++ }
+        END { if (n) printf "%s%d:%d", (n > 1 ? "," : ""), ps, pe }'
+}
+
+# 0.14.8: write a target list into emufi and prove the module holds it.
+#
+# emufi refuses a write that is empty or longer than 512 bytes (EINVAL,
+# previous list kept) and keeps only the first 8 ranges. Until 0.14.8 the
+# worker wrote through tee and never looked: on 2026-10-08 compute01
+# refused its cluster list and kept btrfs's list from the multifs loop
+# (28672:29184, read back on the node), so every read of /data was
+# filtered out and its cluster cells came out NOT_EXERCISED. An empty
+# argument clears the list with a real write, a newline, which emufi
+# parses as no range: printf '' writes nothing.
+#
+# Returns 0 when the module holds exactly the list asked for. Otherwise
+# prints the reason, clears the list and returns 1; the caller then
+# skips the attack, injector disarmed.
+pose_target_ranges() {
+    PTR_WANT="$1"
+    PTR_N=0
+    if [ -n "$PTR_WANT" ]; then
+        PTR_N=$(printf '%s\n' "$PTR_WANT" | tr ',' '\n' | grep -c ':')
+    fi
+    if [ "$PTR_N" -gt 8 ] || [ "${#PTR_WANT}" -ge 512 ]; then
+        printf '\n' | sudo tee ${INJECTOR_DBG}/target_ranges >/dev/null 2>&1
+        echo "target_ranges_over_limit:${PTR_N}_ranges_${#PTR_WANT}_bytes"
+        return 1
+    fi
+    printf '%s\n' "$PTR_WANT" | sudo tee ${INJECTOR_DBG}/target_ranges >/dev/null 2>&1
+    PTR_GOT=$(sudo cat ${INJECTOR_DBG}/target_ranges 2>/dev/null)
+    if [ "$PTR_GOT" = "$PTR_WANT" ]; then
+        return 0
+    fi
+    printf '\n' | sudo tee ${INJECTOR_DBG}/target_ranges >/dev/null 2>&1
+    echo "target_ranges_not_applied:got_${PTR_GOT:-empty}"
+    return 1
 }
 
 filefrag_phys() {
@@ -525,7 +567,12 @@ attack)
             echo 0 | sudo tee ${INJECTOR_DBG}/target_block_range_end   >/dev/null
         fi
         if sudo test -e ${INJECTOR_DBG}/target_ranges; then
-            printf '' | sudo tee ${INJECTOR_DBG}/target_ranges >/dev/null
+            # 0.14.8: printf '' wrote nothing and the previous list stayed
+            # in force; pose_target_ranges clears with a real write.
+            PTR_WHY=$(pose_target_ranges "") || {
+                echo "FS=$FS|PROB=$PROB|ATTACK=SKIP|reason=$PTR_WHY"
+                exit 0
+            }
         fi
     else
         # S3.1: file-precise targeting via target_block_range (emufi v0.3.4+).
@@ -540,7 +587,11 @@ attack)
         fi
         # v0.12.6 : per-extent list takes precedence over the interval above.
         if [ -n "${TARGET_RANGES:-}" ] && sudo test -e ${INJECTOR_DBG}/target_ranges; then
-            printf '%s' "${TARGET_RANGES}" | sudo tee ${INJECTOR_DBG}/target_ranges >/dev/null
+            # 0.14.8: checked write, see pose_target_ranges.
+            PTR_WHY=$(pose_target_ranges "${TARGET_RANGES}") || {
+                echo "FS=$FS|PROB=$PROB|ATTACK=SKIP|reason=$PTR_WHY|TARGET_RANGES=${TARGET_RANGES}"
+                exit 0
+            }
         fi
     fi
     echo $PROB    | sudo tee ${INJECTOR_DBG}/probability  >/dev/null
@@ -1384,7 +1435,12 @@ cluster_attack)
             echo "CLUSTER|HOST=$(hostname)|ATTACK=SKIP|reason=target_extents_unavailable"
             exit 0
         fi
-        printf '%s' "$CL_TARGET_RANGES" | sudo tee ${INJECTOR_DBG}/target_ranges >/dev/null
+        # 0.14.8: checked write. A refused list (965 bytes on 2026-10-08)
+        # left compute01 under btrfs's list from the multifs loop.
+        PTR_WHY=$(pose_target_ranges "$CL_TARGET_RANGES") || {
+            echo "CLUSTER|HOST=$(hostname)|ATTACK=SKIP|reason=$PTR_WHY|TARGET_RANGES=$CL_TARGET_RANGES"
+            exit 0
+        }
     fi
 
     # v0.7.4 : emufi 0.3.0 envvars (no auto-compute on metadata site).

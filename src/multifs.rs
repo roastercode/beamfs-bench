@@ -714,7 +714,7 @@ mod tests_cluster_targeting {
     }
 
     #[test]
-    fn fiemap_ranges_gives_each_extent_in_sectors() {
+    fn fiemap_ranges_gives_the_extents_in_sectors_sorted_and_merged() {
         // Two extents of a fragmented file, as ext3 laid one out in the
         // 2026-08-28 campaign: 16 blocks at 3277377, 48 at 18160.
         let ext3 = "\
@@ -725,19 +725,141 @@ File size of /mnt/f is 262144 (64 blocks of 4096 bytes)
    1:       16..      63:      18160..     18207:     48:    3277393: last,eof
 /mnt/f: 2 extents found
 ";
-        assert_eq!(fiemap_ranges(ext3), "26219016:26219144,145280:145664");
+        // Sorted since 0.14.8: the order of the list carries no meaning.
+        assert_eq!(fiemap_ranges(ext3), "145280:145664,26219016:26219144");
 
-        // beamfs reports one extent per block: the form the multifs
-        // records carry, 2052992:2053000,2053000:2053008,...
+        // beamfs reports one extent per block, 2052992:2053000,2053000:2053008
+        // in the records up to 0.14.7; contiguous blocks make one range.
         let beamfs = "\
  ext:     logical_offset:        physical_offset: length:   expected: flags:
    0:        0..       0:     256624..    256624:      1:
    1:        1..       1:     256625..    256625:      1:
 ";
-        assert_eq!(fiemap_ranges(beamfs), "2052992:2053000,2053000:2053008");
+        assert_eq!(fiemap_ranges(beamfs), "2052992:2053008");
 
         // No extent, no list: the caller must not mistake it for one.
         assert_eq!(fiemap_ranges("/data/x: No such file or directory\n"), "");
+    }
+
+    #[test]
+    fn the_cluster_file_of_2026_10_08_now_fits_in_emufi() {
+        // One-block extents from 18014 to 18083 with one hole, as beamfs
+        // reports them: 69 ranges, 965 bytes, refused by emufi (512 bytes
+        // and 8 ranges at most) on every node.
+        let mut listing = String::from(
+            " ext:     logical_offset:        physical_offset: length:   expected: flags:\n",
+        );
+        for (logical, block) in (18014_u64..=18083).filter(|b| *b != 18050).enumerate() {
+            listing.push_str(&format!(
+                "  {logical:2}:  {logical:6}..  {logical:6}:  {block:9}..  {block:9}:      1:\n"
+            ));
+        }
+        let ranges = fiemap_ranges(&listing);
+        assert_eq!(ranges, "144112:144400,144408:144672");
+        assert!(ranges.len() < 512, "{ranges} is {} bytes", ranges.len());
+
+        // Extents listed out of order still merge.
+        let shuffled = "\
+ ext:     logical_offset:        physical_offset: length:   expected: flags:
+   0:        0..       0:         12..        12:      1:
+   1:        1..       1:         10..        10:      1:
+   2:        2..       2:         11..        11:      1:
+";
+        assert_eq!(fiemap_ranges(shuffled), "80:104");
+    }
+
+    /// A worker.sh function, from its `name() {` line to its closing `}`.
+    fn worker_function(name: &str) -> String {
+        let w = worker_sh();
+        let start = w
+            .find(&format!("\n{name}() {{\n"))
+            .expect("worker.sh defines the function")
+            + 1;
+        let len = w[start..].find("\n}\n").expect("the function is closed");
+        format!("{}\n}}\n", &w[start..start + len])
+    }
+
+    /// Runs `pose_target_ranges "$WANT"` against a directory standing for
+    /// the emufi debugfs, the module holding `$BEFORE`. `sudo` is a shell
+    /// function so no privilege is needed; with `REFUSE=1` every write to
+    /// `target_ranges` fails and changes nothing, as emufi does on EINVAL.
+    /// Prints `status|reason|` then the list held afterwards.
+    const POSE_HARNESS: &str = r#"
+sudo() {
+    if [ "$1" = tee ] && [ "$REFUSE" = 1 ]; then cat >/dev/null; return 1; fi
+    "$@"
+}
+INJECTOR_DBG=$(mktemp -d)
+printf '%s\n' "$BEFORE" > "$INJECTOR_DBG/target_ranges"
+eval "$POSE"
+WHY=$(pose_target_ranges "$WANT")
+RC=$?
+printf '%s|%s|' "$RC" "$WHY"
+cat "$INJECTOR_DBG/target_ranges"
+rm -rf "$INJECTOR_DBG"
+"#;
+
+    fn pose(want: &str, before: &str, refuse: bool) -> (String, String, String) {
+        let out = std::process::Command::new("bash")
+            .args(["-c", POSE_HARNESS])
+            .env("POSE", worker_function("pose_target_ranges"))
+            .env("WANT", want)
+            .env("BEFORE", before)
+            .env("REFUSE", if refuse { "1" } else { "0" })
+            .output()
+            .expect("bash runs");
+        let s = String::from_utf8(out.stdout).expect("utf-8");
+        let mut it = s.splitn(3, '|').map(str::to_string);
+        (
+            it.next().unwrap_or_default(),
+            it.next().unwrap_or_default(),
+            it.next().unwrap_or_default(),
+        )
+    }
+
+    #[test]
+    fn pose_target_ranges_writes_the_list_and_checks_it() {
+        let (rc, why, held) = pose("8:16,24:32", "28672:29184", false);
+        assert_eq!((rc.as_str(), why.as_str(), held.as_str()), ("0", "", "8:16,24:32\n"));
+    }
+
+    #[test]
+    fn clearing_the_list_is_a_real_write() {
+        // printf '' | tee wrote nothing: the previous list stayed.
+        let (rc, why, held) = pose("", "28672:29184", false);
+        assert_eq!((rc.as_str(), why.as_str(), held.as_str()), ("0", "", "\n"));
+    }
+
+    #[test]
+    fn a_list_over_eight_ranges_is_refused_and_the_list_cleared() {
+        let nine = "1000:1008,2000:2008,3000:3008,4000:4008,5000:5008,\
+                    6000:6008,7000:7008,8000:8008,9000:9008";
+        let (rc, why, held) = pose(nine, "28672:29184", false);
+        assert_eq!(
+            (rc.as_str(), why.as_str(), held.as_str()),
+            ("1", "target_ranges_over_limit:9_ranges_89_bytes", "\n")
+        );
+    }
+
+    #[test]
+    fn a_list_the_module_refuses_is_reported_not_trusted() {
+        // compute01 on 2026-10-08: the write fails, the module keeps the
+        // btrfs list of the multifs loop, and nothing may run under it.
+        let (rc, why, held) = pose("144112:144400,144408:144672", "28672:29184", true);
+        assert_eq!(
+            (rc.as_str(), why.as_str(), held.as_str()),
+            ("1", "target_ranges_not_applied:got_28672:29184", "28672:29184\n")
+        );
+    }
+
+    #[test]
+    fn every_write_to_target_ranges_goes_through_pose_target_ranges() {
+        // Three writes, all checked: the list, and the clear on refusal
+        // and over the limit. A tee anywhere else is unchecked again.
+        let needle = "tee ${INJECTOR_DBG}/target_ranges";
+        let body = worker_function("pose_target_ranges");
+        assert_eq!(body.matches(needle).count(), 3);
+        assert_eq!(worker_sh().matches(needle).count(), 3);
     }
 
     #[test]
