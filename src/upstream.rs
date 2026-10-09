@@ -1848,7 +1848,9 @@ fn check_maintainers(ctx: &Ctx) -> Check {
         Err(e) => problems.push(format!("{e:#}")),
     }
     let mut cmd = Command::new(&gm);
-    cmd.current_dir(&ctx.tree).args(&ctx.patches);
+    cmd.current_dir(&ctx.tree)
+        .args(["--nogit", "--nogit-fallback"])
+        .args(&ctx.patches);
     match output(&mut cmd) {
         Ok(o) => {
             for l in String::from_utf8_lossy(&o.stdout).lines() {
@@ -2080,11 +2082,33 @@ fn make(tree: &Path, o: &Path, v: &Variant, args: &[String]) -> Result<(bool, St
     c.arg("-C")
         .arg(tree)
         .arg(format!("O={}", o.display()))
+        .arg("--output-sync=target")
         .arg(format!("ARCH={}", v.arch))
         .args(&v.vars)
         .args(args);
     let out = output(&mut c)?;
     Ok((out.status.success(), lossy(&out)))
+}
+
+/// The diagnostics of a build, each once with its count, the tree's own
+/// path taken out.
+///
+/// On 2026-10-09 a warning raised by a kernel header in every object of
+/// the clang build was listed some six hundred times, with the full path
+/// of the worktree, and the lines of parallel jobs interleaved.
+fn diagnostics(text: &str, tree: &Path) -> Vec<String> {
+    let prefix = format!("{}/", tree.display());
+    let mut seen: Vec<(String, usize)> = Vec::new();
+    for l in text.lines().filter(|l| is_diagnostic(l)) {
+        let l = l.trim().replace(&prefix, "");
+        match seen.iter_mut().find(|(s, _)| *s == l) {
+            Some((_, n)) => *n += 1,
+            None => seen.push((l, 1)),
+        }
+    }
+    seen.into_iter()
+        .map(|(s, n)| if n > 1 { format!("{s} ({n} times)") } else { s })
+        .collect()
 }
 
 /// One make run: its diagnostics and its failure become problems.
@@ -2098,9 +2122,7 @@ fn make_step(
 ) -> String {
     match make(tree, o, v, args) {
         Ok((ok, text)) => {
-            for l in text.lines().filter(|l| is_diagnostic(l)) {
-                problems.push(l.trim().to_string());
-            }
+            problems.extend(diagnostics(&text, tree));
             if !ok {
                 problems.push(format!("make {} failed", args.join(" ")));
             }
@@ -2240,6 +2262,9 @@ fn check_builds(ctx: &Ctx, add: &mut dyn FnMut(Check)) {
     let mut full_set = vec![
         y("BLOCK"),
         y("MISC_FILESYSTEMS"),
+        y("EXPERT"),
+        y("SYSFS"),
+        y("PROC_FS"),
         y("SMP"),
         y("PREEMPT"),
         n("PREEMPT_NONE"),
@@ -3300,6 +3325,21 @@ mod tests {
         assert_eq!(python_minor("python3.14"), Some(14));
         assert_eq!(python_minor("python3"), None);
         assert_eq!(python_minor("python3.14-config"), None);
+    }
+
+    #[test]
+    fn diagnostics_are_listed_once_without_the_tree() {
+        let t = "/t/tree/include/linux/a.h:1:2: warning: x [-Wsign-compare]\n\
+                 \x20 CC      fs/beamfs/super.o\n\
+                 /t/tree/include/linux/a.h:1:2: warning: x [-Wsign-compare]\n\
+                 fs/beamfs/b.c:3:4: error: y\n";
+        assert_eq!(
+            diagnostics(t, Path::new("/t/tree")),
+            vec![
+                "include/linux/a.h:1:2: warning: x [-Wsign-compare] (2 times)".to_string(),
+                "fs/beamfs/b.c:3:4: error: y".to_string(),
+            ]
+        );
     }
 
     #[test]

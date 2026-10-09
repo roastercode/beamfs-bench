@@ -89,6 +89,16 @@ die without a word; the interpreter is now looked for, through EPYTHON
 where python\-exec chooses it, and none found refuses the run.
 .B upstream
 runs every check a patch series has to pass before it is mailed.
+.IP
+Since 0.15.1 the built\-in variants of
+.B upstream
+ask for sysfs and procfs, which tinyconfig leaves out; the first run
+had built them without, and said so. make synchronises its output by
+target, so that the lines of parallel jobs no longer interleave, and
+each diagnostic is listed once, with its count, without the path of
+the worktree. get_maintainer lists the recipients from MAINTAINERS
+alone: from the git history it had named the last committers of
+MAINTAINERS and of fs/Makefile.
 .SH COMMANDS
 .TP
 .B checkpoint

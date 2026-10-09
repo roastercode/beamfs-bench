@@ -6,7 +6,7 @@ attack. It is a measurement instrument, not a judgment engine: the
 nodes emit raw records, and the verdict is derived from them in Rust
 (`src/synthesis.rs`).
 
-Version 0.15.0. Its 0.14 releases ran the fault-injection campaign of
+Version 0.15.1. Its 0.14 releases ran the fault-injection campaign of
 the beamfs v3 technical report,
 [10.5281/zenodo.23253350](https://doi.org/10.5281/zenodo.23253350):
 run 2 from `661e8aa` (0.14.6), run 3 from `60155f3` (0.14.7), run 4 from
@@ -28,11 +28,11 @@ Each attack ends in one verdict:
   `SILENT_CORRUPTION`;
 - `NOT_EXERCISED`: no attack reached the target.
 
-## Known defects of 0.15.0
+## Known defects of 0.15.1
 
 Found with 0.14.8 while writing the v3 report, whose results are read
-from the raw records, not from these summaries; 0.15.0 does not touch
-them:
+from the raw records, not from these summaries; the 0.15 releases do
+not touch them:
 
 - the synthesis gives the attacked files as "3 files of 3KB", where
   they are 262 144 bytes;
