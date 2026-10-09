@@ -504,14 +504,14 @@ pub fn verify_dmesg_clean() -> Result<()> {
 // Phase 8.2
 // ---------------------------------------------------------------------
 /// How long gpg is given to sign a manifest.
-const SIGN_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(2);
+pub(crate) const SIGN_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(2);
 
 /// Whether gpg-agent holds a key it can sign with, without asking.
 ///
 /// The question session priming asks at start, asked again here: the
 /// cache has a lifetime of its own (max-cache-ttl), and a pipeline that
 /// started with the key cached can end after it has expired.
-fn gpg_key_cached() -> bool {
+pub(crate) fn gpg_key_cached() -> bool {
     Command::new("gpg-connect-agent")
         .args(["KEYINFO --list", "/bye"])
         .output()
@@ -531,7 +531,7 @@ fn gpg_key_cached() -> bool {
 /// The signature is written to `<path>.asc.part` and renamed once gpg has
 /// succeeded. On a refusal or a timeout gpg is killed and nothing is
 /// left beside the manifest.
-fn sign_manifest(gpg: &[&str], path: &std::path::Path, timeout: std::time::Duration)
+pub(crate) fn sign_manifest(gpg: &[&str], path: &std::path::Path, timeout: std::time::Duration)
     -> std::result::Result<PathBuf, String>
 {
     let asc = PathBuf::from(format!("{}.asc", path.display()));

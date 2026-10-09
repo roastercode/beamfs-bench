@@ -108,3 +108,33 @@ When code_analysis.rs Tier 1 = all PASS in `--full` mode, the project
 is checkpatch-eligible for RFC submission. This gate does not replace
 the manual `git format-patch | checkpatch.pl` on the cover letter, but
 it ensures the working tree is always submission-ready.
+
+## checkpatch, since 0.15.0
+
+The Tier 1 checkpatch is the one of the kernel repository named by
+`BEAMFS_BENCH_LINUX_REPO` (`~/git/linux` by default), run on the module
+sources laid out as one new-file patch, with spdxcheck. Every ERROR and
+every WARNING blocks; FILE_PATH_CHANGES is ignored, the patch being
+synthetic. The `--strict` CHECKs are written to the log, counted by type.
+The report keeps the name `checkpatch_strict` for baseline continuity.
+
+Until 0.15.0 the gate ran the host kernel's checkpatch with `--no-tree`
+on `--file`, and counted ERROR lines only. In `--file` mode a line over
+100 columns is a CHECK, and without a tree spdxcheck does not run: the
+ten long lines of beamfs 0.1.26 passed every gate and were found when
+the RFC series was checked by hand on 2026-10-09.
+
+spdxcheck imports ply and git. checkpatch runs it through `python3`, and
+a `python3` that lacks them makes it die on stderr while checkpatch
+reports nothing. The interpreter is now looked for, through `EPYTHON`
+where python-exec chooses it, and the gate fails when none imports both.
+
+## beamfs-bench upstream
+
+The checks a kernel patch series has to pass before it is mailed, run on
+the series branch: the commits, checkpatch on every patch, the mails and
+the cover letter, MAINTAINERS, Kconfig, the documentation of the
+userspace interfaces, builds under several configurations with W=1,
+sparse, kernel-doc and checkstack, the identity of the compiled code
+with a measured release, the merge into the newer trees, and the
+documentation build against the base. See beamfs-bench(1).

@@ -45,7 +45,7 @@ use std::fmt::Write;
 
 // R16 forbidden Unicode punctuation: em-dash, en-dash, right arrow,
 // curly single/double quotes. Named emdash_r16 for baseline continuity.
-const FORBIDDEN_R16: &[(char, &str)] = &[
+pub(crate) const FORBIDDEN_R16: &[(char, &str)] = &[
     ('\u{2014}', "em-dash U+2014"),
     ('\u{2013}', "en-dash U+2013"),
     ('\u{2192}', "arrow U+2192"),
@@ -145,7 +145,7 @@ pub fn run(mode: AnalysisMode, run_dir: &Path) -> Result<CodeAnalysisReport> {
 
     // ============== TIER 1 (FATAL) ==============
     println!("\n  [tier 1 - FATAL]");
-    report.tier1.push(run_checkpatch_strict(&files, &analysis_dir));
+    report.tier1.push(run_checkpatch_strict(&analysis_dir));
     report.tier1.push(run_sparse(&analysis_dir));
     report.tier1.push(run_smatch(&analysis_dir));
     report.tier1.push(run_coccinelle(&analysis_dir));
@@ -301,49 +301,38 @@ fn dump_to_tmp_tarball(analysis_dir: &Path) -> Result<PathBuf> {
 // scaffolding is the contract; the bodies follow in dedicated commits
 // once tool availability on spartian-1 is verified.
 
-fn run_checkpatch_strict(files: &[PathBuf], out: &Path) -> ToolReport {
+/// checkpatch as a reviewer runs it, on the module sources laid out as
+/// one patch, in the kernel repository of `beamfs-bench upstream`
+/// (`BEAMFS_BENCH_LINUX_REPO`, ~/git/linux by default), with spdxcheck.
+/// Every ERROR and WARNING blocks; the --strict CHECKs are in the log,
+/// counted by type. Named `checkpatch_strict` for baseline continuity.
+///
+/// Until 0.15.0 this ran the host kernel's checkpatch with --no-tree on
+/// --file, where a line over 100 columns is a CHECK, and counted ERROR
+/// lines only: the ten long lines of beamfs 0.1.26 passed it. See
+/// upstream.rs.
+fn run_checkpatch_strict(out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
-    let Some(checkpatch) = locate_checkpatch() else {
-        return ToolReport {
-            name: "checkpatch_strict".to_string(),
-            tier: 1,
-            outcome: ToolOutcome::Skip {
-                reason: "checkpatch.pl not found in /usr/src/linux*/scripts/".to_string()
-            },
-            duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
+    let outcome = match crate::upstream::checkpatch_module(
+        &crate::upstream::linux_repo(),
+        Path::new(crate::lab::beamfs_repo()),
+        "beamfs",
+        out,
+    ) {
+        Ok(r) if r.blocking.is_empty() => ToolOutcome::Pass,
+        Ok(r) => {
+            for l in &r.blocking {
+                println!("      {l}");
+            }
+            ToolOutcome::Findings {
+                count: u32::try_from(r.blocking.len()).unwrap_or(u32::MAX),
+                severity: "error or warning".to_string(),
+                log_path: r.log.display().to_string(),
+            }
         }
-    };
-    let log_path = out.join("checkpatch.log");
-    let mut errors: u32 = 0;
-    let mut log_buf = String::new();
-    for f in files {
-        let f_str = f.display().to_string();
-        if !(f_str.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")) || f_str.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("h"))) { continue; }
-        if !f_str.contains("/git/beamfs/") { continue; }
-        if f_str.contains("/recipes-kernel/") { continue; }
-        let Ok(res) = Command::new(&checkpatch)
-            .args(["--strict", "--no-tree", "--terse", "--file", &f_str])
-            .output()
-        else {
-            continue;
-        };
-        let s = String::from_utf8_lossy(&res.stdout);
-        writeln!(log_buf, "=== {f_str} ===").unwrap();
-        log_buf.push_str(&s);
-        log_buf.push('\n');
-        for line in s.lines() {
-            if line.contains("ERROR:") { errors += 1; }
-        }
-    }
-    let _ = std::fs::write(&log_path, &log_buf);
-    let outcome = if errors == 0 {
-        ToolOutcome::Pass
-    } else {
-        ToolOutcome::Findings {
-            count: errors,
-            severity: "error".to_string(),
-            log_path: log_path.display().to_string(),
-        }
+        Err(e) => ToolOutcome::Error {
+            message: format!("{e:#}"),
+        },
     };
     ToolReport {
         name: "checkpatch_strict".to_string(),
@@ -351,23 +340,6 @@ fn run_checkpatch_strict(files: &[PathBuf], out: &Path) -> ToolReport {
         outcome,
         duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
-}
-
-fn locate_checkpatch() -> Option<PathBuf> {
-    let canonical = PathBuf::from("/usr/src/linux/scripts/checkpatch.pl");
-    if canonical.is_file() { return Some(canonical); }
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir("/usr/src") {
-        for e in entries.flatten() {
-            let p = e.path();
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !name.starts_with("linux-") { continue; }
-            let cp = p.join("scripts/checkpatch.pl");
-            if cp.is_file() { candidates.push(cp); }
-        }
-    }
-    candidates.sort();
-    candidates.pop()
 }
 
 /// Helper : detect a binary in PATH. Returns Some(path) if found.

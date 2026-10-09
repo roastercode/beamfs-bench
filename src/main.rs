@@ -68,6 +68,7 @@ mod scrub;
 mod ssh;
 mod synthesis;
 mod tindirect;
+mod upstream;
 mod usb_health;
 mod perf;
 mod dose;
@@ -482,6 +483,81 @@ enum Command {
         /// List the scripts found and exit.
         #[arg(long)]
         list: bool,
+    },
+
+    /// Check a kernel patch series as its reviewers and their build
+    /// robots will, before it is mailed.
+    ///
+    /// The series is a branch of the kernel repository over a base.
+    /// beamfs-bench formats it itself, then checks the commits, every
+    /// patch with checkpatch and spdxcheck, the mails, MAINTAINERS,
+    /// Kconfig, the documentation of the userspace interfaces, builds
+    /// under eight configurations with W=1, sparse, kernel-doc and
+    /// checkstack, the merge into the newer trees, and the documentation
+    /// build against the base. Exits 3 when any check fails.
+    Upstream {
+        /// Kernel repository holding the series branch
+        /// [default: BEAMFS_BENCH_LINUX_REPO, or ~/git/linux].
+        #[arg(long, value_name = "DIR")]
+        linux: Option<String>,
+
+        /// Branch carrying the series.
+        #[arg(long, default_value = "beamfs-rfc-v1")]
+        series: String,
+
+        /// Commit the series is based on, v7.3-rc5 for instance.
+        #[arg(long, value_name = "REV")]
+        base: String,
+
+        /// beamfs commit whose sources the series carries, byte for byte.
+        #[arg(long, value_name = "REV", default_value = "HEAD")]
+        measured: String,
+
+        /// beamfs commit whose compiled code the series must reproduce.
+        #[arg(long, value_name = "REV")]
+        same_text_as: Option<String>,
+
+        /// Revisions the series must merge into and build on, comma
+        /// separated; empty for none.
+        #[arg(long, value_name = "REVS", default_value = "origin/master,linux-next/master")]
+        newer: String,
+
+        /// Do not fetch the remotes of the newer revisions first.
+        #[arg(long)]
+        no_fetch: bool,
+
+        /// Subject prefix of the mails.
+        #[arg(long, default_value = "RFC PATCH")]
+        subject_prefix: String,
+
+        /// Author, From and Signed-off-by of every patch.
+        #[arg(long, default_value = "Aurelien DESBRIERES <aurelien@hackers.camp>")]
+        author: String,
+
+        /// Value of the Assisted-by line every patch carries; empty for none.
+        #[arg(long, default_value = "LLM")]
+        assisted_by: String,
+
+        /// Largest mail accepted, in bytes.
+        #[arg(long, value_name = "BYTES", default_value_t = 100_000)]
+        max_mail_bytes: u64,
+
+        /// Make the --strict CHECKs of checkpatch block as well.
+        #[arg(long)]
+        strict_blocking: bool,
+
+        /// Leave the arm64 build to the bitbake chain.
+        #[arg(long)]
+        no_cross: bool,
+
+        /// Largest stack frame accepted, in bytes.
+        #[arg(long, value_name = "BYTES", default_value_t = 512)]
+        stack_limit: u64,
+
+        /// Output directory, absolute
+        /// [default: ~/.local/share/beamfs-bench/upstream/SERIES-STAMP].
+        #[arg(long, value_name = "DIR")]
+        out: Option<String>,
     },
 
     /// Test E - mega: pipeline + analyse Full + bitrot + metadata + crash + fsck.
@@ -985,6 +1061,55 @@ fn main() {
                 }
             }
         }
+        Command::Upstream {
+            linux,
+            series,
+            base,
+            measured,
+            same_text_as,
+            newer,
+            no_fetch,
+            subject_prefix,
+            author,
+            assisted_by,
+            max_mail_bytes,
+            strict_blocking,
+            no_cross,
+            stack_limit,
+            out,
+        } => {
+            let cfg = upstream::Config {
+                linux: linux.map_or_else(upstream::linux_repo, std::path::PathBuf::from),
+                beamfs: std::path::PathBuf::from(lab::beamfs_repo()),
+                out: out.map_or_else(|| upstream::default_out(&series), std::path::PathBuf::from),
+                series,
+                base,
+                measured,
+                same_text_as,
+                fs: "beamfs".to_string(),
+                newer: newer
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                fetch: !no_fetch,
+                subject_prefix,
+                author,
+                assisted_by,
+                max_mail_bytes,
+                strict_blocking,
+                cross: !no_cross,
+                stack_limit,
+            };
+            match upstream::run(&cfg) {
+                Ok(rc) => rc,
+                Err(e) => {
+                    eprintln!("beamfs-bench: upstream failed: {e:#}");
+                    1
+                }
+            }
+        }
         Command::Mega { injector } => {
             match mega::run(&injector) {
                 Ok(rc) => rc,
@@ -1031,5 +1156,52 @@ mod shell_tests {
             found.trim().is_empty(),
             "shellcheck reports errors in src/worker.sh:\n{found}"
         );
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// clap's own consistency checks: names, conflicts, the global
+    /// options against every subcommand's.
+    #[test]
+    fn the_command_line_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn upstream_takes_its_options() {
+        let cli = Cli::try_parse_from([
+            "beamfs-bench",
+            "upstream",
+            "--base",
+            "v7.3-rc5",
+            "--same-text-as",
+            "1bf151d",
+            "--newer",
+            "origin/master",
+            "--no-cross",
+        ])
+        .expect("upstream parses");
+        let Command::Upstream {
+            base,
+            same_text_as,
+            newer,
+            no_cross,
+            series,
+            stack_limit,
+            ..
+        } = cli.command
+        else {
+            panic!("not upstream");
+        };
+        assert_eq!(base, "v7.3-rc5");
+        assert_eq!(same_text_as.as_deref(), Some("1bf151d"));
+        assert_eq!(newer, "origin/master");
+        assert!(no_cross);
+        assert_eq!(series, "beamfs-rfc-v1");
+        assert_eq!(stack_limit, 512);
     }
 }

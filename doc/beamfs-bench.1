@@ -1,4 +1,4 @@
-.TH BEAMFS\-BENCH 1 "2026-10-08" "beamfs development tools" "beamfs development tools"
+.TH BEAMFS\-BENCH 1 "2026-10-09" "beamfs development tools" "beamfs development tools"
 .SH NAME
 beamfs\-bench \- measure beamfs under fault injection, and prove the lab
 was in a known state when it did
@@ -76,6 +76,19 @@ that signs it. The signature is written to a .part file and renamed once
 gpg has succeeded, so no empty or partial .asc is left. When session
 priming cannot cache the key it says so, instead of reporting every
 credential primed.
+.IP
+Since 0.15.0 the code analysis runs checkpatch as a reviewer does: the
+checkpatch of the kernel repository named by BEAMFS_BENCH_LINUX_REPO,
+~/git/linux by default, on the module sources laid out as one patch,
+with spdxcheck, and every ERROR and WARNING refuses the run. It was the
+host kernel's checkpatch with \-\-no\-tree on \-\-file, where a line over
+100 columns is a CHECK, counting ERROR lines only: the ten long lines of
+beamfs 0.1.26 passed every gate until the series was checked by hand on
+2026\-10\-09. A python3 that cannot import ply and git made spdxcheck
+die without a word; the interpreter is now looked for, through EPYTHON
+where python\-exec chooses it, and none found refuses the run.
+.B upstream
+runs every check a patch series has to pass before it is mailed.
 .SH COMMANDS
 .TP
 .B checkpoint
@@ -93,6 +106,67 @@ Since 0.13.0 the same links are checked before every measurement and a
 broken one refuses the run.
 .B BEAMFS_BENCH_FORCE=1
 takes it anyway.
+.TP
+.B upstream
+Check a kernel patch series the way its reviewers and their build robots
+will, before it is mailed. The series is a branch of the kernel
+repository over a base;
+.B upstream
+formats it itself, with its cover letter, and checks:
+.RS
+.IP \(bu 2
+the tools it needs, spdxcheck included: a tool that cannot run fails
+its check;
+.IP \(bu 2
+that the sources under fs/beamfs are those of \-\-measured, byte for
+byte;
+.IP \(bu 2
+every commit: signed, by \-\-author, with its Signed\-off\-by and its
+Assisted\-by, without Co\-Authored\-By, its subject within 60 characters
+once numbered;
+.IP \(bu 2
+every patch with checkpatch: no error and no warning, FILE_PATH_CHANGES
+excepted where the MAINTAINERS entry of the series covers every file it
+adds; the \-\-strict CHECKs counted by type, and blocking with
+\-\-strict\-blocking;
+.IP \(bu 2
+every mail under \-\-max\-mail\-bytes; a cover letter without a
+placeholder and with its base\-commit; no typographic dash or quote in
+the cover letter or the documentation, and nothing but ASCII in the
+sources;
+.IP \(bu 2
+MAINTAINERS: the entry at the head of the series, and get_maintainer's
+self\-test;
+.IP \(bu 2
+Kconfig: help text, off by default, sourced from fs/Kconfig and built
+from fs/Makefile;
+.IP \(bu 2
+the userspace interfaces: MODULE_PARM_DESC for each module parameter,
+every sysfs attribute in Documentation/ABI, procfs, ioctl numbers and
+boot parameters documented, and linux\-api named when there is one;
+.IP \(bu 2
+builds without a warning: x86_64 tinyconfig with beamfs as a module;
+built in with every option, SMP, preemption and tracing; built in under
+lockdep and the memory debugging options; built in without sysfs, procfs
+and debugfs; with clang; allnoconfig; allmodconfig on fs/beamfs, with
+CONFIG_WERROR; arm64 with a cross compiler, unless \-\-no\-cross. Then
+W=1 on the module, built\-in and clang builds, sparse, kernel\-doc on
+every source and header, and checkstack under \-\-stack\-limit;
+.IP \(bu 2
+with \-\-same\-text\-as, that the code sections of every object, and
+their relocations, are those of that beamfs revision;
+.IP \(bu 2
+that the series merges into every \-\-newer revision and builds there;
+.IP \(bu 2
+the documentation build: no warning and no broken file reference that
+the base does not have.
+.RE
+.IP
+Writes the patches, the logs, upstream\-summary.json, signed when
+gpg\-agent holds the key, and upstream\-report.txt. Exits 0 when every
+check passes and 3 otherwise. The runtime half of the submit checklist,
+a debug kernel, lockdep and fault injection, is measured by BX on a
+kernel the bitbake chain built, not here.
 .TP
 .B full
 The whole pipeline: lab verification, VM lifecycle, cluster bootstrap,
@@ -245,7 +319,63 @@ but not a stale image.
 .B \-\-accept\-regression
 Let the pipeline continue past a result worse than the stored one.
 Records the acceptance in the manifest.
+.TP
+.B \-\-linux \fIdir\fR
+For
+.BR upstream ,
+the kernel repository holding the series branch. Default
+BEAMFS_BENCH_LINUX_REPO, or ~/git/linux.
+.TP
+.B \-\-series \fIbranch\fR
+The branch carrying the series. Default
+.IR beamfs\-rfc\-v1 .
+.TP
+.B \-\-base \fIrev\fR
+The commit the series is based on. Required.
+.TP
+.B \-\-measured \fIrev\fR
+The beamfs commit whose sources the series carries. Default HEAD.
+.TP
+.B \-\-same\-text\-as \fIrev\fR
+The beamfs commit whose compiled code the series must reproduce: for a
+release that changes comments and layout only, the measured release
+before it.
+.TP
+.B \-\-newer \fIrevs\fR
+Comma separated revisions the series must merge into and build on.
+Default origin/master,linux-next/master; their remotes are fetched first
+unless
+.BR \-\-no\-fetch .
+.TP
+.B \-\-subject\-prefix \fIprefix\fR
+Default
+.IR "RFC PATCH" .
+.TP
+.B \-\-assisted\-by \fIvalue\fR
+The Assisted\-by line every patch carries. Default
+.IR LLM ;
+empty for none.
+.TP
+.B \-\-strict\-blocking
+The \-\-strict CHECKs of checkpatch fail the check as well.
+.TP
+.B \-\-no\-cross
+Leave the arm64 build to the bitbake chain.
+.TP
+.B \-\-stack\-limit \fIbytes\fR
+The largest stack frame checkstack accepts. Default 512, the figure of
+the submit checklist.
+.TP
+.B \-\-out \fIdir\fR
+Where the run writes, an absolute path. Default
+~/.local/share/beamfs\-bench/upstream/<series>\-<stamp>.
 .SH ENVIRONMENT
+.TP
+.B BEAMFS_BENCH_LINUX_REPO
+The kernel repository: where
+.B upstream
+finds the series, and whose checkpatch the code analysis runs. Default
+~/git/linux.
 .TP
 .B BEAMFS_BENCH_BPF_SCRIPTS
 Where
@@ -311,15 +441,23 @@ What ran, on what, with what. GPG\-signed, one per run.
 .TP
 .I /tmp/beamfs-bench-current-run/
 The run in progress.
+.TP
+.I ~/.local/share/beamfs\-bench/upstream/
+One directory per run of
+.BR upstream :
+the patches as they would be mailed, the logs, the summary and the
+report.
 .SH EXIT STATUS
 .TP
 .B 0
 Everything ran and nothing regressed.
 .TP
 .B 3
-A gate refused: the lab, the code analysis, or a regression against the
-stored result. The pipeline stops rather than measuring on a foundation
-it cannot vouch for.
+A gate refused: the lab, the code analysis, a regression against the
+stored result, or one of the checks of
+.BR upstream .
+The pipeline stops rather than measuring on a foundation it cannot
+vouch for.
 .SH SEE ALSO
 .BR beamfs-xfstests (1),
 .BR fsck.beamfs (8)
