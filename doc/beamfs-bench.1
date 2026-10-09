@@ -99,6 +99,37 @@ each diagnostic is listed once, with its count, without the path of
 the worktree. get_maintainer lists the recipients from MAINTAINERS
 alone: from the git history it had named the last committers of
 MAINTAINERS and of fs/Makefile.
+.IP
+Since 0.16.0
+.B upstream
+asks for everything Documentation/process/submit\-checklist.rst asks
+that can be checked without booting, and for what
+Documentation/process/generated\-content.rst and coding\-assistants.rst
+ask of a series made with tools: builds on 32 bits, i386 and arm with
+LLVM, and big\-endian, s390 with LLVM, each with beamfs as a module so
+that modpost sees what a 32\-bit machine cannot link; W=1 on them as
+well; gcc \-W (KCFLAGS=\-W) on fs/beamfs; smatch through Kbuild; every
+semantic patch of coccicheck in report mode; a cover letter with a
+paragraph beginning "Tools" and one beginning "Testing"; and an
+Assisted\-by line that may name the analysis tools after its value.
+arm64 is no longer built big\-endian: CPU_BIG_ENDIAN depends on BROKEN
+there since v7.3. The code analysis takes its checkpatch and its
+kernel\-doc from a worktree of BEAMFS_BENCH_LINUX_BASE, origin/master by
+default: they came from the working tree of the kernel repository, on
+whatever branch was checked out there, and from /usr/src/linux, the
+station's own kernel. Before sparse and smatch run, the tools check
+passes each through the tree's scripts/checker\-valid.sh, the test
+kbuild applies before C=1 or C=2: kbuild turns a checker it refuses
+off, says so in one line, and checks nothing. When modpost finds a
+symbol undefined in a module build, the objects of beamfs are
+recompiled there with \-g, and each call is placed: file and line,
+function, symbol. coccicheck is given the directory of beamfs as an
+absolute M=, and runs there; it fails when it ran elsewhere or ran no
+semantic patch, and its findings, which it names from that directory,
+are reported under fs/beamfs/. The tools check runs spatch on a
+semantic patch with a python rule and an OCaml rule: spatch compiles
+an OCaml rule with the OCaml compiler on PATH, which has to be the one
+coccinelle was built with.
 .SH COMMANDS
 .TP
 .B checkpoint
@@ -125,15 +156,17 @@ repository over a base;
 formats it itself, with its cover letter, and checks:
 .RS
 .IP \(bu 2
-the tools it needs, spdxcheck included: a tool that cannot run fails
-its check;
+the tools it needs, spdxcheck, smatch, spatch and the LLVM tools
+included: a tool that cannot run fails its check, and so does a
+checker the tree's scripts/checker\-valid.sh refuses;
 .IP \(bu 2
 that the sources under fs/beamfs are those of \-\-measured, byte for
 byte;
 .IP \(bu 2
-every commit: signed, by \-\-author, with its Signed\-off\-by and its
-Assisted\-by, without Co\-Authored\-By, its subject within 60 characters
-once numbered;
+every commit: signed, by \-\-author, with its Signed\-off\-by and one
+Assisted\-by line, \-\-assisted\-by alone or followed by the names of
+the analysis tools used, without Co\-Authored\-By, its subject within 60
+characters once numbered;
 .IP \(bu 2
 every patch with checkpatch: no error and no warning, FILE_PATH_CHANGES
 excepted where the MAINTAINERS entry of the series covers every file it
@@ -141,9 +174,10 @@ adds; the \-\-strict CHECKs counted by type, and blocking with
 \-\-strict\-blocking;
 .IP \(bu 2
 every mail under \-\-max\-mail\-bytes; a cover letter without a
-placeholder and with its base\-commit; no typographic dash or quote in
-the cover letter or the documentation, and nothing but ASCII in the
-sources;
+placeholder, with its base\-commit, naming the assistance the patches
+declare, with a paragraph beginning "Tools" and one beginning
+"Testing"; no typographic dash or quote in the cover letter or the
+documentation, and nothing but ASCII in the sources;
 .IP \(bu 2
 MAINTAINERS: the entry at the head of the series, and get_maintainer's
 self\-test;
@@ -159,9 +193,12 @@ builds without a warning: x86_64 tinyconfig with beamfs as a module;
 built in with every option, SMP, preemption and tracing; built in under
 lockdep and the memory debugging options; built in without sysfs, procfs
 and debugfs; with clang; allnoconfig; allmodconfig on fs/beamfs, with
-CONFIG_WERROR; arm64 with a cross compiler, unless \-\-no\-cross. Then
-W=1 on the module, built\-in and clang builds, sparse, kernel\-doc on
-every source and header, and checkstack under \-\-stack\-limit;
+CONFIG_WERROR; arm64 with a cross compiler, unless \-\-no\-cross; i386
+and arm with LLVM, 32 bits, and s390 with LLVM, big\-endian, each with
+beamfs as a module. Then W=1 on the module, built\-in, clang, i386, arm
+and s390 builds, gcc \-W on fs/beamfs, sparse, smatch, coccicheck,
+kernel\-doc on every source and header, and checkstack under
+\-\-stack\-limit;
 .IP \(bu 2
 with \-\-same\-text\-as, that the code sections of every object, and
 their relocations, are those of that beamfs revision;
@@ -175,8 +212,9 @@ the base does not have.
 Writes the patches, the logs, upstream\-summary.json, signed when
 gpg\-agent holds the key, and upstream\-report.txt. Exits 0 when every
 check passes and 3 otherwise. The runtime half of the submit checklist,
-a debug kernel, lockdep and fault injection, is measured by BX on a
-kernel the bitbake chain built, not here.
+a debug kernel, lockdep, fault injection and linux\-next, belongs to
+beamfs\-xfstests, on a kernel the bitbake chain built; it is not
+measured here.
 .TP
 .B full
 The whole pipeline: lab verification, VM lifecycle, cluster bootstrap,
@@ -384,8 +422,13 @@ Where the run writes, an absolute path. Default
 .B BEAMFS_BENCH_LINUX_REPO
 The kernel repository: where
 .B upstream
-finds the series, and whose checkpatch the code analysis runs. Default
+finds the series, and where the code analysis checks out
+BEAMFS_BENCH_LINUX_BASE for its checkpatch and its kernel\-doc. Default
 ~/git/linux.
+.TP
+.B BEAMFS_BENCH_LINUX_BASE
+The revision of that repository whose checkpatch and kernel\-doc the
+code analysis runs. Default origin/master.
 .TP
 .B BEAMFS_BENCH_BPF_SCRIPTS
 Where

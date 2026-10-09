@@ -6,7 +6,7 @@ attack. It is a measurement instrument, not a judgment engine: the
 nodes emit raw records, and the verdict is derived from them in Rust
 (`src/synthesis.rs`).
 
-Version 0.15.1. Its 0.14 releases ran the fault-injection campaign of
+Version 0.16.0. Its 0.14 releases ran the fault-injection campaign of
 the beamfs v3 technical report,
 [10.5281/zenodo.23253350](https://doi.org/10.5281/zenodo.23253350):
 run 2 from `661e8aa` (0.14.6), run 3 from `60155f3` (0.14.7), run 4 from
@@ -28,11 +28,11 @@ Each attack ends in one verdict:
   `SILENT_CORRUPTION`;
 - `NOT_EXERCISED`: no attack reached the target.
 
-## Known defects of 0.15.1
+## Known defects of 0.16.0
 
 Found with 0.14.8 while writing the v3 report, whose results are read
-from the raw records, not from these summaries; the 0.15 releases do
-not touch them:
+from the raw records, not from these summaries; the 0.15 and 0.16
+releases do not touch them:
 
 - the synthesis gives the attacked files as "3 files of 3KB", where
   they are 262 144 bytes;
@@ -50,12 +50,29 @@ not touch them:
 
 `beamfs-bench upstream --base <rev>` checks the kernel patch series on
 a branch of `~/git/linux` the way its reviewers and their build robots
-will: commits and trailers, checkpatch with spdxcheck on every patch,
-the mails and the cover letter, MAINTAINERS, Kconfig, the documentation
-of the userspace interfaces, builds under several configurations with
-W=1, sparse, kernel-doc and checkstack, the merge into mainline and
-linux-next, and the documentation build. Since 0.15.0 the code analysis
-gate runs the same checkpatch on the module sources.
+will: commits and trailers (one `Assisted-by: LLM` line, the analysis
+tools used named after it if any, as
+Documentation/process/coding-assistants.rst writes it), checkpatch
+with spdxcheck on every patch, the mails, the cover letter with a
+paragraph beginning "Tools" and one beginning "Testing"
+(Documentation/process/generated-content.rst), MAINTAINERS, Kconfig,
+the documentation of the userspace interfaces, builds under several
+configurations, on 32 bits (i386, arm with LLVM) and big-endian (s390
+with LLVM) as well, with W=1 and with gcc -W, sparse, smatch,
+coccicheck, kernel-doc and checkstack, the merge into mainline and
+linux-next, and the documentation build. It needs sparse and smatch
+recent enough for the kernel's scripts/checker-valid.sh, spatch
+(coccinelle, its python and OCaml rules working), clang with lld and
+the LLVM binutils, and for arm64 an aarch64 cross gcc. When modpost
+finds a symbol undefined, the calls are placed by file, line and
+function. The
+runtime half of Documentation/process/submit-checklist.rst (debug
+kernels, lockdep, fault injection, linux-next) belongs to
+beamfs-xfstests.
+
+The code analysis gate runs the same checkpatch and kernel-doc on the
+module sources, from a worktree of `BEAMFS_BENCH_LINUX_BASE`
+(origin/master by default) of the kernel repository.
 
 ## The lab
 

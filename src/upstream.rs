@@ -17,10 +17,14 @@
 //! `beamfs-bench upstream` runs them on the series itself, from the
 //! kernel repository that holds its branch, together with the part of
 //! Documentation/process/submit-checklist.rst that can be checked
-//! without booting: sparse, checkstack, kernel-doc, the documentation of
-//! the userspace interfaces, builds at =m and =y under several
-//! configurations, with clang, allnoconfig and allmodconfig, on arm64,
-//! and on the newer trees. The runtime half of the checklist -- debug
+//! without booting: sparse, smatch, coccicheck, checkstack, kernel-doc,
+//! the documentation of the userspace interfaces, builds at =m and =y
+//! under several configurations, with clang, allnoconfig and
+//! allmodconfig, on 32 bits (i386 and arm) and big-endian (s390), with
+//! W=1 and with gcc -W, and on the newer trees; and, from
+//! Documentation/process/generated-content.rst, a cover letter that says
+//! which tools were used and how the series was tested. The runtime half
+//! of the checklist -- debug
 //! kernels, lockdep, fault injection -- belongs to BX, on a kernel the
 //! bitbake chain built.
 //!
@@ -61,6 +65,9 @@ const KERNEL_DOC: [&str; 3] = [
 
 /// Where checkstack.pl may live in the tree.
 const CHECKSTACK: [&str; 2] = ["scripts/checkstack.pl", "tools/scripts/checkstack.pl"];
+
+/// The checkers of make C=1 and C=2, as kbuild is given them in CHECK.
+const CHECKERS: [&[&str]; 2] = [&["sparse"], &["smatch", "-p=kernel"]];
 
 /// Macros that declare a module parameter.
 const PARAM_MACROS: [&str; 9] = [
@@ -167,6 +174,25 @@ pub fn linux_repo() -> PathBuf {
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/aurelien".to_string());
     PathBuf::from(format!("{home}/git/linux"))
+}
+
+/// The revision whose scripts judge the module sources in the code
+/// analysis gate: `BEAMFS_BENCH_LINUX_BASE`, or origin/master.
+///
+/// The working tree of the kernel repository holds whatever branch was
+/// last checked out there, and the kernel of the station is another
+/// release again: neither is the tree a series is judged by.
+#[must_use]
+pub fn linux_base() -> String {
+    match std::env::var("BEAMFS_BENCH_LINUX_BASE") {
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => "origin/master".to_string(),
+    }
+}
+
+/// kernel-doc in the tree `tree`, wherever this release keeps it.
+pub(crate) fn kernel_doc_script(tree: &Path) -> Option<PathBuf> {
+    tree_script(tree, &KERNEL_DOC)
 }
 
 /// The default output directory of a run on `series`.
@@ -366,13 +392,13 @@ fn begin(name: &str, what: &str) {
 }
 
 /// A detached worktree of the kernel, removed when it goes out of scope.
-struct Worktree {
+pub(crate) struct Worktree {
     repo: PathBuf,
-    path: PathBuf,
+    pub(crate) path: PathBuf,
 }
 
 impl Worktree {
-    fn add(repo: &Path, path: &Path, rev: &str) -> Result<Self> {
+    pub(crate) fn add(repo: &Path, path: &Path, rev: &str) -> Result<Self> {
         if path.exists() {
             bail!("{} exists already", path.display());
         }
@@ -438,8 +464,16 @@ fn message_findings(msg: &str, author: &str, assisted_by: &str) -> Vec<String> {
     }
     if !assisted_by.is_empty() {
         let a = format!("Assisted-by: {assisted_by}");
-        if !lines.contains(&a.as_str()) {
-            v.push(format!("no line \"{a}\""));
+        let found: Vec<&str> = lines
+            .iter()
+            .copied()
+            .filter(|l| l.starts_with("Assisted-by:"))
+            .collect();
+        match found.as_slice() {
+            [] => v.push(format!("no line \"{a}\"")),
+            [l] if assisted_by_matches(l, &a) => {}
+            [l] => v.push(format!("line \"{l}\", \"{a}\" or \"{a} TOOL...\" expected")),
+            _ => v.push(format!("{} Assisted-by lines, one expected", found.len())),
         }
     }
     for l in &lines {
@@ -452,6 +486,84 @@ fn message_findings(msg: &str, author: &str, assisted_by: &str) -> Vec<String> {
         }
     }
     v.extend(forbidden_chars(msg));
+    v
+}
+
+/// Whether an Assisted-by line is `prefix` alone, or `prefix` followed by
+/// the names of the analysis tools used, as
+/// Documentation/process/coding-assistants.rst writes it:
+/// "Assisted-by: LLM [TOOL1] [TOOL2]".
+fn assisted_by_matches(line: &str, prefix: &str) -> bool {
+    let Some(rest) = line.strip_prefix(prefix) else {
+        return false;
+    };
+    rest.is_empty()
+        || (rest.starts_with(' ')
+            && rest.split_whitespace().all(|t| {
+                t.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+'))
+            }))
+}
+
+/// What a cover letter lacks of Documentation/process/generated-content.rst:
+/// a paragraph saying which tools were used and one saying how the series
+/// was tested, each beginning at the left margin with its word. What they
+/// say is the author's; that they are there is checked.
+fn missing_sections(text: &str) -> Vec<String> {
+    let mut v = Vec::new();
+    for (word, title, what) in [
+        ("tools", "Tools", "which tools were used"),
+        ("testing", "Testing", "how the series was tested"),
+    ] {
+        if !text.lines().any(|l| l.to_ascii_lowercase().starts_with(word)) {
+            v.push(format!(
+                "no paragraph beginning \"{title}\", saying {what} (generated-content.rst)"
+            ));
+        }
+    }
+    v
+}
+
+/// What smatch says about the filesystem: its warn and error lines, each
+/// once.
+fn smatch_findings(text: &str, fs: &str) -> Vec<String> {
+    let needle = format!("fs/{fs}/");
+    let mut v: Vec<String> = Vec::new();
+    for l in text.lines().map(str::trim) {
+        let finding = l.contains(" warn: ")
+            || l.contains(" error: ")
+            || l.contains("warning:")
+            || l.contains("error:");
+        if finding && l.contains(&needle) && !v.iter().any(|x| x == l) {
+            v.push(l.to_string());
+        }
+    }
+    v
+}
+
+/// What coccicheck reports in the filesystem: every line that names one
+/// of its files and a line in that file, each once, as
+/// `fs/<name>/file.c:line:...`. Run with M= on the filesystem's
+/// directory, coccicheck names its files from there, as `./file.c`.
+fn coccicheck_findings(text: &str, fs: &str) -> Vec<String> {
+    let needle = format!("fs/{fs}/");
+    let mut v: Vec<String> = Vec::new();
+    for l in text.lines().map(str::trim) {
+        let rest = match (l.find(&needle), l.strip_prefix("./")) {
+            (Some(i), _) => &l[i + needle.len()..],
+            (None, Some(r)) => r,
+            (None, None) => continue,
+        };
+        let mut parts = rest.splitn(3, ':');
+        let located = matches!(
+            (parts.next(), parts.next(), parts.next()),
+            (Some(_), Some(n), Some(_)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+        );
+        let finding = format!("{needle}{rest}");
+        if located && !v.contains(&finding) {
+            v.push(finding);
+        }
+    }
     v
 }
 
@@ -877,6 +989,141 @@ fn author_mail(author: &str) -> String {
 
 fn is_diagnostic(l: &str) -> bool {
     l.contains("warning:") || l.contains("error:") || l.contains("WARNING:") || l.contains("ERROR:")
+}
+
+/// Why kbuild would refuse `checker`: the tree's
+/// `scripts/checker-valid.sh`, the test make C=1 and C=2 apply before
+/// running a checker, answers 1 for a checker it accepts. None when it
+/// accepts it, or when the tree has no such script.
+fn checker_refused(tree: &Path, checker: &[&str]) -> Option<String> {
+    let script = tree.join("scripts/checker-valid.sh");
+    if !script.is_file() {
+        return None;
+    }
+    let what = checker.join(" ");
+    match output(Command::new(&script).args(checker)) {
+        Ok(o) if String::from_utf8_lossy(&o.stdout).trim() == "1" => None,
+        Ok(o) => Some(format!(
+            "{what}: refused by the tree's scripts/checker-valid.sh (answer {:?}); \
+             make C=2 would check nothing",
+            lossy(&o).trim()
+        )),
+        Err(e) => Some(format!("{what}: {e:#}")),
+    }
+}
+
+/// The line kbuild prints when it turns C=1 or C=2 off because the
+/// checker failed `scripts/checker-valid.sh`, its Makefile location left
+/// out.
+fn checker_disabled(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .find(|l| {
+            l.contains(" specified, but ") && l.ends_with("is not available or not up to date")
+        })
+        .map(|l| l.find("C=").map_or(l, |i| &l[i..]).to_string())
+}
+
+/// spatch on a semantic patch with a python rule and an `OCaml` rule,
+/// on a function of one line. coccicheck has both kinds, and spatch
+/// compiles an `OCaml` rule with the compiler it finds on PATH, which
+/// has to be the one coccinelle itself was built with: on 2026-10-09
+/// the station's `OCaml` 5.4 met a coccilib built with 4.14, and
+/// coccicheck stopped at the first semantic patch that has such a rule.
+fn spatch_scripting(dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let c = dir.join("spatch-try.c");
+    let cocci = dir.join("spatch-try.cocci");
+    std::fs::write(&c, "int f(void)\n{\n\treturn 0;\n}\n")?;
+    std::fs::write(
+        &cocci,
+        "@r@\nidentifier f;\n@@\nf(...) { ... }\n\n\
+         @script:python@\nf << r.f;\n@@\nprint(\"python \" + f)\n\n\
+         @script:ocaml@\nf << r.f;\n@@\nprint_endline (\"ocaml \" ^ f)\n",
+    )?;
+    let o = output(Command::new("spatch").arg("--sp-file").arg(&cocci).arg(&c))?;
+    let text = lossy(&o);
+    if o.status.success() && text.contains("python f") && text.contains("ocaml f") {
+        Ok(())
+    } else {
+        bail!("a python rule and an OCaml rule did not both run: {}", text.trim())
+    }
+}
+
+/// The symbols modpost found undefined in a module build, each once, in
+/// either of the forms modpost has printed them.
+fn undefined_symbols(text: &str) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    for l in text.lines().filter(|l| l.contains("modpost") && l.contains("undefined")) {
+        let quoted = l
+            .split_once("symbol '")
+            .and_then(|(_, r)| r.split_once('\''))
+            .or_else(|| l.split_once("modpost: \"").and_then(|(_, r)| r.split_once('"')));
+        let Some((s, _)) = quoted else { continue };
+        if !v.iter().any(|x| x == s) {
+            v.push(s.to_string());
+        }
+    }
+    v
+}
+
+/// The source place a line-number line of a disassembly names, from
+/// `fs/<name>/` on when the path goes through it.
+fn line_place(l: &str, anchor: &str) -> Option<String> {
+    let bare = l.strip_prefix("; ").unwrap_or(l);
+    let bare = bare.split_once(" (discriminator").map_or(bare, |(a, _)| a);
+    let (file, line) = bare.rsplit_once(':')?;
+    if file.is_empty()
+        || line.is_empty()
+        || !line.bytes().all(|b| b.is_ascii_digit())
+        || file.contains(char::is_whitespace)
+    {
+        return None;
+    }
+    Some(match file.find(anchor) {
+        Some(i) => format!("{}:{line}", &file[i..]),
+        None => format!("{file}:{line}"),
+    })
+}
+
+/// The calls to `symbols` in a disassembly printed with its relocations
+/// and its line numbers (`llvm-objdump -d -r -l`), as
+/// `fs/<name>/file.c:line function() calls symbol`, each once; `?` for
+/// a call no line-number line precedes in its function.
+fn calls_in(dump: &str, symbols: &[String], fs: &str) -> Vec<String> {
+    let anchor = format!("fs/{fs}/");
+    let mut func = String::new();
+    let mut place = String::new();
+    let mut found: Vec<String> = Vec::new();
+    for l in dump.lines().map(str::trim) {
+        if let Some(head) = l.strip_suffix(">:") {
+            if let Some((_, name)) = head.split_once(" <") {
+                func = name.to_string();
+                place.clear();
+            }
+            continue;
+        }
+        if let Some(p) = line_place(l, &anchor) {
+            place = p;
+            continue;
+        }
+        if !l.contains("R_") {
+            continue;
+        }
+        let Some(last) = l.split_whitespace().last() else {
+            continue;
+        };
+        let sym = last.split(['+', '-']).next().unwrap_or(last);
+        if !symbols.iter().any(|s| s == sym) {
+            continue;
+        }
+        let at = if place.is_empty() { "?" } else { place.as_str() };
+        let c = format!("{at} {func}() calls {sym}");
+        if !found.contains(&c) {
+            found.push(c);
+        }
+    }
+    found
 }
 
 fn count_tagged(text: &str, tag: &str, fs: &str) -> usize {
@@ -1443,16 +1690,41 @@ fn check_tools(ctx: &Ctx) -> Check {
         "make",
         "gcc",
         "clang",
+        "ld.lld",
+        "llvm-ar",
+        "llvm-nm",
+        "llvm-objcopy",
+        "llvm-objdump",
+        "llvm-readelf",
+        "llvm-strip",
         "perl",
         "git",
         "objcopy",
         "objdump",
         "readelf",
         "sparse",
+        "smatch",
+        "spatch",
         "sphinx-build",
     ] {
         if which(t).is_none() {
             problems.push(format!("{t} is not on PATH"));
+        }
+    }
+    // On 2026-10-09 kbuild refused the station's smatch, which could
+    // not parse __typeof_unqual__, and make C=2 checked nothing: the
+    // test it applies is applied here first.
+    for c in CHECKERS {
+        let Some(p) = which(c[0]) else { continue };
+        notes.push(format!("{}: {}", c[0], p.display()));
+        if let Some(why) = checker_refused(&ctx.tree, c) {
+            problems.push(why);
+        }
+    }
+    if which("spatch").is_some() {
+        match spatch_scripting(&ctx.cfg.out.join("text-scratch")) {
+            Ok(()) => notes.push("spatch: a python rule and an OCaml rule ran".to_string()),
+            Err(e) => problems.push(format!("spatch: {e:#}")),
         }
     }
     if ctx.cfg.cross {
@@ -1472,8 +1744,8 @@ fn check_tools(ctx: &Ctx) -> Check {
         "tools",
         t0,
         problems,
-        "checkpatch with spdxcheck, get_maintainer, kernel-doc, checkstack, gcc, clang, \
-         sparse, binutils, sphinx-build"
+        "checkpatch with spdxcheck, get_maintainer, kernel-doc, checkstack, gcc, clang and \
+         LLVM, sparse, smatch, coccinelle, binutils, sphinx-build"
             .to_string(),
         notes,
     )
@@ -1750,6 +2022,15 @@ fn check_prose(ctx: &Ctx) -> Check {
             if !text.lines().any(|l| l.starts_with("base-commit: ")) {
                 problems.push("cover letter: no base-commit line".to_string());
             }
+            for s in missing_sections(&text) {
+                problems.push(format!("cover letter: {s}"));
+            }
+            let named = ctx.cfg.assisted_by.split_whitespace().next();
+            if let Some(w) = named.filter(|w| !text.contains(*w)) {
+                problems.push(format!(
+                    "cover letter: the assistance its patches declare ({w}) is not named"
+                ));
+            }
             match text.lines().find_map(|l| l.strip_prefix("Subject: ")) {
                 Some(s) if s.chars().count() <= SUBJECT_MAX => {}
                 Some(s) => problems.push(format!(
@@ -1779,7 +2060,9 @@ fn check_prose(ctx: &Ctx) -> Check {
         "prose",
         t0,
         problems,
-        "cover letter complete, no typographic dash or quote, sources in ASCII".to_string(),
+        "cover letter complete with Tools and Testing, no typographic dash or quote, \
+         sources in ASCII"
+            .to_string(),
         Vec::new(),
     )
 }
@@ -2218,6 +2501,12 @@ fn build_inner(ctx: &Ctx, tree: &Path, v: &Variant) -> (Vec<String>, Vec<String>
             }
         }
     }
+    let undefined = undefined_symbols(&text);
+    if !undefined.is_empty() {
+        let (calls, located) = locate_calls(ctx, tree, v, &undefined);
+        notes.extend(calls);
+        log.push_str(&located);
+    }
     let log_path = ctx.logs().join(format!("{}.txt", v.dir));
     let _ = std::fs::write(&log_path, log.as_bytes());
     notes.push(format!("log: {}", log_path.display()));
@@ -2228,6 +2517,53 @@ fn build(ctx: &Ctx, tree: &Path, v: &Variant) -> Check {
     let t0 = Instant::now();
     let (problems, notes) = build_inner(ctx, tree, v);
     finish(v.name, t0, problems, format!("{}: no warning", v.what), notes)
+}
+
+/// Where the objects of the filesystem call `symbols`, each call once,
+/// and what make printed meanwhile.
+///
+/// modpost names the symbol and the module, never the caller. The
+/// objects are recompiled in the same build directory with debug
+/// information, and their disassembly, read with its relocations and its
+/// line numbers, places each call.
+fn locate_calls(ctx: &Ctx, tree: &Path, v: &Variant, symbols: &[String]) -> (Vec<String>, String) {
+    let fs = &ctx.cfg.fs;
+    let o = ctx.cfg.out.join(&v.dir);
+    let args = [
+        "KCFLAGS=-g".to_string(),
+        format!("-j{}", jobs()),
+        format!("fs/{fs}/"),
+    ];
+    let log = match make(tree, &o, v, &args) {
+        Ok((_, text)) => text,
+        Err(e) => return (vec![format!("calls not located: {e:#}")], String::new()),
+    };
+    let mut calls: Vec<String> = Vec::new();
+    for obj in fs_objects(&o.join("fs").join(fs), fs) {
+        let dump = output(
+            Command::new("llvm-objdump")
+                .args(["-d", "-r", "-l", "--no-show-raw-insn"])
+                .arg(&obj),
+        );
+        match dump {
+            Ok(d) if d.status.success() => {
+                for c in calls_in(&String::from_utf8_lossy(&d.stdout), symbols, fs) {
+                    if !calls.contains(&c) {
+                        calls.push(c);
+                    }
+                }
+            }
+            Ok(d) => calls.push(format!("llvm-objdump {}: {}", obj.display(), lossy(&d).trim())),
+            Err(e) => calls.push(format!("{e:#}")),
+        }
+    }
+    if calls.is_empty() {
+        calls.push(format!(
+            "no call to {} found in the objects of fs/{fs}",
+            symbols.join(", ")
+        ));
+    }
+    (calls, log)
 }
 
 /// Object files of the filesystem in a build directory, the composite
@@ -2470,14 +2806,88 @@ fn check_builds(ctx: &Ctx, add: &mut dyn FnMut(Check)) {
         }
     }
 
+    // Word size and byte order: submit-checklist.rst asks for 32 and 64
+    // bits, little- and big-endian. A module build goes through modpost,
+    // so a 64-bit division that a 32-bit machine cannot do inline is
+    // caught there and not at the first load.
+    let mut port_set = vec![
+        y("BLOCK"),
+        y("MISC_FILESYSTEMS"),
+        y("MODULES"),
+        y("MODULE_UNLOAD"),
+        (main.clone(), 'm'),
+    ];
+    port_set.extend(bools_on.iter().cloned());
+    let mut port_req = vec![(main.clone(), 'm'), y("MODULES")];
+    port_req.extend(bools_on.iter().cloned());
+    // Big-endian is s390, with LLVM: arm64 can no longer be built
+    // big-endian, CPU_BIG_ENDIAN depending on BROKEN since v7.3.
+    let mut s390_req = port_req.clone();
+    s390_req.push(y("CPU_BIG_ENDIAN"));
+    let ports = vec![
+        Variant {
+            name: "build_i386",
+            what: format!("i386 tinyconfig, {fs} as a module with every option"),
+            dir: "build-i386-m".to_string(),
+            arch: "i386",
+            vars: Vec::new(),
+            base: "tinyconfig",
+            set: port_set.clone(),
+            require: port_req.clone(),
+            target: None,
+            expect: Expect::Module,
+            keep: true,
+        },
+        Variant {
+            name: "build_arm",
+            what: format!("arm tinyconfig with LLVM, {fs} as a module with every option"),
+            dir: "build-arm-m".to_string(),
+            arch: "arm",
+            vars: vec!["LLVM=1".to_string()],
+            base: "tinyconfig",
+            set: port_set.clone(),
+            require: port_req.clone(),
+            target: None,
+            expect: Expect::Module,
+            keep: true,
+        },
+        Variant {
+            name: "build_s390",
+            what: format!("s390 tinyconfig with LLVM, big-endian, {fs} as a module with every option"),
+            dir: "build-s390-m".to_string(),
+            arch: "s390",
+            vars: vec!["LLVM=1".to_string()],
+            base: "tinyconfig",
+            set: port_set.clone(),
+            require: s390_req,
+            target: None,
+            expect: Expect::Module,
+            keep: true,
+        },
+    ];
+    for v in &ports {
+        begin(v.name, &v.what);
+        add(build(ctx, &ctx.tree, v));
+    }
+
     if ctx.text_sha.is_some() {
         begin("text", "the module rebuilt from the reference sources");
     }
     add(check_text(ctx, &module));
     add(check_checkstack(ctx, &builtin));
-    begin("build_w1", "the objects of the filesystem rebuilt with W=1, gcc and clang");
-    add(check_w1(ctx, &[&module, &builtin, &clang]));
+    begin(
+        "build_w1",
+        "the objects of the filesystem rebuilt with W=1, gcc and clang, 64 and 32 bits",
+    );
+    let mut w1: Vec<&Variant> = vec![&module, &builtin, &clang];
+    w1.extend(ports.iter());
+    add(check_w1(ctx, &w1));
+    add(check_extra_w(ctx, &builtin));
     add(check_sparse(ctx, &builtin));
+    begin("smatch", "the sources of the filesystem through smatch -p=kernel");
+    add(check_smatch(ctx, &builtin));
+    begin("coccicheck", "every semantic patch of scripts/coccinelle, report mode");
+    add(check_coccicheck(ctx, &builtin));
     add(check_kernel_doc(ctx));
     begin("newer", &format!("merge and build on {}", ctx.cfg.newer.join(", ")));
     add(check_newer(ctx, &builtin));
@@ -2783,6 +3193,9 @@ fn check_sparse(ctx: &Ctx, v: &Variant) -> Check {
     let t0 = Instant::now();
     let c_files = c_sources(ctx);
     let (mut problems, n, log) = rebuild_fs(ctx, v, "C=2", "CHECK");
+    if let Some(m) = checker_disabled(&log) {
+        problems.push(format!("kbuild: {m}"));
+    }
     if n < c_files {
         problems.push(format!("sparse checked {n} files of {c_files}"));
     }
@@ -2794,6 +3207,170 @@ fn check_sparse(ctx: &Ctx, v: &Variant) -> Check {
         problems,
         format!("{n} files of {}, no sparse warning", v.name),
         vec![format!("log: {}", log_path.display())],
+    )
+}
+
+/// make on the filesystem's directory alone, in an existing build
+/// directory, with `extra`: what make printed and whether it succeeded,
+/// the diagnostics left to the caller.
+fn remake_fs(ctx: &Ctx, v: &Variant, extra: &[String]) -> Result<(bool, String)> {
+    let o = ctx.cfg.out.join(&v.dir);
+    if !o.join(".config").is_file() {
+        bail!("the {} build did not run", v.name);
+    }
+    let mut args = extra.to_vec();
+    args.push(format!("-j{}", jobs()));
+    args.push(format!("fs/{}/", ctx.cfg.fs));
+    make(&ctx.tree, &o, v, &args)
+}
+
+/// gcc -W on the filesystem, as submit-checklist.rst asks it
+/// ("make KCFLAGS=-W"). The kernel's own headers answer it with a great
+/// deal of noise, so only what is said of fs/<name>/ counts.
+fn check_extra_w(ctx: &Ctx, v: &Variant) -> Check {
+    let t0 = Instant::now();
+    let fs = &ctx.cfg.fs;
+    let c_files = c_sources(ctx);
+    let mut problems = Vec::new();
+    let mut notes = Vec::new();
+    match remake_fs(ctx, v, &["KCFLAGS=-W".to_string()]) {
+        Ok((ok, text)) => {
+            let log_path = ctx.logs().join("build-kcflags-w.txt");
+            let _ = std::fs::write(&log_path, text.as_bytes());
+            let needle = format!("fs/{fs}/");
+            let mut others = 0usize;
+            for d in diagnostics(&text, &ctx.tree) {
+                if d.contains(&needle) {
+                    problems.push(d);
+                } else {
+                    others += 1;
+                }
+            }
+            if !ok {
+                problems.push("make KCFLAGS=-W failed".to_string());
+            }
+            let n = count_tagged(&text, "CC", fs);
+            if n < c_files {
+                problems.push(format!(
+                    "{n} objects recompiled with KCFLAGS=-W for {c_files} sources"
+                ));
+            }
+            if others > 0 {
+                notes.push(format!(
+                    "{others} diagnostic(s) of the kernel's own headers, not counted"
+                ));
+            }
+            notes.push(format!("log: {}", log_path.display()));
+        }
+        Err(e) => problems.push(format!("{e:#}")),
+    }
+    finish(
+        "build_extra_w",
+        t0,
+        problems,
+        format!("gcc -W adds no warning in fs/{fs}"),
+        notes,
+    )
+}
+
+/// smatch on the filesystem, the way the kernel runs it:
+/// make C=2 CHECK="smatch -p=kernel".
+fn check_smatch(ctx: &Ctx, v: &Variant) -> Check {
+    let t0 = Instant::now();
+    let fs = &ctx.cfg.fs;
+    let c_files = c_sources(ctx);
+    let mut problems = Vec::new();
+    let mut notes = Vec::new();
+    let extra = ["C=2".to_string(), "CHECK=smatch -p=kernel".to_string()];
+    match remake_fs(ctx, v, &extra) {
+        Ok((ok, text)) => {
+            let log_path = ctx.logs().join("smatch.txt");
+            let _ = std::fs::write(&log_path, text.as_bytes());
+            let prefix = format!("{}/", ctx.tree.display());
+            problems.extend(
+                smatch_findings(&text, fs)
+                    .into_iter()
+                    .map(|l| l.replace(&prefix, "")),
+            );
+            if let Some(m) = checker_disabled(&text) {
+                problems.push(format!("kbuild: {m}"));
+            }
+            if !ok {
+                problems.push("make C=2 CHECK=smatch failed".to_string());
+            }
+            let n = count_tagged(&text, "CHECK", fs);
+            if n < c_files {
+                problems.push(format!("smatch checked {n} files of {c_files}"));
+            }
+            notes.push(format!("log: {}", log_path.display()));
+        }
+        Err(e) => problems.push(format!("{e:#}")),
+    }
+    finish(
+        "smatch",
+        t0,
+        problems,
+        format!("{c_files} files of {}, no smatch warning or error", v.name),
+        notes,
+    )
+}
+
+/// coccicheck on the filesystem: every semantic patch of
+/// scripts/coccinelle, in report mode, as the build robots run it.
+fn check_coccicheck(ctx: &Ctx, v: &Variant) -> Check {
+    let t0 = Instant::now();
+    let fs = &ctx.cfg.fs;
+    if which("spatch").is_none() {
+        return finish(
+            "coccicheck",
+            t0,
+            vec!["spatch is not on PATH (coccinelle)".to_string()],
+            String::new(),
+            Vec::new(),
+        );
+    }
+    let o = ctx.cfg.out.join(&v.dir);
+    // M= is given whole: a relative one, with O=, may name the build
+    // directory, where there is no source, and spatch would then check
+    // nothing and say nothing. Given whole, kbuild runs coccicheck in
+    // that directory, where spatch reads it as "."; V=1 prints the
+    // commands and the directory make entered.
+    let dir = path_str(&ctx.fs_dir());
+    let args = [
+        "coccicheck".to_string(),
+        "MODE=report".to_string(),
+        "V=1".to_string(),
+        format!("M={dir}"),
+    ];
+    let mut problems = Vec::new();
+    let mut notes = Vec::new();
+    match make(&ctx.tree, &o, v, &args) {
+        Ok((ok, text)) => {
+            let log_path = ctx.logs().join("coccicheck.txt");
+            let _ = std::fs::write(&log_path, text.as_bytes());
+            problems.extend(coccicheck_findings(&text, fs));
+            if !text.contains(&dir) {
+                problems.push(format!("coccicheck did not run in {dir}: nothing was checked"));
+            }
+            let n = text.lines().filter(|l| l.starts_with("Processing ")).count();
+            if n == 0 {
+                problems.push("coccicheck ran no semantic patch".to_string());
+            } else {
+                notes.push(format!("{n} semantic patches"));
+            }
+            if !ok {
+                problems.push("make coccicheck failed".to_string());
+            }
+            notes.push(format!("log: {}", log_path.display()));
+        }
+        Err(e) => problems.push(format!("{e:#}")),
+    }
+    finish(
+        "coccicheck",
+        t0,
+        problems,
+        format!("every semantic patch, report mode: nothing to report in fs/{fs}"),
+        notes,
     )
 }
 
@@ -3345,5 +3922,127 @@ mod tests {
     #[test]
     fn non_ascii_lines_are_numbered() {
         assert_eq!(non_ascii_lines("a\nAur\u{e9}lien\nb\n"), vec![2]);
+    }
+
+    #[test]
+    fn an_assisted_by_line_may_name_its_tools() {
+        let p = "Assisted-by: LLM";
+        assert!(assisted_by_matches("Assisted-by: LLM", p));
+        assert!(assisted_by_matches("Assisted-by: LLM coccinelle sparse", p));
+        assert!(!assisted_by_matches("Assisted-by: LLMs", p));
+        assert!(!assisted_by_matches("Assisted-by: LLM (an assistant)", p));
+        let a = "A <a@b>";
+        let two = "x\n\nAssisted-by: LLM\nAssisted-by: LLM sparse\nSigned-off-by: A <a@b>\n";
+        assert_eq!(message_findings(two, a, "LLM").len(), 1);
+        let tools = "x\n\nAssisted-by: LLM smatch\nSigned-off-by: A <a@b>\n";
+        assert!(message_findings(tools, a, "LLM").is_empty());
+    }
+
+    #[test]
+    fn a_cover_letter_says_its_tools_and_its_testing() {
+        assert!(
+            missing_sections("Intro.\n\nTools: an LLM helped.\n\nTesting\nxfstests.\n").is_empty()
+        );
+        assert_eq!(
+            missing_sections("Intro.\n\n  testing: a shortlog line\n").len(),
+            2
+        );
+    }
+
+    #[test]
+    fn smatch_findings_are_those_of_the_filesystem() {
+        let t = "  CHECK   fs/beamfs/super.c\n\
+                 fs/beamfs/super.c:120 beamfs_fill_super() warn: missing error code 'ret'\n\
+                 fs/beamfs/super.c:120 beamfs_fill_super() warn: missing error code 'ret'\n\
+                 include/linux/fs.h:3 f() error: something\n\
+                 fs/beamfs/alloc.c:7 g() info: nothing to fix\n";
+        assert_eq!(
+            smatch_findings(t, "beamfs"),
+            vec![
+                "fs/beamfs/super.c:120 beamfs_fill_super() warn: missing error code 'ret'"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn coccicheck_findings_are_located_lines() {
+        let t = "/usr/bin/spatch -D report --dir fs/beamfs -I include\n\
+                 fs/beamfs/super.c:12:3-9: WARNING: opportunity for kmemdup\n\
+                 fs/beamfs/dir.c:40:1-2: opportunity for swap()\n\
+                 Please check for false positive in the output before submitting a patch.\n";
+        assert_eq!(coccicheck_findings(t, "beamfs").len(), 2);
+    }
+
+    #[test]
+    fn coccicheck_findings_from_the_filesystem_directory() {
+        let t = "make -C /t/tree/fs/beamfs \\\n\
+                 make[1]: Entering directory '/t/tree/fs/beamfs'\n\
+                 Processing atomic_as_refcounter.cocci\n\
+                 ./file_inline.c:3697:5-24: WARNING: atomic_dec_and_test variation\n\
+                 ./file_inline.c:3697:5-24: WARNING: atomic_dec_and_test variation\n\
+                 ./README: not a finding\n";
+        assert_eq!(
+            coccicheck_findings(t, "beamfs"),
+            vec![
+                "fs/beamfs/file_inline.c:3697:5-24: WARNING: atomic_dec_and_test variation"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_checker_kbuild_turned_off_is_named() {
+        let t = "  DESCEND objtool\n\
+                 /t/tree/Makefile:1300: C=2 specified, but smatch -p=kernel is not available or not up to date\n";
+        assert_eq!(
+            checker_disabled(t).as_deref(),
+            Some("C=2 specified, but smatch -p=kernel is not available or not up to date")
+        );
+        assert_eq!(checker_disabled("  CHECK   fs/beamfs/super.c\n"), None);
+    }
+
+    #[test]
+    fn modpost_names_its_undefined_symbols() {
+        let t = "ERROR: modpost: fs/beamfs/beamfs.ko: symbol '__udivdi3' undefined!\n\
+                 ERROR: modpost: fs/beamfs/beamfs.ko: symbol '__divdi3' undefined!\n\
+                 ERROR: modpost: \"__aeabi_uldivmod\" [fs/beamfs/beamfs.ko] undefined!\n\
+                 ERROR: modpost: fs/beamfs/beamfs.ko: symbol '__udivdi3' undefined!\n\
+                 make[2]: *** [scripts/Makefile.modpost:147: Module.symvers] Error 1\n";
+        assert_eq!(undefined_symbols(t), vec!["__udivdi3", "__divdi3", "__aeabi_uldivmod"]);
+    }
+
+    #[test]
+    fn calls_are_placed_by_line_and_function() {
+        let dump = [
+            "/o/fs/beamfs/alloc.o:\tfile format elf32-i386",
+            "",
+            "Disassembly of section .text:",
+            "",
+            "00000000 <beamfs_blocks>:",
+            "; beamfs_blocks():",
+            "; /t/tree/fs/beamfs/alloc.c:40",
+            "       0:      \tpushl\t%ebp",
+            "      12:      \tmovl\t%eax, %gs:20",
+            "; /t/tree/fs/beamfs/alloc.c:42 (discriminator 1)",
+            "       9:      \tcalll\t0xa <beamfs_blocks+0xa>",
+            "\t\t0000000a:  R_386_PC32\t__udivdi3",
+            "       e:      \tcalll\t0xf <beamfs_blocks+0xf>",
+            "\t\t0000000f:  R_386_PC32\t__udivdi3",
+            "00000040 <beamfs_free>:",
+            "      41:      \tcalll\t0x42 <beamfs_free+0x2>",
+            "\t\t00000042:  R_386_PC32\t__divdi3",
+            "      50:      \tcalll\t0x51 <beamfs_free+0x11>",
+            "\t\t00000051:  R_386_PC32\tprintk",
+        ]
+        .join("\n");
+        let syms = ["__udivdi3".to_string(), "__divdi3".to_string()];
+        assert_eq!(
+            calls_in(&dump, &syms, "beamfs"),
+            vec![
+                "fs/beamfs/alloc.c:42 beamfs_blocks() calls __udivdi3".to_string(),
+                "? beamfs_free() calls __divdi3".to_string(),
+            ]
+        );
     }
 }

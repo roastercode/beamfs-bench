@@ -302,8 +302,11 @@ fn dump_to_tmp_tarball(analysis_dir: &Path) -> Result<PathBuf> {
 // once tool availability on spartian-1 is verified.
 
 /// checkpatch as a reviewer runs it, on the module sources laid out as
-/// one patch, in the kernel repository of `beamfs-bench upstream`
-/// (`BEAMFS_BENCH_LINUX_REPO`, ~/git/linux by default), with spdxcheck.
+/// one patch, with spdxcheck, in a worktree of `BEAMFS_BENCH_LINUX_BASE`
+/// (origin/master by default) of the kernel repository of
+/// `beamfs-bench upstream` (`BEAMFS_BENCH_LINUX_REPO`, ~/git/linux by
+/// default). Until 0.16.0 it ran in that repository's working tree, on
+/// whatever branch was checked out there.
 /// Every ERROR and WARNING blocks; the --strict CHECKs are in the log,
 /// counted by type. Named `checkpatch_strict` for baseline continuity.
 ///
@@ -313,12 +316,20 @@ fn dump_to_tmp_tarball(analysis_dir: &Path) -> Result<PathBuf> {
 /// upstream.rs.
 fn run_checkpatch_strict(out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
-    let outcome = match crate::upstream::checkpatch_module(
+    let rev = crate::upstream::linux_base();
+    let outcome = match crate::upstream::Worktree::add(
         &crate::upstream::linux_repo(),
-        Path::new(crate::lab::beamfs_repo()),
-        "beamfs",
-        out,
-    ) {
+        &out.join("kernel-tree-checkpatch"),
+        &rev,
+    )
+    .and_then(|wt| {
+        crate::upstream::checkpatch_module(
+            &wt.path,
+            Path::new(crate::lab::beamfs_repo()),
+            "beamfs",
+            out,
+        )
+    }) {
         Ok(r) if r.blocking.is_empty() => ToolOutcome::Pass,
         Ok(r) => {
             for l in &r.blocking {
@@ -603,15 +614,14 @@ fn run_smatch(out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
     let log_path = out.join("smatch.log");
     let _ = std::fs::write(&log_path,
-        "smatch : out-of-scope decision (Phase Y).\n\
-         Rationale: smatch requires Kbuild integration (make C=2 CHECK=smatch)\n\
-         and is non-trivial to invoke standalone for an out-of-tree module.\n\
-         Reactivation deferred to a dedicated Yocto recipe task.\n");
+        "smatch runs in beamfs-bench upstream, on the series, through Kbuild:\n\
+         make C=2 CHECK=\"smatch -p=kernel\" fs/beamfs/. Outside Kbuild it\n\
+         would not see the configuration the series is built with.\n");
     ToolReport {
         name: "smatch".to_string(),
         tier: 1,
         outcome: ToolOutcome::Skip {
-            reason: "out-of-scope decision (Phase Y) ; needs Yocto recipe integration".to_string()
+            reason: "run by beamfs-bench upstream, through Kbuild".to_string()
         },
         duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
@@ -621,15 +631,14 @@ fn run_coccinelle(out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
     let log_path = out.join("coccinelle.log");
     let _ = std::fs::write(&log_path,
-        "coccinelle : out-of-scope decision (Phase Y).\n\
-         Rationale: spatch is not installed on spartian-1 and bringing it\n\
-         in is non-trivial (Gentoo overlay package + dependencies).\n\
-         Reactivation deferred to a future toolchain enrichment phase.\n");
+        "coccinelle runs in beamfs-bench upstream, on the series:\n\
+         make coccicheck MODE=report M=fs/beamfs, every semantic patch of\n\
+         scripts/coccinelle. spatch comes with dev-util/coccinelle.\n");
     ToolReport {
         name: "coccinelle".to_string(),
         tier: 1,
         outcome: ToolOutcome::Skip {
-            reason: "out-of-scope decision (Phase Y) ; spatch not installed".to_string()
+            reason: "run by beamfs-bench upstream (make coccicheck)".to_string()
         },
         duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
@@ -735,19 +744,15 @@ fn run_gcc_fanalyzer(_files: &[PathBuf], out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
     let log_path = out.join("gcc_fanalyzer.log");
     let _ = std::fs::write(&log_path,
-        "gcc_fanalyzer : skipped permanently host-side.\n\
-         Rationale: gcc -fanalyzer requires an aarch64 cross-toolchain to\n\
-         analyze beamfs sources against the linux-7.0.x arm64 target. The\n\
-         host gcc is x86_64-only ; aarch64-linux-gnu-gcc and Yocto SDK are\n\
-         not installed on spartian-1.\n\
-         The static analysis surface is covered by sparse + clang_werror\n\
-         (which can target aarch64 via --target). Reactivation requires\n\
-         either installing the Yocto SDK or bringing in aarch64 cross-gcc.\n");
+        "gcc -fanalyzer is not among the checks kernel.org asks of a patch\n\
+         (Documentation/process/submit-checklist.rst, Documentation/dev-tools/),\n\
+         and is not run on kernel code here. The kernel's own checks run in\n\
+         beamfs-bench upstream.\n");
     ToolReport {
         name: "gcc_fanalyzer".to_string(),
         tier: 1,
         outcome: ToolOutcome::Skip {
-            reason: "needs aarch64 cross-toolchain (Yocto SDK not installed)".to_string()
+            reason: "not a kernel.org check; those run in beamfs-bench upstream".to_string()
         },
         duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
@@ -853,19 +858,30 @@ fn run_cargo_clippy_pedantic(out: &Path) -> ToolReport {
     }
 }
 
+/// kernel-doc on the module sources, the script taken from a worktree of
+/// `BEAMFS_BENCH_LINUX_BASE`. Until 0.16.0 it was the one of the
+/// station's kernel, /usr/src/linux, another release than the series is
+/// judged by, and a missing script was skipped rather than failed.
 fn run_kernel_doc_validate(_files: &[PathBuf], out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
-    let kdoc = PathBuf::from("/usr/src/linux/scripts/kernel-doc");
-    if !kdoc.is_file() {
-        return ToolReport {
-            name: "kernel_doc".to_string(),
-            tier: 1,
-            outcome: ToolOutcome::Skip {
-                reason: format!("kernel-doc not at {}", kdoc.display())
-            },
-            duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
-        };
-    }
+    let rev = crate::upstream::linux_base();
+    let failed = |message: String| ToolReport {
+        name: "kernel_doc".to_string(),
+        tier: 1,
+        outcome: ToolOutcome::Error { message },
+        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
+    };
+    let wt = match crate::upstream::Worktree::add(
+        &crate::upstream::linux_repo(),
+        &out.join("kernel-tree-kdoc"),
+        &rev,
+    ) {
+        Ok(w) => w,
+        Err(e) => return failed(format!("{e:#}")),
+    };
+    let Some(kdoc) = crate::upstream::kernel_doc_script(&wt.path) else {
+        return failed(format!("kernel-doc is in no known place of {rev}"));
+    };
     let mut log_buf = String::new();
     let mut findings: u32 = 0;
     let beamfs_dir = PathBuf::from(crate::lab::beamfs_repo());
@@ -1313,5 +1329,35 @@ mod tests {
         assert_eq!(s, "\"Incremental\"");
         let s = serde_json::to_string(&AnalysisMode::Full).unwrap();
         assert_eq!(s, "\"Full\"");
+    }
+}
+
+#[cfg(test)]
+mod station_tests {
+    use super::*;
+
+    /// The checkpatch and the kernel-doc of the gate, run for real against
+    /// this station's kernel and beamfs repositories. Ignored by default:
+    /// it checks the kernel out twice.
+    ///
+    /// cargo test --release -- --ignored the_gate_reads_the_base_tree
+    #[test]
+    #[ignore = "checks the kernel out twice; run on the station with --ignored"]
+    fn the_gate_reads_the_base_tree() {
+        let out = std::env::temp_dir().join(format!("bb-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&out).unwrap();
+        let c = run_checkpatch_strict(&out);
+        let k = run_kernel_doc_validate(&[], &out);
+        let _ = std::fs::remove_dir_all(&out);
+        println!("checkpatch_strict: {:?}", c.outcome);
+        println!("kernel_doc: {:?}", k.outcome);
+        assert!(!matches!(
+            c.outcome,
+            ToolOutcome::Error { .. } | ToolOutcome::Skip { .. }
+        ));
+        assert!(!matches!(
+            k.outcome,
+            ToolOutcome::Error { .. } | ToolOutcome::Skip { .. }
+        ));
     }
 }
