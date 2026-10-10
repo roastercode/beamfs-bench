@@ -23,16 +23,26 @@
 //! allmodconfig, on 32 bits (i386 and arm) and big-endian (s390), with
 //! W=1 and with gcc -W, and on the newer trees; and, from
 //! Documentation/process/generated-content.rst, a cover letter that says
-//! which tools were used and how the series was tested. The runtime half
-//! of the checklist -- debug
-//! kernels, lockdep, fault injection -- belongs to BX, on a kernel the
-//! bitbake chain built.
+//! which tools were used and how the series was tested.
+//!
+//! The runtime half of the checklist is not run here. beamfs-xfstests
+//! runs xfstests on kernels the bitbake chain built with lockdep,
+//! `PROVE_RCU`, `DEBUG_OBJECTS` and kmemleak; how much of the code those
+//! runs exercise is not measured, and the rest of that half
+//! (`DEBUG_PREEMPT` and `DEBUG_PAGEALLOC` with the other debug options,
+//! kernels without SMP and without preemption, slab and page allocation
+//! failure injection, linux-next) is run nowhere yet.
 //!
 //! The code analysis gate runs its checkpatch through
 //! [`checkpatch_module`], the same way.
 //!
 //! A check whose tool cannot run fails. A spdxcheck that does not start
-//! says nothing, and that silence is how it went unnoticed.
+//! says nothing, and that silence is how it went unnoticed. A check this
+//! run leaves out does not pass either: with --no-cross, or with an
+//! empty --newer, the run names the checks it did not run and ends with
+//! 3, as when a check fails. A check with nothing to check, the compiled
+//! code without --same-text-as or the documentation of a series that
+//! changes none, is not applicable and blocks nothing.
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
@@ -120,11 +130,15 @@ pub struct Config {
     pub out: PathBuf,
 }
 
+/// How a check ended. `Skip` is a check this run left out: the series
+/// is not ready to mail until it has run. `NotApplicable` is a check with
+/// nothing to check, which blocks nothing.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 pub enum Status {
     Pass,
     Fail,
     Skip,
+    NotApplicable,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -152,6 +166,11 @@ pub struct Summary {
     pub newer: Vec<String>,
     pub patches: Vec<String>,
     pub checks: Vec<Check>,
+    /// The checks that failed.
+    pub failed: Vec<String>,
+    /// The checks this run left out.
+    pub not_run: Vec<String>,
+    /// Every check ran and passed: the series is ready to mail.
     pub pass: bool,
 }
 
@@ -363,11 +382,36 @@ fn skip(name: &'static str, t0: Instant, why: String) -> Check {
     }
 }
 
+fn not_applicable(name: &'static str, t0: Instant, why: String) -> Check {
+    Check {
+        name,
+        status: Status::NotApplicable,
+        summary: why,
+        details: Vec::new(),
+        duration_ms: ms(t0),
+    }
+}
+
+/// The checks that failed and those this run left out, by name. The
+/// series is ready to mail when both are empty: a check that did not run
+/// passed nothing.
+fn verdict(checks: &[Check]) -> (Vec<String>, Vec<String>) {
+    let named = |status: Status| -> Vec<String> {
+        checks
+            .iter()
+            .filter(|c| c.status == status)
+            .map(|c| c.name.to_string())
+            .collect()
+    };
+    (named(Status::Fail), named(Status::Skip))
+}
+
 fn check_lines(c: &Check) -> String {
     let tag = match c.status {
         Status::Pass => "PASS",
         Status::Fail => "FAIL",
         Status::Skip => "SKIP",
+        Status::NotApplicable => " N/A",
     };
     let mut r = format!(
         "  [{tag}] {:<14} {} ({} s)\n",
@@ -1544,7 +1588,8 @@ pub fn run(cfg: &Config) -> Result<i32> {
     drop(tree);
     remove_scratch(&cfg.out);
 
-    let pass = checks.iter().all(|c| c.status != Status::Fail);
+    let (failed, not_run) = verdict(&checks);
+    let pass = failed.is_empty() && not_run.is_empty();
     let summary = Summary {
         bench_version: env!("CARGO_PKG_VERSION"),
         started_at,
@@ -1560,6 +1605,8 @@ pub fn run(cfg: &Config) -> Result<i32> {
         newer: cfg.newer.clone(),
         patches: patch_names,
         checks,
+        failed,
+        not_run,
         pass,
     };
     let json_path = cfg.out.join("upstream-summary.json");
@@ -1582,11 +1629,6 @@ pub fn run(cfg: &Config) -> Result<i32> {
             json_path.display()
         );
     }
-    let failed = summary
-        .checks
-        .iter()
-        .filter(|c| c.status == Status::Fail)
-        .count();
     println!();
     println!("  patches : {}", pdir.display());
     println!("  summary : {}", json_path.display());
@@ -1595,7 +1637,21 @@ pub fn run(cfg: &Config) -> Result<i32> {
     if pass {
         println!(" beamfs-bench upstream: every check passed");
     } else {
-        println!(" beamfs-bench upstream: {failed} check(s) failed");
+        if !summary.failed.is_empty() {
+            println!(
+                " beamfs-bench upstream: {} check(s) failed: {}",
+                summary.failed.len(),
+                summary.failed.join(", ")
+            );
+        }
+        if !summary.not_run.is_empty() {
+            println!(
+                " beamfs-bench upstream: {} check(s) not run: {}",
+                summary.not_run.len(),
+                summary.not_run.join(", ")
+            );
+        }
+        println!(" the series is not ready to mail");
     }
     println!("================================================================");
     Ok(if pass { 0 } else { 3 })
@@ -1618,7 +1674,13 @@ fn render(s: &Summary) -> String {
         r.push_str(&check_lines(c));
     }
     let _ = writeln!(r);
-    let _ = writeln!(r, "{}", if s.pass { "PASS" } else { "FAIL" });
+    if !s.failed.is_empty() {
+        let _ = writeln!(r, "failed   {}", s.failed.join(", "));
+    }
+    if !s.not_run.is_empty() {
+        let _ = writeln!(r, "not run  {}", s.not_run.join(", "));
+    }
+    let _ = writeln!(r, "{}", if s.pass { "PASS" } else { "NOT READY" });
     r
 }
 
@@ -2961,7 +3023,11 @@ fn same_text(a: &Path, b: &Path, tmp: &Path) -> Result<Vec<String>> {
 fn check_text(ctx: &Ctx, v: &Variant) -> Check {
     let t0 = Instant::now();
     let Some(rev) = ctx.text_sha.as_deref() else {
-        return skip("text", t0, "no --same-text-as".to_string());
+        return not_applicable(
+            "text",
+            t0,
+            "no --same-text-as: no compiled code to reproduce".to_string(),
+        );
     };
     let fs = &ctx.cfg.fs;
     let built = ctx.cfg.out.join(&v.dir);
@@ -3570,7 +3636,7 @@ fn check_docs(ctx: &Ctx) -> Check {
     let t0 = Instant::now();
     let dirs = doc_dirs(&ctx.changed);
     if dirs.is_empty() {
-        return skip("docs", t0, "the series changes no documentation".to_string());
+        return not_applicable("docs", t0, "the series changes no documentation".to_string());
     }
     let sphinx = if dirs.iter().any(|d| d == ".") {
         None
@@ -4044,5 +4110,50 @@ mod tests {
                 "? beamfs_free() calls __divdi3".to_string(),
             ]
         );
+    }
+
+    fn a_check(name: &'static str, status: Status) -> Check {
+        Check {
+            name,
+            status,
+            summary: String::new(),
+            details: Vec::new(),
+            duration_ms: 0,
+        }
+    }
+
+    #[test]
+    fn a_check_left_out_is_not_a_pass() {
+        let ready = [
+            a_check("commits", Status::Pass),
+            a_check("docs", Status::NotApplicable),
+        ];
+        assert_eq!(verdict(&ready), (Vec::new(), Vec::new()));
+        let left_out = [
+            a_check("commits", Status::Pass),
+            a_check("build_arm64", Status::Skip),
+            a_check("newer", Status::Skip),
+        ];
+        assert_eq!(
+            verdict(&left_out),
+            (
+                Vec::new(),
+                vec!["build_arm64".to_string(), "newer".to_string()]
+            )
+        );
+        let failed = [
+            a_check("checkpatch", Status::Fail),
+            a_check("newer", Status::Skip),
+        ];
+        assert_eq!(
+            verdict(&failed),
+            (vec!["checkpatch".to_string()], vec!["newer".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_check_with_nothing_to_check_says_so() {
+        let l = check_lines(&a_check("docs", Status::NotApplicable));
+        assert!(l.starts_with("  [ N/A] docs"), "{l}");
     }
 }

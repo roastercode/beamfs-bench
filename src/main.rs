@@ -372,8 +372,8 @@ enum Command {
         /// Use when iterating on the pipeline itself; never skip in R19 production.
         #[arg(long)]
         skip_bitbake: bool,
-        /// Run Tier 3 code analysis (Frama-C, scan-build, lcov). Heavy.
-        #[arg(long)]
+        /// Ignored since 0.16.1: the code analysis runs every check, always.
+        #[arg(long, hide = true)]
         full_code_analysis: bool,
         /// Bypass regression check with explicit reason. Empty rejected.
         #[arg(long)]
@@ -494,7 +494,8 @@ enum Command {
     /// Kconfig, the documentation of the userspace interfaces, builds
     /// under eight configurations with W=1, sparse, kernel-doc and
     /// checkstack, the merge into the newer trees, and the documentation
-    /// build against the base. Exits 3 when any check fails.
+    /// build against the base. Exits 3 when a check fails or is not run:
+    /// with --no-cross, or an empty --newer, the series is not ready.
     Upstream {
         /// Kernel repository holding the series branch
         /// [default: BEAMFS_BENCH_LINUX_REPO, or ~/git/linux].
@@ -546,7 +547,7 @@ enum Command {
         #[arg(long)]
         strict_blocking: bool,
 
-        /// Leave the arm64 build to the bitbake chain.
+        /// Leave the arm64 build out; the series is then not ready to mail.
         #[arg(long)]
         no_cross: bool,
 
@@ -644,19 +645,17 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     };
     pipeline::record(&mut manifest, "0.0a_usb_health", 0);
 
-    // Phase 0.0bis -- MIL/kernel.org code analysis gate
-    let code_analysis_mode = if full_code_analysis {
-        code_analysis::AnalysisMode::Full
-    } else {
-        code_analysis::AnalysisMode::Incremental
-    };
+    // Phase 0.0bis -- the code analysis gate: every check runs and passes
+    if full_code_analysis {
+        println!("[full] --full-code-analysis changes nothing since 0.16.1: every check runs");
+    }
     let analysis_run_dir = std::path::PathBuf::from("/tmp/beamfs-bench-current-run");
     if let Err(e) = std::fs::create_dir_all(&analysis_run_dir)
         .map_err(|err| anyhow::anyhow!("create analysis dir: {err}"))
     {
         return Err(pipeline::fail(&mut manifest, "0.0bis_code_analysis", &e));
     }
-    if let Err(e) = code_analysis::run(code_analysis_mode, &analysis_run_dir) {
+    if let Err(e) = code_analysis::run(&analysis_run_dir) {
         return Err(pipeline::fail(&mut manifest, "0.0bis_code_analysis", &e));
     }
     pipeline::record(&mut manifest, "0.0bis_code_analysis", 0);

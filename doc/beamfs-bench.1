@@ -1,4 +1,4 @@
-.TH BEAMFS\-BENCH 1 "2026-10-09" "beamfs development tools" "beamfs development tools"
+.TH BEAMFS\-BENCH 1 "2026-10-10" "beamfs development tools" "beamfs development tools"
 .SH NAME
 beamfs\-bench \- measure beamfs under fault injection, and prove the lab
 was in a known state when it did
@@ -21,7 +21,7 @@ in the yocto layer, signed.
 Before any measurement the pipeline verifies the lab itself: the VM disk
 architecture against the isolation contract, every USB stick by writing
 to it and reading it back, the source tree against its mirror, and the
-code through every static analyser installed. A run that starts on an
+code through a gate whose every check has to run. A run that starts on an
 unverified lab produces numbers nobody can use \(em on 2026-09-11 the USB
 pre\-flight caught a stick that acknowledged a 4 MiB write at 42 MB/s
 and left 213009 bytes of the old contents in place. It was one of five
@@ -130,6 +130,27 @@ are reported under fs/beamfs/. The tools check runs spatch on a
 semantic patch with a python rule and an OCaml rule: spatch compiles
 an OCaml rule with the OCaml compiler on PATH, which has to be the one
 coccinelle was built with.
+.IP
+Since 0.16.1 a check that does not run does not pass.
+.B upstream
+counted a SKIP as a pass: with arm64 left out by \-\-no\-cross, or the
+newer trees by an empty \-\-newer, it said every check had passed. Such
+a check now leaves the series not ready to mail; the run names it and
+exits 3. A check with nothing to check, the compiled code without
+\-\-same\-text\-as or the documentation build of a series that changes
+no documentation, says N/A and blocks nothing. The code analysis let a
+tool that was not installed through as a SKIP, and listed as its own
+tools that never ran in it: smatch and coccinelle, which run in
+.BR upstream ,
+gcc \-fanalyzer, gitleaks and cargo audit, and eight more in two tiers
+of stubs, which run nowhere. A tool that cannot run, or a kernel tree
+or a layer that is not found, now fails the gate, and the gate lists
+only what it runs. Its summary says whether it passed: it said
+overall_rc 0 whatever it found. \-\-full\-code\-analysis, which turned
+on the third tier, is accepted and changes nothing. EXIT STATUS gives
+the codes the program returns: a gate of
+.B full
+that refuses ends the run with 1, where the manual said 3.
 .SH COMMANDS
 .TP
 .B checkpoint
@@ -211,10 +232,19 @@ the base does not have.
 .IP
 Writes the patches, the logs, upstream\-summary.json, signed when
 gpg\-agent holds the key, and upstream\-report.txt. Exits 0 when every
-check passes and 3 otherwise. The runtime half of the submit checklist,
-a debug kernel, lockdep, fault injection and linux\-next, belongs to
-beamfs\-xfstests, on a kernel the bitbake chain built; it is not
-measured here.
+check ran and passed, and 3 when one failed or was not run: with
+\-\-no\-cross, or with an empty \-\-newer, the series is not ready to
+mail. A check with nothing to check, the compiled code without
+\-\-same\-text\-as or the documentation build of a series that changes
+no documentation, says N/A and blocks nothing.
+.IP
+The runtime half of the submit checklist is not run here.
+beamfs\-xfstests runs xfstests on kernels the bitbake chain built with
+lockdep, PROVE_RCU, DEBUG_OBJECTS and kmemleak; how much of the code
+those runs exercise is not measured, and the rest of that half,
+DEBUG_PREEMPT and DEBUG_PAGEALLOC with the other debug options, kernels
+without SMP and without preemption, slab and page allocation failure
+injection, and linux\-next, is run nowhere yet.
 .TP
 .B full
 The whole pipeline: lab verification, VM lifecycle, cluster bootstrap,
@@ -387,13 +417,14 @@ The beamfs commit whose sources the series carries. Default HEAD.
 .B \-\-same\-text\-as \fIrev\fR
 The beamfs commit whose compiled code the series must reproduce: for a
 release that changes comments and layout only, the measured release
-before it.
+before it. Without it, the check of the compiled code says N/A.
 .TP
 .B \-\-newer \fIrevs\fR
 Comma separated revisions the series must merge into and build on.
 Default origin/master,linux-next/master; their remotes are fetched first
 unless
 .BR \-\-no\-fetch .
+Empty, the check is not run, and the series is not ready to mail.
 .TP
 .B \-\-subject\-prefix \fIprefix\fR
 Default
@@ -408,7 +439,8 @@ empty for none.
 The \-\-strict CHECKs of checkpatch fail the check as well.
 .TP
 .B \-\-no\-cross
-Leave the arm64 build to the bitbake chain.
+Leave the arm64 build out: the check is not run, and the series is not
+ready to mail.
 .TP
 .B \-\-stack\-limit \fIbytes\fR
 The largest stack frame checkstack accepts. Default 512, the figure of
@@ -503,14 +535,27 @@ report.
 .SH EXIT STATUS
 .TP
 .B 0
-Everything ran and nothing regressed.
+The command ran, and what it checks passed.
+.TP
+.B 1
+The command could not run, or failed. A gate of
+.B full
+that refuses, the code analysis among them, ends the run here.
+.TP
+.B 2
+The command line was wrong, or
+.B full
+was asked of another machine than the cluster's.
 .TP
 .B 3
-A gate refused: the lab, the code analysis, a regression against the
-stored result, or one of the checks of
-.BR upstream .
-The pipeline stops rather than measuring on a foundation it cannot
-vouch for.
+.B upstream
+found a check that failed or was not run: the series is not ready to
+mail.
+.PP
+Past its gates,
+.B full
+exits with the code its analysis returned, and each measurement command
+with the code of its measurement.
 .SH SEE ALSO
 .BR beamfs-xfstests (1),
 .BR fsck.beamfs (8)

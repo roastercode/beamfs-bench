@@ -6,7 +6,7 @@ attack. It is a measurement instrument, not a judgment engine: the
 nodes emit raw records, and the verdict is derived from them in Rust
 (`src/synthesis.rs`).
 
-Version 0.16.0. Its 0.14 releases ran the fault-injection campaign of
+Version 0.16.1. Its 0.14 releases ran the fault-injection campaign of
 the beamfs v3 technical report,
 [10.5281/zenodo.23253350](https://doi.org/10.5281/zenodo.23253350):
 run 2 from `661e8aa` (0.14.6), run 3 from `60155f3` (0.14.7), run 4 from
@@ -28,7 +28,7 @@ Each attack ends in one verdict:
   `SILENT_CORRUPTION`;
 - `NOT_EXERCISED`: no attack reached the target.
 
-## Known defects of 0.16.0
+## Known defects of 0.16.1
 
 Found with 0.14.8 while writing the v3 report, whose results are read
 from the raw records, not from these summaries; the 0.15 and 0.16
@@ -45,6 +45,10 @@ releases do not touch them:
   and is capped;
 - the topology report says the beamfs module is loaded when beamfs is
   built into the kernel.
+
+The regression check of `full` (phase 8.3) compares nothing: its eight
+comparators are empty, and it is given the directory of the code
+analysis rather than the run's. A run passes it whatever it measured.
 
 ## Before a patch series is mailed
 
@@ -65,14 +69,23 @@ recent enough for the kernel's scripts/checker-valid.sh, spatch
 (coccinelle, its python and OCaml rules working), clang with lld and
 the LLVM binutils, and for arm64 an aarch64 cross gcc. When modpost
 finds a symbol undefined, the calls are placed by file, line and
-function. The
-runtime half of Documentation/process/submit-checklist.rst (debug
-kernels, lockdep, fault injection, linux-next) belongs to
-beamfs-xfstests.
+function. A check left out, arm64 with `--no-cross` or the newer trees
+with an empty `--newer`, leaves the series not ready to mail: the run
+names it and exits 3, as when a check fails.
 
-The code analysis gate runs the same checkpatch and kernel-doc on the
-module sources, from a worktree of `BEAMFS_BENCH_LINUX_BASE`
-(origin/master by default) of the kernel repository.
+The runtime half of Documentation/process/submit-checklist.rst is not
+run here. beamfs-xfstests runs xfstests on kernels the bitbake chain
+built with lockdep, PROVE_RCU, DEBUG_OBJECTS and kmemleak; how much of
+the code those runs exercise is not measured, and the rest of that half
+(DEBUG_PREEMPT and DEBUG_PAGEALLOC with the other debug options, kernels
+without SMP and without preemption, slab and page allocation failure
+injection, linux-next) is run nowhere yet.
+
+The code analysis gate of `full` runs the same checkpatch and kernel-doc
+on the module sources, from a worktree of `BEAMFS_BENCH_LINUX_BASE`
+(origin/master by default) of the kernel repository, with sparse,
+clang, the commit signatures, clippy and the lockstep with the layer.
+Every check of it has to run: a tool that is not installed fails it.
 
 ## The lab
 

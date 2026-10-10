@@ -1,113 +1,41 @@
-# beamfs-bench code-analysis tools -- spartian-1 install matrix
+# beamfs-bench code analysis gate
 
-This document lists every external tool invoked by `code_analysis.rs`
-with the corresponding Gentoo emerge command, version constraint, and
-verification step. Run `bin/check-code-analysis-deps.sh` (TODO) to
-audit the host before enabling the gate.
+`src/code_analysis.rs` is phase 0.0bis of `beamfs-bench full`. It runs
+before the lab is touched, on the whole module and on this bench, and
+every check of it has to run and pass: a tool that is not installed, or
+a kernel tree or a layer that is not found, fails the gate as a finding
+does.
 
-## Tier 1 -- FATAL
+| Check | What runs | Needs |
+|-------|-----------|-------|
+| checkpatch_strict | checkpatch with spdxcheck, on the module sources laid out as one patch | the kernel repository; a python3 that imports ply and git |
+| sparse | sparse -Wsparse-all -Wbitwise on each module source; an error fails | sparse; a kernel tree |
+| clang_werror | clang -fsyntax-only -Wall -Wextra on each module source; a warning fails | clang; a kernel tree |
+| gpg_verify | git verify-commit on the last 20 commits of beamfs and of the bench | gpg and the keys of the signers |
+| cargo_clippy_pedantic | cargo clippy --all-targets --all-features -- -D warnings on the bench | clippy |
+| kernel_doc | kernel-doc -none on each module source and header | the kernel repository |
+| naming_r17 | the retired names of the project, in the sources and the documentation | |
+| emdash_r16 | typographic dashes, arrows and quotes, in the same files | |
+| lockstep_r9 | the module sources against the copy in the layer, byte for byte | the layer |
 
-| Tool             | Gentoo package                          | Verify command                          |
-|------------------|------------------------------------------|------------------------------------------|
-| checkpatch.pl    | sys-kernel/gentoo-sources OR upstream    | `which checkpatch.pl`                    |
-| sparse           | dev-util/sparse                          | `sparse --version`                       |
-| smatch           | dev-util/smatch (overlay) or git build   | `smatch --version`                       |
-| coccinelle       | dev-util/coccinelle                      | `spatch --version`                       |
-| clang            | sys-devel/clang (>= 17)                  | `clang --version`                        |
-| gcc -fanalyzer   | sys-devel/gcc (>= 13)                    | `gcc --version` (need >= 13 for fanalyzer)|
-| gpg              | app-crypt/gnupg                          | `gpg --version`                          |
-| gitleaks         | dev-util/gitleaks (overlay) or go install| `gitleaks version`                       |
-| cargo-audit      | `cargo install cargo-audit`              | `cargo audit --version`                  |
-| cargo clippy     | dev-lang/rust (component)                | `cargo clippy --version`                 |
-| kernel-doc       | sys-kernel/gentoo-sources                | `which scripts/kernel-doc`               |
+checkpatch and kernel-doc come from a worktree of
+`BEAMFS_BENCH_LINUX_BASE` (origin/master by default) of
+`BEAMFS_BENCH_LINUX_REPO` (`~/git/linux` by default). sparse and clang
+read the kernel tree the layer builds, with its generated headers, or
+`/usr/src/linux` when there is none.
 
-### Emerge bundle
+Until 0.16.1 a tool that was not installed was reported SKIP and the
+pipeline went on, and the gate listed tools that never ran in it:
+smatch, coccinelle, gcc -fanalyzer, gitleaks and cargo audit in its
+first tier, and a second and a third tier of stubs.
 
-```bash
-emerge -av \
-    dev-util/sparse \
-    dev-util/coccinelle \
-    sys-devel/clang \
-    sys-devel/gcc \
-    app-crypt/gnupg
+## Not in the gate
 
-cargo install cargo-audit cargo-deny cargo-geiger
-```
-
-`smatch`, `gitleaks`, `cargo-deny` may require overlays:
-
-```bash
-# smatch: build from upstream
-git clone https://repo.or.cz/smatch.git ~/src/smatch
-cd ~/src/smatch && make && sudo make install
-
-# gitleaks: official release
-curl -L https://github.com/zricethezav/gitleaks/releases/latest/download/gitleaks_8.18.0_linux_x64.tar.gz | tar xz
-sudo install gitleaks /usr/local/bin/
-```
-
-## Tier 2 -- WARN
-
-| Tool             | Gentoo package                          | Verify command                          |
-|------------------|------------------------------------------|------------------------------------------|
-| cppcheck         | dev-util/cppcheck                        | `cppcheck --version`                     |
-| flawfinder       | dev-util/flawfinder                      | `flawfinder --version`                   |
-| semgrep          | `pip install semgrep` or container       | `semgrep --version`                      |
-| cargo geiger     | `cargo install cargo-geiger`             | `cargo geiger --version`                 |
-| MISRA addon      | bundled with cppcheck                    | `cppcheck --addon=misra --help`          |
-
-### Emerge bundle
-
-```bash
-emerge -av dev-util/cppcheck dev-util/flawfinder
-pip install --user semgrep
-cargo install cargo-geiger
-```
-
-## Tier 3 -- REPORT (full mode)
-
-| Tool             | Gentoo package                          | Notes                                   |
-|------------------|------------------------------------------|------------------------------------------|
-| Frama-C          | dev-tex/frama-c (overlay) or opam        | Heavy, ~minutes per file                 |
-| scan-build       | sys-devel/clang (component)              | Comes with clang                         |
-| lcov             | dev-util/lcov                            | Gated on selftests presence              |
-
-### Emerge bundle
-
-```bash
-emerge -av dev-util/lcov
-# Frama-C via opam:
-opam install frama-c
-```
-
-## Verification script (TODO)
-
-`bin/check-code-analysis-deps.sh` should:
-
-1. `which` each binary, return list of missing tools
-2. Check version >= minimum (e.g. gcc >= 13 for -fanalyzer)
-3. Emit JSON to `/tmp/code-analysis-deps-status.json` for CI use
-
-When a Tier 1 tool is missing on spartian-1, `code_analysis.rs::run()`
-will report `ToolOutcome::Skip` for that tool. The pipeline does NOT
-abort on Skip alone -- partial coverage is better than no coverage --
-but every Skip in Tier 1 should be followed up.
-
-## kernel.org submission gate
-
-Phase 7 DoD (mainline-scope.md sec 5) requires:
-
-- [ ] checkpatch.pl --strict zero on every .c/.h
-- [ ] sparse zero warnings under `make C=2`
-- [ ] smatch zero warnings under `make CHECK=smatch C=2`
-- [ ] No coccicheck failures from kernel-shipped semantic patches
-- [ ] kernel-doc zero warnings on all public API
-- [ ] checkpatch on full series (not just diff) via `git format-patch`
-
-When code_analysis.rs Tier 1 = all PASS in `--full` mode, the project
-is checkpatch-eligible for RFC submission. This gate does not replace
-the manual `git format-patch | checkpatch.pl` on the cover letter, but
-it ensures the working tree is always submission-ready.
+smatch, coccinelle, sparse and kernel-doc through Kbuild, checkstack,
+the builds and the documentation build run in `beamfs-bench upstream`,
+on the series: that is the check of kernel.org. gcc -fanalyzer,
+gitleaks, cargo audit, cppcheck, flawfinder, semgrep, cargo geiger, the
+MISRA addon, Frama-C, scan-build and lcov are run nowhere.
 
 ## checkpatch, since 0.15.0
 
@@ -138,3 +66,8 @@ userspace interfaces, builds under several configurations with W=1,
 sparse, kernel-doc and checkstack, the identity of the compiled code
 with a measured release, the merge into the newer trees, and the
 documentation build against the base. See beamfs-bench(1).
+
+Every check has to run: one left out, arm64 with `--no-cross` or the
+newer trees with an empty `--newer`, leaves the series not ready to
+mail, and the run exits 3 as when a check fails. A check with nothing
+to check says N/A.

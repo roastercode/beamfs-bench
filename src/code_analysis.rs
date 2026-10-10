@@ -1,41 +1,38 @@
-//! beamfs-bench code analysis -- MIL/kernel.org-grade pre-bench gate.
+//! beamfs-bench code analysis: the gate of `full`, before the lab.
 //!
-//! Runs at Phase 0.0bis (after Phase 0.0 isolation, before Phase 0.1
-//! clean-trees). Performs static analysis, security scanning, and
-//! kernel coding standard validation before the bench burns 8+ minutes
-//! on a build that will never be merged.
+//! Runs at phase 0.0bis, after the isolation check and before the clean
+//! trees, so that no hour of measurement is spent on code a reviewer
+//! would refuse. It checks the whole module and this bench, every time:
 //!
-//! ## Stratification (R8 + `DoD` Phase 7 mainline-scope)
+//! - checkpatch, with spdxcheck, on the module sources laid out as one
+//!   patch, and kernel-doc on every source and header, both from a
+//!   worktree of `BEAMFS_BENCH_LINUX_BASE` of the kernel repository;
+//! - sparse and clang on every module source, against the kernel tree
+//!   the layer builds, or /usr/src/linux; sparse fails on an error,
+//!   clang on a warning as well;
+//! - the signatures of the last twenty commits of beamfs and of this
+//!   bench;
+//! - cargo clippy on this bench, every warning an error;
+//! - the retired names of the project, and typographic dashes, arrows
+//!   and quotes, in the sources and the documentation of both;
+//! - the module sources against the copy in the layer, byte for byte.
 //!
-//! Three tiers, ordered by reviewer authority:
+//! Every check has to run and pass. A tool that is not installed, or a
+//! kernel tree or a layer that is not found, fails the gate as a finding
+//! does. Until 0.16.1 it was a SKIP, and the pipeline went on; the gate
+//! also listed as its own five tools that never ran in it, and eight
+//! more in two tiers of stubs.
 //!
-//! ### Tier 1 - FATAL (blocks pipeline)
-//! kernel.org submission gate. checkpatch, sparse, smatch, coccinelle,
-//! clang -Werror, gcc -fanalyzer, GPG verify, gitleaks, cargo audit
-//! (HIGH+ severity), cargo clippy -D warnings.
+//! smatch, coccinelle, sparse through Kbuild, checkstack and the builds
+//! run in `beamfs-bench upstream`, on the series: that is the check of
+//! kernel.org. gcc -fanalyzer, gitleaks, cargo audit, cppcheck,
+//! flawfinder, semgrep, cargo geiger, the MISRA addon, Frama-C,
+//! scan-build and lcov are run nowhere.
 //!
-//! ### Tier 2 - WARN (logged, non-blocking)
-//! cppcheck --inconclusive, flawfinder, semgrep, cargo geiger,
-//! kernel-doc, MISRA non-mandatory.
-//!
-//! ### Tier 3 - REPORT (audit trail JSON only, full mode)
-//! Frama-C WP/value analysis, scan-build (clang static analyzer),
-//! lcov coverage. Heavy tools, run on `--full` flag only.
-//!
-//! ## Scope
-//!
-//! Tier 1 runs incrementally on `git diff HEAD..origin/<branch>` to
-//! keep latency <30s in normal R19 cycle. Tier 2-3 run full-module on
-//! `--full-code-analysis` flag, weekly cadence.
-//!
-//! Output goes to `<run_dir>/code-analysis/` with one log per tool +
-//! `code-analysis-summary.json` for manifest integration.
-//!
-//! ## Failure semantics
-//!
-//! Any Tier 1 violation aborts the pipeline with rc=3 (distinct from
-//! rc=2 runtime failure) and tarballs `<run_dir>/code-analysis/` to
-//! `/tmp/code-analysis-<TS>.tar.gz` for offline review.
+//! The logs go to `<run_dir>/code-analysis/`, with
+//! `code-analysis-summary.json`. A gate that does not pass stops the
+//! pipeline and leaves that directory in
+//! `/tmp/code-analysis-<TS>.tar.gz`.
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
@@ -55,24 +52,18 @@ pub(crate) const FORBIDDEN_R16: &[(char, &str)] = &[
     ('\u{201D}', "right-double-quote U+201D"),
 ];
 
-
-/// Tool execution outcome. `Skip` means the tool is unavailable on the
-/// host (logged but not fatal even at Tier 1, because partial coverage
-/// is better than no run; the Tier 1 gate fires only on actual
-/// findings, not on missing binaries).
-#[allow(dead_code)] // Pass/Findings/Error constructed by real tool wrappers, not stubs
+/// What one check found. A tool that could not run is an `Error`, and
+/// fails the gate as `Findings` do.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub enum ToolOutcome {
     Pass,
     Findings { count: u32, severity: String, log_path: String },
-    Skip { reason: String },
     Error { message: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolReport {
     pub name: String,
-    pub tier: u8,
     pub outcome: ToolOutcome,
     pub duration_ms: u64,
 }
@@ -81,199 +72,92 @@ pub struct ToolReport {
 pub struct CodeAnalysisReport {
     pub started_at:  String,
     pub finished_at: String,
-    pub mode: AnalysisMode,
-    pub diff_base: String,         // e.g. "origin/diag/double-free-block"
-    pub files_analysed: Vec<String>,
-    pub tier1: Vec<ToolReport>,
-    pub tier2: Vec<ToolReport>,
-    pub tier3: Vec<ToolReport>,
-    pub tier1_pass: bool,
-    pub tier2_warnings: u32,
-    pub overall_rc: i32,           // 0 ok, 3 tier1 fail
+    pub checks: Vec<ToolReport>,
+    /// Every check ran and passed.
+    pub pass: bool,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
-pub enum AnalysisMode {
-    Incremental,    // diff HEAD..origin (default for R19 cycle)
-    Full,           // full module re-analysis (--full-code-analysis)
-}
-
-/// Public entry. Called from `cmd_full` between `0.0_isolation_r21` and
-/// `0.1_clean_trees`. Errors propagate to bail!() in main, which emits
-/// rc=3 and tarballs the partial report.
-pub fn run(mode: AnalysisMode, run_dir: &Path) -> Result<CodeAnalysisReport> {
-    println!("[pipeline 0.0bis] code analysis (tier 1/2/3, mode={mode:?})");
+/// Public entry, called from `cmd_full` between `0.0_isolation_r21` and
+/// `0.1_clean_trees`. When the gate does not pass, the error names the
+/// checks that did not.
+pub fn run(run_dir: &Path) -> Result<CodeAnalysisReport> {
+    println!("[pipeline 0.0bis] code analysis, every check on the whole module");
 
     let analysis_dir = run_dir.join("code-analysis");
     std::fs::create_dir_all(&analysis_dir)
         .with_context(|| format!("create {}", analysis_dir.display()))?;
 
     let started_at = chrono::Utc::now().to_rfc3339();
-    let diff_base = git_diff_base()?;
-    let mut files = files_in_scope(mode, &diff_base)?;
-    let mut effective_mode = mode;
-
-    // M1.Y : if Incremental returns no files (HEAD == upstream tip), fall
-    // back to Full so the Tier 1 gate actually runs. Without this, every
-    // R19 from a clean tree skips all 14 tools and emits a misleading
-    // "all SKIP" report. Surface the fallback explicitly so the operator
-    // knows the analysis ran on the full tree.
-    if matches!(mode, AnalysisMode::Incremental) && files.is_empty() {
-        eprintln!("[code-analysis] Incremental scope is empty (HEAD == upstream),");
-        eprintln!("[code-analysis] falling back to Full mode for Tier 1 gate.");
-        effective_mode = AnalysisMode::Full;
-        files = files_in_scope(effective_mode, &diff_base)?;
+    let checks = vec![
+        run_checkpatch_strict(&analysis_dir),
+        run_sparse(&analysis_dir),
+        run_clang_werror(&analysis_dir),
+        run_gpg_verify_commits(&analysis_dir),
+        run_cargo_clippy_pedantic(&analysis_dir),
+        run_kernel_doc_validate(&analysis_dir),
+        run_naming_r17_check(&analysis_dir),
+        run_emdash_r16_check(&analysis_dir),
+        run_lockstep_r9_sha256(&analysis_dir),
+    ];
+    for r in &checks {
+        log_tool(r);
     }
-
-    println!("  mode: {effective_mode:?}");
-    println!("  diff base: {diff_base}");
-    println!("  files in scope: {}", files.len());
-
-    let mut report = CodeAnalysisReport {
+    let refused: Vec<String> = not_passed(&checks)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let report = CodeAnalysisReport {
         started_at,
-        finished_at: String::new(),
-        mode: effective_mode,
-        diff_base,
-        files_analysed: files.iter().map(|p| p.display().to_string()).collect(),
-        tier1: Vec::new(),
-        tier2: Vec::new(),
-        tier3: Vec::new(),
-        tier1_pass: true,
-        tier2_warnings: 0,
-        overall_rc: 0,
+        finished_at: chrono::Utc::now().to_rfc3339(),
+        checks,
+        pass: refused.is_empty(),
     };
 
-    // ============== TIER 1 (FATAL) ==============
-    println!("\n  [tier 1 - FATAL]");
-    report.tier1.push(run_checkpatch_strict(&analysis_dir));
-    report.tier1.push(run_sparse(&analysis_dir));
-    report.tier1.push(run_smatch(&analysis_dir));
-    report.tier1.push(run_coccinelle(&analysis_dir));
-    report.tier1.push(run_clang_werror(&files, &analysis_dir));
-    report.tier1.push(run_gcc_fanalyzer(&files, &analysis_dir));
-    report.tier1.push(run_gpg_verify_commits(&analysis_dir));
-    report.tier1.push(run_gitleaks(&analysis_dir));
-    report.tier1.push(run_cargo_audit_high(&analysis_dir));
-    report.tier1.push(run_cargo_clippy_pedantic(&analysis_dir));
-    report.tier1.push(run_kernel_doc_validate(&files, &analysis_dir));
-    report.tier1.push(run_naming_r17_check(&analysis_dir));
-    report.tier1.push(run_emdash_r16_check(&analysis_dir));
-    report.tier1.push(run_lockstep_r9_sha256(&analysis_dir));
-
-    for r in &report.tier1 {
-        log_tool(r);
-        if matches!(&r.outcome, ToolOutcome::Findings { .. } | ToolOutcome::Error { .. }) {
-            report.tier1_pass = false;
-        }
-    }
-
-    // ============== TIER 2 (WARN) ==============
-    println!("\n  [tier 2 - WARN]");
-    report.tier2.push(run_cppcheck_inconclusive(&files, &analysis_dir));
-    report.tier2.push(run_flawfinder(&files, &analysis_dir));
-    report.tier2.push(run_semgrep(&files, &analysis_dir));
-    report.tier2.push(run_cargo_geiger(&analysis_dir));
-    report.tier2.push(run_misra_advisory(&files, &analysis_dir));
-
-    for r in &report.tier2 {
-        log_tool(r);
-        if matches!(&r.outcome, ToolOutcome::Findings { .. }) {
-            report.tier2_warnings += 1;
-        }
-    }
-
-    // ============== TIER 3 (REPORT, full mode only) ==============
-    if effective_mode == AnalysisMode::Full {
-        println!("\n  [tier 3 - REPORT]");
-        report.tier3.push(run_frama_c(&files, &analysis_dir));
-        report.tier3.push(run_scan_build(&analysis_dir));
-        report.tier3.push(run_lcov(&analysis_dir));
-        for r in &report.tier3 {
-            log_tool(r);
-        }
-    } else {
-        println!("\n  [tier 3 skipped -- run with --full-code-analysis to enable]");
-    }
-
-    report.finished_at = chrono::Utc::now().to_rfc3339();
-
-    // Write summary JSON
     let json_path = analysis_dir.join("code-analysis-summary.json");
-    let json = serde_json::to_string_pretty(&report)?;
-    std::fs::write(&json_path, &json)?;
+    std::fs::write(&json_path, serde_json::to_string_pretty(&report)?)
+        .with_context(|| format!("write {}", json_path.display()))?;
     println!("\n  summary: {}", json_path.display());
 
-    if !report.tier1_pass {
-        report.overall_rc = 3;
+    if !report.pass {
         let dump = dump_to_tmp_tarball(&analysis_dir)?;
         bail!(
-            "code analysis Tier 1 FAIL -- pipeline aborted (rc=3)\n\
-             findings dumped to {}\n\
-             review and fix before retrying R19",
+            "code analysis: {} check(s) did not pass: {}; logs in {}",
+            refused.len(),
+            refused.join(", "),
             dump.display()
         );
     }
-    if report.tier2_warnings > 0 {
-        println!("\n  WARNING: {} tier-2 findings -- non-blocking, review before push",
-                 report.tier2_warnings);
-    }
-
     Ok(report)
 }
 
-// ============================================================
-// Helpers (git, file scope, logging, tarball)
-// ============================================================
-
-fn git_diff_base() -> Result<String> {
-    // upstream of current branch
-    let out = Command::new("git").args([
-        "-C", crate::lab::beamfs_repo(), "rev-parse", "--abbrev-ref", "@{upstream}"
-    ]).output().context("git rev-parse upstream")?;
-    if !out.status.success() {
-        bail!("no upstream tracking branch on beamfs HEAD");
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+/// The checks that did not pass, by name: those with findings, and those
+/// whose tool could not run.
+fn not_passed(checks: &[ToolReport]) -> Vec<&str> {
+    checks
+        .iter()
+        .filter(|r| r.outcome != ToolOutcome::Pass)
+        .map(|r| r.name.as_str())
+        .collect()
 }
 
-fn files_in_scope(mode: AnalysisMode, diff_base: &str) -> Result<Vec<PathBuf>> {
-    match mode {
-        AnalysisMode::Incremental => {
-            let out = Command::new("git").args([
-                "-C", crate::lab::beamfs_repo(), "diff", "--name-only", &format!("{diff_base}..HEAD")
-            ]).output().context("git diff name-only")?;
-            let raw = String::from_utf8_lossy(&out.stdout);
-            Ok(raw.lines()
-                .filter(|f| f.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("c")) || f.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("h")) || f.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("rs")))
-                .map(|f| PathBuf::from(crate::lab::beamfs_repo()).join(f))
-                .filter(|p| p.exists())
-                .collect())
-        }
-        AnalysisMode::Full => {
-            let mut v = Vec::new();
-            for repo in &[crate::lab::beamfs_repo(), crate::lab::bench_repo()] {
-                for entry in walkdir::WalkDir::new(repo).max_depth(4) {
-                    let entry = entry?;
-                    if let Some(ext) = entry.path().extension() {
-                        if matches!(ext.to_str(), Some("c" | "h" | "rs")) {
-                            v.push(entry.path().to_path_buf());
-                        }
-                    }
-                }
-            }
-            Ok(v)
-        }
-    }
-}
+// ============================================================
+// Helpers (logging, tarball)
+// ============================================================
 
 fn log_tool(r: &ToolReport) {
     let tag = match &r.outcome {
         ToolOutcome::Pass => "PASS",
         ToolOutcome::Findings { .. } => "FINDINGS",
-        ToolOutcome::Skip { .. } => "SKIP",
         ToolOutcome::Error { .. } => "ERROR",
     };
     println!("    [{tag:>8}] {} ({} ms)", r.name, r.duration_ms);
+    match &r.outcome {
+        ToolOutcome::Pass => {}
+        ToolOutcome::Findings { count, log_path, .. } => {
+            println!("               {count} finding(s), {log_path}");
+        }
+        ToolOutcome::Error { message } => println!("               {message}"),
+    }
 }
 
 fn dump_to_tmp_tarball(analysis_dir: &Path) -> Result<PathBuf> {
@@ -292,14 +176,8 @@ fn dump_to_tmp_tarball(analysis_dir: &Path) -> Result<PathBuf> {
 }
 
 // ============================================================
-// TIER 1 -- FATAL tool wrappers (TODO: implement bodies)
+// The checks
 // ============================================================
-
-// Each wrapper returns a `ToolReport` with timing. The body of each
-// `run_*` is a stub that calls the tool, parses its output, and
-// classifies the result. None of these is implemented yet -- this
-// scaffolding is the contract; the bodies follow in dedicated commits
-// once tool availability on spartian-1 is verified.
 
 /// checkpatch as a reviewer runs it, on the module sources laid out as
 /// one patch, with spdxcheck, in a worktree of `BEAMFS_BENCH_LINUX_BASE`
@@ -347,7 +225,6 @@ fn run_checkpatch_strict(out: &Path) -> ToolReport {
     };
     ToolReport {
         name: "checkpatch_strict".to_string(),
-        tier: 1,
         outcome,
         duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
@@ -534,9 +411,8 @@ fn run_sparse(out: &Path) -> ToolReport {
     let Some(bin) = which_tool("sparse") else {
         return ToolReport {
             name: "sparse".to_string(),
-            tier: 1,
-            outcome: ToolOutcome::Skip {
-                reason: "sparse not in PATH ; emerge dev-util/sparse".to_string()
+            outcome: ToolOutcome::Error {
+                message: "sparse not in PATH ; emerge dev-util/sparse".to_string()
             },
             duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         }
@@ -544,9 +420,8 @@ fn run_sparse(out: &Path) -> ToolReport {
     let Some((ksrc, kbuild, arch)) = which_kernel_source() else {
         return ToolReport {
             name: "sparse".to_string(),
-            tier: 1,
-            outcome: ToolOutcome::Skip {
-                reason: "no kernel source found (Yocto build dir or /usr/src/linux)".to_string()
+            outcome: ToolOutcome::Error {
+                message: "no kernel source found (Yocto build dir or /usr/src/linux)".to_string()
             },
             duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         };
@@ -587,10 +462,10 @@ fn run_sparse(out: &Path) -> ToolReport {
     let log_path = out.join("sparse.log");
     let _ = std::fs::write(&log_path, &log_buf);
     // Loose policy : sparse warnings on beamfs sources are logged but do
-    // not fail Tier 1. They include legitimate kernel patterns (__bitwise
+    // not fail the gate. They include legitimate kernel patterns (__bitwise
     // casts, static-symbol suggestions, non-constant initializers) that
     // need targeted fixes in beamfs/*.c, tracked separately. Errors do
-    // fail Tier 1 because they indicate broken include paths or invalid
+    // fail the gate because they indicate broken include paths or invalid
     // C syntax that must be fixed before any submission.
     let outcome = if errors > 0 {
         ToolOutcome::Findings {
@@ -604,54 +479,18 @@ fn run_sparse(out: &Path) -> ToolReport {
     };
     ToolReport {
         name: "sparse".to_string(),
-        tier: 1,
         outcome,
         duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 
-fn run_smatch(out: &Path) -> ToolReport {
-    let t0 = std::time::Instant::now();
-    let log_path = out.join("smatch.log");
-    let _ = std::fs::write(&log_path,
-        "smatch runs in beamfs-bench upstream, on the series, through Kbuild:\n\
-         make C=2 CHECK=\"smatch -p=kernel\" fs/beamfs/. Outside Kbuild it\n\
-         would not see the configuration the series is built with.\n");
-    ToolReport {
-        name: "smatch".to_string(),
-        tier: 1,
-        outcome: ToolOutcome::Skip {
-            reason: "run by beamfs-bench upstream, through Kbuild".to_string()
-        },
-        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
-    }
-}
-
-fn run_coccinelle(out: &Path) -> ToolReport {
-    let t0 = std::time::Instant::now();
-    let log_path = out.join("coccinelle.log");
-    let _ = std::fs::write(&log_path,
-        "coccinelle runs in beamfs-bench upstream, on the series:\n\
-         make coccicheck MODE=report M=fs/beamfs, every semantic patch of\n\
-         scripts/coccinelle. spatch comes with dev-util/coccinelle.\n");
-    ToolReport {
-        name: "coccinelle".to_string(),
-        tier: 1,
-        outcome: ToolOutcome::Skip {
-            reason: "run by beamfs-bench upstream (make coccicheck)".to_string()
-        },
-        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
-    }
-}
-
-fn run_clang_werror(_files: &[PathBuf], out: &Path) -> ToolReport {
+fn run_clang_werror(out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
     let Some(bin) = which_tool("clang") else {
         return ToolReport {
             name: "clang_werror".to_string(),
-            tier: 1,
-            outcome: ToolOutcome::Skip {
-                reason: "clang not in PATH ; emerge sys-devel/clang".to_string()
+            outcome: ToolOutcome::Error {
+                message: "clang not in PATH ; emerge sys-devel/clang".to_string()
             },
             duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         }
@@ -659,9 +498,8 @@ fn run_clang_werror(_files: &[PathBuf], out: &Path) -> ToolReport {
     let Some((ksrc, kbuild, arch)) = which_kernel_source() else {
         return ToolReport {
             name: "clang_werror".to_string(),
-            tier: 1,
-            outcome: ToolOutcome::Skip {
-                reason: "no kernel source found".to_string()
+            outcome: ToolOutcome::Error {
+                message: "no kernel source found".to_string()
             },
             duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         };
@@ -734,64 +572,7 @@ fn run_clang_werror(_files: &[PathBuf], out: &Path) -> ToolReport {
     };
     ToolReport {
         name: "clang_werror".to_string(),
-        tier: 1,
         outcome,
-        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
-    }
-}
-
-fn run_gcc_fanalyzer(_files: &[PathBuf], out: &Path) -> ToolReport {
-    let t0 = std::time::Instant::now();
-    let log_path = out.join("gcc_fanalyzer.log");
-    let _ = std::fs::write(&log_path,
-        "gcc -fanalyzer is not among the checks kernel.org asks of a patch\n\
-         (Documentation/process/submit-checklist.rst, Documentation/dev-tools/),\n\
-         and is not run on kernel code here. The kernel's own checks run in\n\
-         beamfs-bench upstream.\n");
-    ToolReport {
-        name: "gcc_fanalyzer".to_string(),
-        tier: 1,
-        outcome: ToolOutcome::Skip {
-            reason: "not a kernel.org check; those run in beamfs-bench upstream".to_string()
-        },
-        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
-    }
-}
-
-fn run_gitleaks(out: &Path) -> ToolReport {
-    let t0 = std::time::Instant::now();
-    let log_path = out.join("gitleaks.log");
-    let _ = std::fs::write(&log_path,
-        "gitleaks : out-of-scope decision (Phase Y).\n\
-         Rationale: gitleaks is not installed on spartian-1. Bringing it in\n\
-         requires go install or a binary download. R35 (secrets-never-in-chat)\n\
-         + manual review provide an acceptable alternative for now.\n\
-         Reactivation deferred to a future toolchain enrichment phase.\n");
-    ToolReport {
-        name: "gitleaks".to_string(),
-        tier: 1,
-        outcome: ToolOutcome::Skip {
-            reason: "out-of-scope decision (Phase Y) ; gitleaks not installed".to_string()
-        },
-        duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
-    }
-}
-
-fn run_cargo_audit_high(out: &Path) -> ToolReport {
-    let t0 = std::time::Instant::now();
-    let log_path = out.join("cargo_audit.log");
-    let _ = std::fs::write(&log_path,
-        "cargo_audit_high : out-of-scope decision (Phase Y).\n\
-         Rationale: cargo-audit is not installed on spartian-1. Bringing it\n\
-         in requires `cargo install cargo-audit`. The bench dependency tree\n\
-         is small and reviewed manually for now.\n\
-         Reactivation deferred to a future toolchain enrichment phase.\n");
-    ToolReport {
-        name: "cargo_audit_high".to_string(),
-        tier: 1,
-        outcome: ToolOutcome::Skip {
-            reason: "out-of-scope decision (Phase Y) ; cargo-audit not installed".to_string()
-        },
         duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
@@ -805,9 +586,8 @@ fn run_cargo_clippy_pedantic(out: &Path) -> ToolReport {
     if !installed {
         return ToolReport {
             name: "cargo_clippy_pedantic".to_string(),
-            tier: 1,
-            outcome: ToolOutcome::Skip {
-                reason: "cargo clippy not installed ; rustup component add clippy".to_string()
+            outcome: ToolOutcome::Error {
+                message: "cargo clippy not installed ; rustup component add clippy".to_string()
             },
             duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         };
@@ -852,7 +632,6 @@ fn run_cargo_clippy_pedantic(out: &Path) -> ToolReport {
     };
     ToolReport {
         name: "cargo_clippy_pedantic".to_string(),
-        tier: 1,
         outcome,
         duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
@@ -862,12 +641,11 @@ fn run_cargo_clippy_pedantic(out: &Path) -> ToolReport {
 /// `BEAMFS_BENCH_LINUX_BASE`. Until 0.16.0 it was the one of the
 /// station's kernel, /usr/src/linux, another release than the series is
 /// judged by, and a missing script was skipped rather than failed.
-fn run_kernel_doc_validate(_files: &[PathBuf], out: &Path) -> ToolReport {
+fn run_kernel_doc_validate(out: &Path) -> ToolReport {
     let t0 = std::time::Instant::now();
     let rev = crate::upstream::linux_base();
     let failed = |message: String| ToolReport {
         name: "kernel_doc".to_string(),
-        tier: 1,
         outcome: ToolOutcome::Error { message },
         duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     };
@@ -923,7 +701,6 @@ fn run_kernel_doc_validate(_files: &[PathBuf], out: &Path) -> ToolReport {
     };
     ToolReport {
         name: "kernel_doc".to_string(),
-        tier: 1,
         outcome,
         duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
@@ -982,7 +759,6 @@ fn run_gpg_verify_commits(out: &Path) -> ToolReport {
     };
     ToolReport {
         name: "gpg_verify".to_string(),
-        tier: 1,
         outcome,
         duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
@@ -1113,7 +889,6 @@ fn run_naming_r17_check(out: &Path) -> ToolReport {
     };
     ToolReport {
         name: "naming_r17".to_string(),
-        tier: 1,
         outcome,
         duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
@@ -1171,7 +946,6 @@ fn run_emdash_r16_check(out: &Path) -> ToolReport {
     };
     ToolReport {
         name: "emdash_r16".to_string(),
-        tier: 1,
         outcome,
         duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
@@ -1183,9 +957,8 @@ fn run_lockstep_r9_sha256(out: &Path) -> ToolReport {
     if !yocto_dir.is_dir() {
         return ToolReport {
             name: "lockstep_r9".to_string(),
-            tier: 1,
-            outcome: ToolOutcome::Skip {
-                reason: format!("yocto recipe dir {} not found", yocto_dir.display())
+            outcome: ToolOutcome::Error {
+                message: format!("yocto recipe dir {} not found", yocto_dir.display())
             },
             duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
         };
@@ -1237,75 +1010,8 @@ fn run_lockstep_r9_sha256(out: &Path) -> ToolReport {
     };
     ToolReport {
         name: "lockstep_r9".to_string(),
-        tier: 1,
         outcome,
         duration_ms: u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX),
-    }
-}
-
-// ============================================================
-// TIER 2 -- WARN tool wrappers (TODO: implement bodies)
-// ============================================================
-
-fn run_cppcheck_inconclusive(_files: &[PathBuf], _out: &Path) -> ToolReport {
-    // cppcheck --enable=all --inconclusive --std=c11 --xml-version=2
-    todo_tool("cppcheck", 2)
-}
-
-fn run_flawfinder(_files: &[PathBuf], _out: &Path) -> ToolReport {
-    // flawfinder --csv --minlevel=2 $files
-    todo_tool("flawfinder", 2)
-}
-
-fn run_semgrep(_files: &[PathBuf], _out: &Path) -> ToolReport {
-    // semgrep --config=p/c --config=p/security-audit --json
-    todo_tool("semgrep", 2)
-}
-
-fn run_cargo_geiger(_out: &Path) -> ToolReport {
-    // cargo geiger --output-format Json
-    // unsafe-block census; informative for fsdevel reviewers.
-    todo_tool("cargo_geiger", 2)
-}
-
-fn run_misra_advisory(_files: &[PathBuf], _out: &Path) -> ToolReport {
-    // cppcheck --addon=misra --suppress=misraNN.NN $files
-    // MISRA C:2012 advisory rules; mandatory rules are Tier 1 via cppcheck.
-    todo_tool("misra_advisory", 2)
-}
-
-// ============================================================
-// TIER 3 -- REPORT tool wrappers (full mode only)
-// ============================================================
-
-fn run_frama_c(_files: &[PathBuf], _out: &Path) -> ToolReport {
-    // frama-c -wp -val $files; targeted at edac.c, alloc.c, super.c
-    // critical paths. Heavy: ~minutes per file.
-    todo_tool("frama_c", 3)
-}
-
-fn run_scan_build(_out: &Path) -> ToolReport {
-    // scan-build --status-bugs make M=$crate::lab::beamfs_repo()
-    // Clang static analyzer full-module run.
-    todo_tool("scan_build", 3)
-}
-
-fn run_lcov(_out: &Path) -> ToolReport {
-    // gcov + lcov genhtml; gated on selftests presence.
-    todo_tool("lcov", 3)
-}
-
-// ============================================================
-// Stub helper -- explicit unimplemented signal during scaffolding.
-// ============================================================
-fn todo_tool(name: &str, tier: u8) -> ToolReport {
-    ToolReport {
-        name: name.to_string(),
-        tier,
-        outcome: ToolOutcome::Skip {
-            reason: "TODO: implement in dedicated commit (see code-analysis-tools.md)".to_string()
-        },
-        duration_ms: 0,
     }
 }
 
@@ -1316,19 +1022,56 @@ fn todo_tool(name: &str, tier: u8) -> ToolReport {
 mod tests {
     use super::*;
 
-    #[test]
-    fn tier_classification_constants() {
-        assert_eq!(todo_tool("x", 1).tier, 1);
-        assert_eq!(todo_tool("x", 2).tier, 2);
-        assert_eq!(todo_tool("x", 3).tier, 3);
+    fn report(name: &str, outcome: ToolOutcome) -> ToolReport {
+        ToolReport {
+            name: name.to_string(),
+            outcome,
+            duration_ms: 0,
+        }
     }
 
     #[test]
-    fn analysis_mode_serializes() {
-        let s = serde_json::to_string(&AnalysisMode::Incremental).unwrap();
-        assert_eq!(s, "\"Incremental\"");
-        let s = serde_json::to_string(&AnalysisMode::Full).unwrap();
-        assert_eq!(s, "\"Full\"");
+    fn a_tool_that_cannot_run_fails_the_gate() {
+        let checks = [
+            report("checkpatch_strict", ToolOutcome::Pass),
+            report(
+                "sparse",
+                ToolOutcome::Error {
+                    message: "sparse not in PATH".to_string(),
+                },
+            ),
+            report(
+                "emdash_r16",
+                ToolOutcome::Findings {
+                    count: 1,
+                    severity: "error".to_string(),
+                    log_path: "emdash_r16.log".to_string(),
+                },
+            ),
+        ];
+        assert_eq!(not_passed(&checks), vec!["sparse", "emdash_r16"]);
+        assert!(not_passed(&checks[..1]).is_empty());
+    }
+
+    #[test]
+    fn the_summary_says_whether_the_gate_passed() {
+        let r = CodeAnalysisReport {
+            started_at: String::new(),
+            finished_at: String::new(),
+            checks: vec![report(
+                "lockstep_r9",
+                ToolOutcome::Error {
+                    message: "yocto recipe dir not found".to_string(),
+                },
+            )],
+            pass: false,
+        };
+        let j = serde_json::to_value(r).unwrap();
+        assert_eq!(j["pass"], serde_json::Value::Bool(false));
+        assert_eq!(
+            j["checks"][0]["outcome"]["Error"]["message"],
+            "yocto recipe dir not found"
+        );
     }
 }
 
@@ -1347,17 +1090,11 @@ mod station_tests {
         let out = std::env::temp_dir().join(format!("bb-gate-{}", std::process::id()));
         std::fs::create_dir_all(&out).unwrap();
         let c = run_checkpatch_strict(&out);
-        let k = run_kernel_doc_validate(&[], &out);
+        let k = run_kernel_doc_validate(&out);
         let _ = std::fs::remove_dir_all(&out);
         println!("checkpatch_strict: {:?}", c.outcome);
         println!("kernel_doc: {:?}", k.outcome);
-        assert!(!matches!(
-            c.outcome,
-            ToolOutcome::Error { .. } | ToolOutcome::Skip { .. }
-        ));
-        assert!(!matches!(
-            k.outcome,
-            ToolOutcome::Error { .. } | ToolOutcome::Skip { .. }
-        ));
+        assert!(!matches!(c.outcome, ToolOutcome::Error { .. }));
+        assert!(!matches!(k.outcome, ToolOutcome::Error { .. }));
     }
 }
