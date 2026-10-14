@@ -1,4 +1,4 @@
-.TH BEAMFS\-BENCH 1 "2026-10-10" "beamfs development tools" "beamfs development tools"
+.TH BEAMFS\-BENCH 1 "2026-10-14" "beamfs development tools" "beamfs development tools"
 .SH NAME
 beamfs\-bench \- measure beamfs under fault injection, and prove the lab
 was in a known state when it did
@@ -151,6 +151,13 @@ on the third tier, is accepted and changes nothing. EXIT STATUS gives
 the codes the program returns: a gate of
 .B full
 that refuses ends the run with 1, where the manual said 3.
+.PP
+Since 0.16.2 the base must hold the newest mainline tag kernel.org
+lists, read with git ls\-remote within 20 seconds: a series is reviewed
+against mainline as it is when it is mailed. When the tag is not in the
+kernel tree, or the base does not hold it, the check fails and says
+what to fetch or onto what to rebase; kernel.org out of reach leaves
+the check out, and the series not ready to mail.
 .SH COMMANDS
 .TP
 .B checkpoint

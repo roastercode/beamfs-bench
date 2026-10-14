@@ -6,7 +6,7 @@ attack. It is a measurement instrument, not a judgment engine: the
 nodes emit raw records, and the verdict is derived from them in Rust
 (`src/synthesis.rs`).
 
-Version 0.16.1. Its 0.14 releases ran the fault-injection campaign of
+Version 0.16.2. Its 0.14 releases ran the fault-injection campaign of
 the beamfs v3 technical report,
 [10.5281/zenodo.23253350](https://doi.org/10.5281/zenodo.23253350):
 run 2 from `661e8aa` (0.14.6), run 3 from `60155f3` (0.14.7), run 4 from
@@ -28,7 +28,7 @@ Each attack ends in one verdict:
   `SILENT_CORRUPTION`;
 - `NOT_EXERCISED`: no attack reached the target.
 
-## Known defects of 0.16.1
+## Known defects of 0.16.2
 
 Found with 0.14.8 while writing the v3 report, whose results are read
 from the raw records, not from these summaries; the 0.15 and 0.16
@@ -72,6 +72,13 @@ finds a symbol undefined, the calls are placed by file, line and
 function. A check left out, arm64 with `--no-cross` or the newer trees
 with an empty `--newer`, leaves the series not ready to mail: the run
 names it and exits 3, as when a check fails.
+
+Since 0.16.2 the base must hold the newest mainline tag kernel.org
+lists, read with `git ls-remote` within 20 seconds: a series is reviewed
+against mainline as it is when it is mailed. When the tag is not in the
+kernel tree, or the base does not hold it, the check fails and says
+what to fetch or onto what to rebase; kernel.org out of reach leaves
+the check out, and the series not ready to mail.
 
 The runtime half of Documentation/process/submit-checklist.rst is not
 run here. beamfs-xfstests runs xfstests on kernels the bitbake chain
@@ -127,6 +134,15 @@ commands, options, environment, the lab, the files.
 The full record is in [CHANGELOG.md](CHANGELOG.md); its latest entries
 follow.
 
+### [0.16.2] - 2026-10-14
+
+- `upstream` checks that the base holds the newest mainline tag
+  kernel.org lists, read with `git ls-remote` within 20 seconds: its
+  commit must be in the kernel tree and an ancestor of the base, or
+  the check fails and says what to fetch or onto what to rebase.
+  kernel.org out of reach leaves the check out, and so the series not
+  ready to mail.
+
 ### [0.16.1] - 2026-10-10
 
 - a check that does not run does not pass (`98de956`)
@@ -134,10 +150,6 @@ follow.
 ### [0.16.0] - 2026-10-09
 
 - kernel.org submission checks, whole (`f669949`)
-
-### [0.15.1] - 2026-10-09
-
-- build what upstream says it builds (`641b493`)
 
 ## License
 

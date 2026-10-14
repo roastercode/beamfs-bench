@@ -11,6 +11,15 @@ on the commit they point to. From the next version on, each version adds
 its entry, written with the change, and the README carries the latest
 entries.
 
+## [0.16.2] - 2026-10-14
+
+- `upstream` checks that the base holds the newest mainline tag
+  kernel.org lists, read with `git ls-remote` within 20 seconds: its
+  commit must be in the kernel tree and an ancestor of the base, or
+  the check fails and says what to fetch or onto what to rebase.
+  kernel.org out of reach leaves the check out, and so the series not
+  ready to mail.
+
 ## [0.16.1] - 2026-10-10
 
 - a check that does not run does not pass (`98de956`)

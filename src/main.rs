@@ -69,6 +69,7 @@ mod ssh;
 mod synthesis;
 mod tindirect;
 mod upstream;
+mod kernelorg;
 mod usb_health;
 mod perf;
 mod dose;

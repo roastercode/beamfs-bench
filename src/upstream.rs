@@ -2951,6 +2951,8 @@ fn check_builds(ctx: &Ctx, add: &mut dyn FnMut(Check)) {
     begin("coccicheck", "every semantic patch of scripts/coccinelle, report mode");
     add(check_coccicheck(ctx, &builtin));
     add(check_kernel_doc(ctx));
+    begin("base", "the base holds the newest mainline tag on kernel.org");
+    add(check_base(ctx));
     begin("newer", &format!("merge and build on {}", ctx.cfg.newer.join(", ")));
     add(check_newer(ctx, &builtin));
 }
@@ -3573,6 +3575,70 @@ fn check_newer(ctx: &Ctx, template: &Variant) -> Check {
             template.what
         ),
         notes,
+    )
+}
+
+/// The base holds the newest mainline tag kernel.org lists.
+///
+/// A series is reviewed against mainline as it is when it is mailed:
+/// based on an older -rc, it is read against a tree nobody runs any
+/// more, and it may no longer apply. kernel.org out of reach leaves the
+/// check out, which leaves the series not ready to mail.
+fn check_base(ctx: &Ctx) -> Check {
+    let t0 = Instant::now();
+    let tag = match crate::kernelorg::latest() {
+        Ok(t) => t,
+        Err(why) => return skip("base", t0, why),
+    };
+    let linux = &ctx.cfg.linux;
+    let held = format!("{}^{{commit}}", tag.commit);
+    let present = matches!(
+        Command::new("git")
+            .arg("-C")
+            .arg(linux)
+            .args(["cat-file", "-e", &held])
+            .status(),
+        Ok(s) if s.success()
+    );
+    let mut problems = Vec::new();
+    if present {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(linux)
+            .args(["merge-base", "--is-ancestor", &tag.commit, &ctx.base_sha])
+            .status();
+        match status.as_ref().map(std::process::ExitStatus::code) {
+            Ok(Some(0)) => {}
+            Ok(Some(1)) => problems.push(format!(
+                "the base {} ({}) does not hold {}: rebase the series onto {}",
+                ctx.cfg.base,
+                short(&ctx.base_sha),
+                tag.name,
+                tag.name
+            )),
+            _ => problems.push(format!(
+                "git merge-base --is-ancestor {} {} failed",
+                short(&tag.commit),
+                short(&ctx.base_sha)
+            )),
+        }
+    } else {
+        problems.push(format!(
+            "{} ({}) is not in {}: git -C {} fetch {} tag {}",
+            tag.name,
+            short(&tag.commit),
+            linux.display(),
+            linux.display(),
+            crate::kernelorg::MAINLINE,
+            tag.name
+        ));
+    }
+    finish(
+        "base",
+        t0,
+        problems,
+        format!("{} holds {}, the newest tag on kernel.org", ctx.cfg.base, tag.name),
+        Vec::new(),
     )
 }
 
