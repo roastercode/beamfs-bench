@@ -122,6 +122,23 @@ procedure.
 `doc/beamfs-bench.1` is the manual (`man -l doc/beamfs-bench.1`):
 commands, options, environment, the lab, the files.
 
+## Changelog
+
+The full record is in [CHANGELOG.md](CHANGELOG.md); its latest entries
+follow.
+
+### [0.16.1] - 2026-10-10
+
+- a check that does not run does not pass (`98de956`)
+
+### [0.16.0] - 2026-10-09
+
+- kernel.org submission checks, whole (`f669949`)
+
+### [0.15.1] - 2026-10-09
+
+- build what upstream says it builds (`641b493`)
+
 ## License
 
 GPL-2.0-only, see `COPYING`.
