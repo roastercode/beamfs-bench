@@ -1228,6 +1228,7 @@ fn main() {
             };
             let plan_newer = built.as_ref().and_then(|b| b.newer.clone());
             let plan_strict = built.as_ref().map(|b| b.strict_exceptions.clone());
+            let plan_behind = built.as_ref().and_then(|b| b.base_behind.clone());
             let plan_cc = built.as_ref().map(|b| b.cc.clone()).filter(|c| !c.is_empty());
             let (series, base, measured, beamfs) = match built {
                 Some(b) => (b.branch, b.base, b.measured, b.repo),
@@ -1263,6 +1264,7 @@ fn main() {
                 max_mail_bytes,
                 strict_blocking: strict_blocking || plan_strict.is_some(),
                 strict_exceptions: plan_strict.unwrap_or_default(),
+                base_behind: plan_behind,
                 cover_placeholders_allowed: Vec::new(),
                 cross: !no_cross,
                 stack_limit,

@@ -11,6 +11,12 @@ on the commit they point to. From the next version on, each version adds
 its entry, written with the change, and the README carries the latest
 entries.
 
+## 0.20.0
+
+- `upstream` carries the plan's `base.behind` reason to the checker: a base
+  that does not hold the newest tag on kernel.org is mailed as the plan
+  declares, the reason in the signed summary (beamfs-upstream 0.8.0).
+
 ## 0.19.2
 
 ### Changed
