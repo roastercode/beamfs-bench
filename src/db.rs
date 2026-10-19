@@ -30,16 +30,15 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::fmt::Write;
+use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::io::Write as IoWrite;
 use std::process::Stdio;
 
 /// Where the database lives. Alongside the run archives it indexes.
 pub fn default_db_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
-    PathBuf::from(home)
-        .join("git/yocto-beamfs/Documentation/runs/beamfs-bench.db")
+    PathBuf::from(home).join("git/yocto-beamfs/Documentation/runs/beamfs-bench.db")
 }
 
 /// Run a statement. Values must already be escaped by `sql_str`.
@@ -48,7 +47,6 @@ pub fn default_db_path() -> PathBuf {
 /// dashes in an argument as options, so a script containing `-- comment`
 /// lines is read as a garbled command line rather than as SQL.
 fn exec(db: &Path, sql: &str) -> Result<String> {
-
     let mut child = Command::new("sqlite3")
         .arg(db)
         .stdin(Stdio::piped())
@@ -135,6 +133,30 @@ pub fn init(db: &Path) -> Result<()> {
         std::fs::create_dir_all(dir).ok();
     }
     exec(db, &sql)?;
+    // Columns added after a database was created: CREATE TABLE IF NOT
+    // EXISTS leaves an old table as it is, and SQLite has no ADD COLUMN
+    // IF NOT EXISTS.
+    for (col, decl) in [
+        ("verdict_source", "TEXT"),
+        ("rs_symbols", "INTEGER"),
+        ("rs_flags", "INTEGER"),
+        ("queue_idx", "INTEGER"),
+        ("mechanism", "INTEGER"),
+    ] {
+        ensure_column(db, "flip_event", col, decl)?;
+    }
+    Ok(())
+}
+
+/// Add a column to a table of an existing database when it lacks it.
+fn ensure_column(db: &Path, table: &str, col: &str, decl: &str) -> Result<()> {
+    let info = exec(db, &format!("PRAGMA table_info({table});"))?;
+    let present = info
+        .lines()
+        .any(|l| l.split('|').nth(1).is_some_and(|name| name == col));
+    if !present {
+        exec(db, &format!("ALTER TABLE {table} ADD COLUMN {col} {decl};"))?;
+    }
     Ok(())
 }
 
@@ -161,6 +183,10 @@ pub struct AttackRecord {
     pub flip_log_b64: Option<String>,
     /// gzip+base64 of the beamfs dmesg lines from the attack window.
     pub dmesg_b64: Option<String>,
+    /// gzip+base64 of the `beamfs_rs_event` tracepoint lines of the
+    /// attack window; absent when the kernel has no such tracepoint,
+    /// present and empty when it fired nothing.
+    pub rs_trace_b64: Option<String>,
     /// Physical blocks of the target file, in logical order: index i is
     /// the physical block backing the file's iblock i. This is what maps
     /// the kernel's logical addressing onto the injector's physical one.
@@ -192,7 +218,9 @@ fn parse_kv(payload: &str) -> HashMap<String, String> {
 pub fn parse_records(text: &str) -> Vec<AttackRecord> {
     let mut out = Vec::new();
     for line in text.lines() {
-        let Some(payload) = line.strip_prefix("ATTACK|") else { continue };
+        let Some(payload) = line.strip_prefix("ATTACK|") else {
+            continue;
+        };
         let kv = parse_kv(payload);
         let Some(fs) = kv.get("FS") else { continue };
         let n = |k: &str| kv.get(k).and_then(|v| v.parse::<i64>().ok());
@@ -216,6 +244,7 @@ pub fn parse_records(text: &str) -> Vec<AttackRecord> {
             flip_log_sha256: s("FLIP_LOG_SHA256").filter(|v| v != "na"),
             flip_log_b64: s("FLIP_LOG_B64").filter(|v| v != "na"),
             dmesg_b64: s("DMESG_B64").filter(|v| v != "na"),
+            rs_trace_b64: s("RS_TRACE_B64").filter(|v| v != "na"),
             frag_pre_phys: s("FRAG_PRE_PHYS")
                 .filter(|v| v != "na" && v != "missing" && v != "filefrag_failed"),
         });
@@ -231,31 +260,43 @@ pub fn verdict(r: &AttackRecord) -> (String, Option<String>) {
     if r.hash_pre.as_deref() == Some("missing") || r.file_size == Some(0) {
         return (
             "target_file_missing".into(),
-            Some("HASH_PRE=missing or FILE_SIZE=0: the filesystem could not \
+            Some(
+                "HASH_PRE=missing or FILE_SIZE=0: the filesystem could not \
                   read back its own test file, so nothing about the file's \
-                  integrity was measured".into()),
+                  integrity was measured"
+                    .into(),
+            ),
         );
     }
     if r.flip_delta == Some(0) {
         return (
             "no_workload".into(),
-            Some("FLIP_DELTA=0: no flip was delivered, so the run exercised \
-                  nothing".into()),
+            Some(
+                "FLIP_DELTA=0: no flip was delivered, so the run exercised \
+                  nothing"
+                    .into(),
+            ),
         );
     }
     if r.flips_on_target == Some(0) {
         return (
             "target_not_hit".into(),
-            Some("FLIPS_ON_TARGET=0: flips landed outside the verified \
+            Some(
+                "FLIPS_ON_TARGET=0: flips landed outside the verified \
                   file's extents, so an unchanged hash says nothing about \
-                  the filesystem's protection".into()),
+                  the filesystem's protection"
+                    .into(),
+            ),
         );
     }
     if r.flips_on_target.is_none() {
         return (
             "target_not_hit".into(),
-            Some("FLIPS_ON_TARGET absent (older record or FIEMAP \
-                  unavailable): impact on the verified file is unknown".into()),
+            Some(
+                "FLIPS_ON_TARGET absent (older record or FIEMAP \
+                  unavailable): impact on the verified file is unknown"
+                    .into(),
+            ),
         );
     }
     ("usable".into(), None)
@@ -352,15 +393,35 @@ const RS_BUDGET: i64 = 8;
 /// so their events are recorded with region "unknown" rather than
 /// forced into a geometry that is not theirs.
 fn locate(off: i64) -> (Option<i64>, Option<i64>, &'static str) {
-    if off >= 4088 { return (None, None, "data_selfid"); }
-    if off >= 4080 { return (None, None, "data_csum"); }
-    if off >= RS_REGION_END { return (None, None, "pad"); }
+    if off >= 4088 {
+        return (None, None, "data_selfid");
+    }
+    if off >= 4080 {
+        return (None, None, "data_csum");
+    }
+    if off >= RS_REGION_END {
+        return (None, None, "pad");
+    }
     let idx = off / SUB_TOTAL;
     let pos = off % SUB_TOTAL;
-    (Some(idx), Some(pos), if pos < SUB_DATA { "rs_data" } else { "rs_parity" })
+    (
+        Some(idx),
+        Some(pos),
+        if pos < SUB_DATA {
+            "rs_data"
+        } else {
+            "rs_parity"
+        },
+    )
 }
 
 /// One decoded `flip_log` line.
+///
+/// Since emufi 0.9.0 `sector` is the sector that holds the byte and
+/// `byte_offset` is within that sector; before, `sector` was the bio's
+/// first sector and `byte_offset` ran into the segment, which placed a
+/// flip in any segment past the first in the wrong block. The two more
+/// columns name the campaign event the flip came from.
 #[derive(Debug, Clone)]
 struct FlipRow {
     seq: i64,
@@ -371,6 +432,8 @@ struct FlipRow {
     bit_index: i64,
     before: i64,
     after: i64,
+    queue_idx: Option<i64>,
+    mechanism: Option<i64>,
 }
 
 fn parse_hex_byte(s: &str) -> i64 {
@@ -381,13 +444,23 @@ fn parse_hex_byte(s: &str) -> i64 {
 /// nodes, and this keeps the crate free of compression dependencies.
 fn decode_b64_gzip(b64: &str) -> Result<String> {
     let mut child = Command::new("sh")
-        .arg("-c").arg("base64 -d | gzip -dc")
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().context("spawn base64/gzip")?;
-    child.stdin.as_mut().context("stdin")?
-        .write_all(b64.as_bytes()).context("write b64")?;
+        .arg("-c")
+        .arg("base64 -d | gzip -dc")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("spawn base64/gzip")?;
+    child
+        .stdin
+        .as_mut()
+        .context("stdin")?
+        .write_all(b64.as_bytes())
+        .context("write b64")?;
     let out = child.wait_with_output().context("wait decode")?;
-    if !out.status.success() { anyhow::bail!("decode failed"); }
+    if !out.status.success() {
+        anyhow::bail!("decode failed");
+    }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -396,6 +469,95 @@ fn decode_b64_gzip(b64: &str) -> Result<String> {
 struct KernelVerdict {
     outcome: String,
     inode_no: Option<i64>,
+}
+
+/// What the `beamfs_rs_event` tracepoint reported for one (block,
+/// subblock), the block being physical. Several events on one key keep
+/// the worst: an uncorrectable over a correction.
+#[derive(Debug, Clone, Copy, Default)]
+struct TraceVerdict {
+    symbols: i64,
+    flags: i64,
+}
+
+impl TraceVerdict {
+    const UNCORRECTABLE: i64 = 1 << 1;
+    const RMW_NEUTRALISED: i64 = 1 << 2;
+
+    fn outcome(self) -> &'static str {
+        if self.flags & Self::UNCORRECTABLE != 0 {
+            "uncorrectable"
+        } else if self.symbols > 0 && self.flags & Self::RMW_NEUTRALISED != 0 {
+            "rmw_neutralised"
+        } else if self.symbols > 0 {
+            "corrected"
+        } else {
+            "rs_event"
+        }
+    }
+
+    fn worse(self, other: Self) -> Self {
+        let rank = |v: Self| match v.outcome() {
+            "uncorrectable" => 3,
+            "corrected" => 2,
+            "rmw_neutralised" => 1,
+            _ => 0,
+        };
+        if rank(other) > rank(self) {
+            other
+        } else {
+            self
+        }
+    }
+}
+
+/// Index the tracepoint's events by (physical block, subblock), and
+/// those without a subblock (superblock, inode table) by block.
+///
+/// A line reads, after ftrace's own prefix:
+///   beamfs_rs_event: dev=253:16 blk=1234 sub=3 symbols=2 flags=0x301
+fn parse_trace_verdicts(
+    trace: &str,
+) -> (
+    HashMap<(i64, i64), TraceVerdict>,
+    HashMap<i64, TraceVerdict>,
+) {
+    let mut by_sub: HashMap<(i64, i64), TraceVerdict> = HashMap::new();
+    let mut by_block: HashMap<i64, TraceVerdict> = HashMap::new();
+    for line in trace.lines() {
+        let Some(i) = line.find("beamfs_rs_event:") else {
+            continue;
+        };
+        let mut blk = None;
+        let mut sub = None;
+        let mut v = TraceVerdict::default();
+        for tok in line[i + "beamfs_rs_event:".len()..].split_whitespace() {
+            let Some((k, val)) = tok.split_once('=') else {
+                continue;
+            };
+            match k {
+                "blk" => blk = val.parse::<i64>().ok(),
+                "sub" => sub = val.parse::<i64>().ok(),
+                "symbols" => v.symbols = val.parse::<i64>().unwrap_or(0),
+                "flags" => {
+                    v.flags = i64::from_str_radix(val.trim_start_matches("0x"), 16).unwrap_or(0);
+                }
+                _ => {}
+            }
+        }
+        let Some(b) = blk else { continue };
+        match sub {
+            Some(s) if s >= 0 => {
+                let e = by_sub.entry((b, s)).or_default();
+                *e = e.worse(v);
+            }
+            _ => {
+                let e = by_block.entry(b).or_default();
+                *e = e.worse(v);
+            }
+        }
+    }
+    (by_sub, by_block)
 }
 
 /// Index the kernel's verdicts by subblock.
@@ -410,31 +572,57 @@ struct KernelVerdict {
 /// Joining these turns "64 flips, hash unchanged" into "these flips hit
 /// this subblock and RS repaired it there": the difference between
 /// asserting a correction happened and showing it.
-fn parse_kernel_verdicts(dmesg: &str)
-    -> (HashMap<(i64, i64), KernelVerdict>, HashMap<i64, KernelVerdict>)
-{
+fn parse_kernel_verdicts(
+    dmesg: &str,
+) -> (
+    HashMap<(i64, i64), KernelVerdict>,
+    HashMap<i64, KernelVerdict>,
+) {
     let mut by_sub = HashMap::new();
     let mut by_block = HashMap::new();
     let field = |line: &str, key: &str| -> Option<i64> {
         let i = line.find(key)? + key.len();
         let rest = &line[i..];
-        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
         rest[..end].parse::<i64>().ok()
     };
     for line in dmesg.lines() {
-        if !line.contains("beamfs/inline:") { continue; }
+        if !line.contains("beamfs/inline:") {
+            continue;
+        }
         let ino = field(line, "ino=");
-        let Some(iblock) = field(line, "iblock=") else { continue };
+        let Some(iblock) = field(line, "iblock=") else {
+            continue;
+        };
         if let Some(sub) = field(line, "subblock=") {
-            let outcome = if line.contains("uncorrectable") { "uncorrectable" }
-                          else if line.contains("corrected") { "corrected" }
-                          else { continue };
-            by_sub.insert((iblock, sub),
-                KernelVerdict { outcome: outcome.into(), inode_no: ino });
-        } else if line.contains("mismatch") || line.contains("bad descriptor")
-               || line.contains("pointer") || line.contains("unallocated") {
-            by_block.insert(iblock,
-                KernelVerdict { outcome: "unprotected".into(), inode_no: ino });
+            let outcome = if line.contains("uncorrectable") {
+                "uncorrectable"
+            } else if line.contains("corrected") {
+                "corrected"
+            } else {
+                continue;
+            };
+            by_sub.insert(
+                (iblock, sub),
+                KernelVerdict {
+                    outcome: outcome.into(),
+                    inode_no: ino,
+                },
+            );
+        } else if line.contains("mismatch")
+            || line.contains("bad descriptor")
+            || line.contains("pointer")
+            || line.contains("unallocated")
+        {
+            by_block.insert(
+                iblock,
+                KernelVerdict {
+                    outcome: "unprotected".into(),
+                    inode_no: ino,
+                },
+            );
         }
     }
     (by_sub, by_block)
@@ -446,38 +634,65 @@ fn decode_flip_log(b64: &str) -> Result<Vec<FlipRow>> {
     let mut rows = Vec::new();
     for line in text.lines().skip(1) {
         let f: Vec<&str> = line.split(',').collect();
-        if f.len() < 8 { continue; }
+        if f.len() < 8 {
+            continue;
+        }
         let n = |i: usize| f[i].trim().parse::<i64>().unwrap_or(-1);
         // ktime_ns == 0 marks an unused ring slot.
-        if n(1) == 0 { continue; }
+        if n(1) == 0 {
+            continue;
+        }
+        let opt = |i: usize| f.get(i).and_then(|v| v.trim().parse::<i64>().ok());
         rows.push(FlipRow {
-            seq: n(0), ktime_ns: n(1), sector: n(2), bio_op: n(3),
-            byte_offset: n(4), bit_index: n(5),
-            before: parse_hex_byte(f[6]), after: parse_hex_byte(f[7]),
+            seq: n(0),
+            ktime_ns: n(1),
+            sector: n(2),
+            bio_op: n(3),
+            byte_offset: n(4),
+            bit_index: n(5),
+            before: parse_hex_byte(f[6]),
+            after: parse_hex_byte(f[7]),
+            queue_idx: opt(8),
+            mechanism: opt(9),
         });
     }
     Ok(rows)
 }
 
+/// Where a flip sits in its 4096-byte block.
+///
+/// emufi 0.9.0 records the sector that holds the byte and the offset
+/// within that sector, so the block offset is the sector's place in the
+/// block plus that. The earlier `byte_offset % 4096` read the offset
+/// into the bio segment, which only coincided with the block offset for
+/// the first page of a block-aligned bio.
+fn offset_in_block(sector: i64, byte_offset: i64) -> i64 {
+    (sector.rem_euclid(8)) * 512 + byte_offset.rem_euclid(512)
+}
+
 /// Is this sector inside one of the "start:end" intervals?
 fn in_ranges(sector: i64, ranges: &str) -> bool {
-    ranges.split(',').any(|r| {
-        match r.split_once(':') {
-            Some((a, b)) => {
-                let (lo, hi) = (a.trim().parse::<i64>().unwrap_or(-1),
-                                b.trim().parse::<i64>().unwrap_or(-1));
-                lo >= 0 && sector >= lo && sector < hi
-            }
-            None => false,
+    ranges.split(',').any(|r| match r.split_once(':') {
+        Some((a, b)) => {
+            let (lo, hi) = (
+                a.trim().parse::<i64>().unwrap_or(-1),
+                b.trim().parse::<i64>().unwrap_or(-1),
+            );
+            lo >= 0 && sector >= lo && sector < hi
         }
+        None => false,
     })
 }
 
 /// Reconstruct and store every flip of one measurement.
 fn ingest_flip_events(db: &Path, run_id: i64, r: &AttackRecord) -> Result<usize> {
-    let Some(b64) = r.flip_log_b64.as_deref() else { return Ok(0) };
+    let Some(b64) = r.flip_log_b64.as_deref() else {
+        return Ok(0);
+    };
     let rows = decode_flip_log(b64)?;
-    if rows.is_empty() { return Ok(0); }
+    if rows.is_empty() {
+        return Ok(0);
+    }
 
     let is_beamfs = r.fs == "beamfs";
     let ranges = r.target_ranges.as_deref().unwrap_or("");
@@ -489,7 +704,7 @@ fn ingest_flip_events(db: &Path, run_id: i64, r: &AttackRecord) -> Result<usize>
     let mut hits: HashMap<(i64, i64), std::collections::HashSet<i64>> = HashMap::new();
     if is_beamfs {
         for f in &rows {
-            let off_in_block = f.byte_offset % 4096;
+            let off_in_block = offset_in_block(f.sector, f.byte_offset);
             let (idx, pos, _) = locate(off_in_block);
             if let (Some(i), Some(p)) = (idx, pos) {
                 hits.entry((f.sector / 8, i)).or_default().insert(p);
@@ -497,7 +712,9 @@ fn ingest_flip_events(db: &Path, run_id: i64, r: &AttackRecord) -> Result<usize>
         }
     }
 
-    let dmesg = r.dmesg_b64.as_deref()
+    let dmesg = r
+        .dmesg_b64
+        .as_deref()
         .and_then(|b| decode_b64_gzip(b).ok())
         .unwrap_or_default();
     let (kernel_by_sub, kernel_by_block) = parse_kernel_verdicts(&dmesg);
@@ -508,12 +725,18 @@ fn ingest_flip_events(db: &Path, run_id: i64, r: &AttackRecord) -> Result<usize>
     // out as no_effect however clearly the kernel reported acting on it.
     // FRAG_PRE_PHYS carries the mapping: index i is the physical block
     // backing iblock i.
-    let phys: Vec<i64> = r.frag_pre_phys.as_deref().unwrap_or("")
+    let phys: Vec<i64> = r
+        .frag_pre_phys
+        .as_deref()
+        .unwrap_or("")
         .split(',')
         .filter_map(|b| b.trim().parse::<i64>().ok())
         .collect();
     let to_phys = |iblock: i64| -> Option<i64> {
-        usize::try_from(iblock).ok().and_then(|i| phys.get(i)).copied()
+        usize::try_from(iblock)
+            .ok()
+            .and_then(|i| phys.get(i))
+            .copied()
     };
     let verdict_by_sub: HashMap<(i64, i64), KernelVerdict> = kernel_by_sub
         .into_iter()
@@ -524,39 +747,70 @@ fn ingest_flip_events(db: &Path, run_id: i64, r: &AttackRecord) -> Result<usize>
         .filter_map(|(ib, v)| to_phys(ib).map(|p| (p, v)))
         .collect();
 
+    // The tracepoint, when the kernel has it, names the physical block
+    // directly and misses no decode path; it takes precedence over the
+    // dmesg lines, which stay as the fallback for older kernels.
+    let trace_text = r
+        .rs_trace_b64
+        .as_deref()
+        .and_then(|b| decode_b64_gzip(b).ok());
+    let (trace_by_sub, trace_by_block) = parse_trace_verdicts(trace_text.as_deref().unwrap_or(""));
+    let use_trace = trace_text.is_some();
+
     let mut sql = String::from("BEGIN;");
     for f in &rows {
-        // byte_offset is relative to the bio payload. Filesystem writes
-        // start on a block boundary, so modulo 4096 gives the offset
-        // within the block; a bio that did not would misplace this, and
-        // that assumption is stated rather than hidden.
-        let off_in_block = f.byte_offset % 4096;
+        let off_in_block = offset_in_block(f.sector, f.byte_offset);
         let block_no = f.sector / 8;
         let (idx, pos, region) = if is_beamfs {
             locate(off_in_block)
         } else {
             (None, None, "unknown")
         };
-        let bytes_hit = idx.and_then(|i| hits.get(&(block_no, i)).map(|s| i64::try_from(s.len()).unwrap_or(i64::MAX)));
+        let bytes_hit = idx.and_then(|i| {
+            hits.get(&(block_no, i))
+                .map(|s| i64::try_from(s.len()).unwrap_or(i64::MAX))
+        });
         let over = bytes_hit.map(|b| i64::from(b > RS_BUDGET));
-        let on_target = if ranges.is_empty() { None }
-                        else { Some(i64::from(in_ranges(f.sector, ranges))) };
+        let on_target = if ranges.is_empty() {
+            None
+        } else {
+            Some(i64::from(in_ranges(f.sector, ranges)))
+        };
 
         // What the kernel did about this flip: looked up on the subblock
-        // it hit, falling back to a block-level fail-closed verdict. No
-        // entry means no reported reaction -- parity never needed, or a
-        // block never read back.
-        let kv = idx.and_then(|i| verdict_by_sub.get(&(block_no, i)))
-                    .or_else(|| verdict_by_block.get(&block_no));
-        let outcome = match kv {
-            Some(v) => v.outcome.as_str(),
-            None if !is_beamfs => "unknown",
-            None => "no_effect",
+        // it hit, falling back to a block-level verdict. No entry means
+        // no decode reported on that block after the flip -- parity
+        // never needed, or the block never read back; the tracepoint
+        // cannot tell those two apart, and the outcome says so.
+        let (outcome, inode_no, source, rs_symbols, rs_flags): (
+            &str,
+            Option<i64>,
+            &str,
+            Option<i64>,
+            Option<i64>,
+        ) = if use_trace {
+            let tv = idx
+                .and_then(|i| trace_by_sub.get(&(block_no, i)))
+                .or_else(|| trace_by_block.get(&block_no))
+                .copied();
+            match tv {
+                Some(v) => (v.outcome(), None, "trace", Some(v.symbols), Some(v.flags)),
+                None if !is_beamfs => ("unknown", None, "trace", None, None),
+                None => ("no_rs_event", None, "trace", None, None),
+            }
+        } else {
+            let kv = idx
+                .and_then(|i| verdict_by_sub.get(&(block_no, i)))
+                .or_else(|| verdict_by_block.get(&block_no));
+            match kv {
+                Some(v) => (v.outcome.as_str(), v.inode_no, "dmesg", None, None),
+                None if !is_beamfs => ("unknown", None, "dmesg", None, None),
+                None => ("no_effect", None, "dmesg", None, None),
+            }
         };
-        let inode_no = kv.and_then(|v| v.inode_no);
 
         write!(sql,
-            "INSERT INTO flip_event (run_id, fs, seq, ktime_ns, sector, bio_op,              byte_offset, bit_index, before_byte, after_byte, block_no,              offset_in_block, subblock_idx, offset_in_sub, region, on_target,              sub_bytes_hit, rs_budget, over_budget, outcome, inode_no) VALUES              ({run_id}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});",
+            "INSERT INTO flip_event (run_id, fs, seq, ktime_ns, sector, bio_op,              byte_offset, bit_index, before_byte, after_byte, block_no,              offset_in_block, subblock_idx, offset_in_sub, region, on_target,              sub_bytes_hit, rs_budget, over_budget, outcome, inode_no,              verdict_source, rs_symbols, rs_flags, queue_idx, mechanism) VALUES              ({run_id}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});",
             sql_str(Some(&r.fs)),
             f.seq, f.ktime_ns, f.sector, f.bio_op, f.byte_offset, f.bit_index,
             f.before, f.after, block_no, off_in_block,
@@ -566,6 +820,11 @@ fn ingest_flip_events(db: &Path, run_id: i64, r: &AttackRecord) -> Result<usize>
             sql_num(over),
             sql_str(Some(outcome)),
             sql_num(inode_no),
+            sql_str(Some(source)),
+            sql_num(rs_symbols),
+            sql_num(rs_flags),
+            sql_num(f.queue_idx),
+            sql_num(f.mechanism),
         ).unwrap();
     }
     sql.push_str("COMMIT;");
@@ -652,14 +911,34 @@ pub fn ingest_run_dir(db: &Path, run_dir: &Path, campaign_id: Option<i64>) -> Re
     let started = name
         .rsplit_once("-multifs-")
         .map(|(_, ts)| ts.to_string())
-        .filter(|ts| ts.len() == 15).map_or_else(|| "unknown".into(), |ts| format!("{}-{}-{} {}:{}:{}",
-            &ts[0..4], &ts[4..6], &ts[6..8], &ts[9..11], &ts[11..13], &ts[13..15]));
+        .filter(|ts| ts.len() == 15)
+        .map_or_else(
+            || "unknown".into(),
+            |ts| {
+                format!(
+                    "{}-{}-{} {}:{}:{}",
+                    &ts[0..4],
+                    &ts[4..6],
+                    &ts[6..8],
+                    &ts[9..11],
+                    &ts[11..13],
+                    &ts[13..15]
+                )
+            },
+        );
 
     let scope = records.iter().find_map(|r| r.workload_mode.as_deref());
 
     ingest_run(
-        db, campaign_id, &started, None, "multifs", Some(0),
-        "emufi", None, scope,
+        db,
+        campaign_id,
+        &started,
+        None,
+        "multifs",
+        Some(0),
+        "emufi",
+        None,
+        scope,
         env!("CARGO_PKG_VERSION"),
         run_dir.to_str(),
         &records,
@@ -689,10 +968,13 @@ pub fn cmd_ingest(runs_dir: Option<&str>) -> Result<i32> {
         .with_context(|| format!("read {}", root.display()))?
         .filter_map(std::result::Result::ok)
         .map(|e| e.path())
-        .filter(|p| p.is_dir()
-            && p.file_name().and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("beamfs-bench-multifs-"))
-            && p.join("all-records.txt").exists())
+        .filter(|p| {
+            p.is_dir()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("beamfs-bench-multifs-"))
+                && p.join("all-records.txt").exists()
+        })
         .collect();
     dirs.sort();
 
@@ -708,7 +990,10 @@ pub fn cmd_ingest(runs_dir: Option<&str>) -> Result<i32> {
                 done += 1;
             }
             Err(e) => {
-                eprintln!("  SKIP  {}: {e:#}", d.file_name().unwrap().to_string_lossy());
+                eprintln!(
+                    "  SKIP  {}: {e:#}",
+                    d.file_name().unwrap().to_string_lossy()
+                );
                 failed += 1;
             }
         }
@@ -735,12 +1020,20 @@ pub fn cmd_query(q: Query) -> Result<i32> {
             "SELECT verdict, COUNT(*) AS n,              GROUP_CONCAT(DISTINCT fs) AS filesystems              FROM validity GROUP BY verdict ORDER BY n DESC;",
     };
     let mut child = Command::new("sqlite3")
-        .arg("-header").arg("-column").arg(&db)
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .arg("-header")
+        .arg("-column")
+        .arg(&db)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .context("spawn sqlite3")?;
-    child.stdin.as_mut().context("stdin")?
-        .write_all(sql.as_bytes()).context("write query")?;
+    child
+        .stdin
+        .as_mut()
+        .context("stdin")?
+        .write_all(sql.as_bytes())
+        .context("write query")?;
     let out = child.wait_with_output().context("wait for sqlite3")?;
     print!("{}", String::from_utf8_lossy(&out.stdout));
     if !out.stderr.is_empty() {
@@ -808,6 +1101,58 @@ WORKLOAD_MODE=write-active|FLIPS_ON_TARGET=11";
         assert_eq!(parse_records(&corrupt)[0].intact(), Some(0));
         let refused = LINE.replace("CAT_RC=0", "CAT_RC=1");
         assert_eq!(parse_records(&refused)[0].intact(), Some(0));
+    }
+
+    #[test]
+    fn a_flip_is_placed_by_its_sector_within_the_block() {
+        // Sector 13 is the sixth sector of block 1: bytes 2560..3071.
+        assert_eq!(offset_in_block(13, 17), 5 * 512 + 17);
+        assert_eq!(offset_in_block(8, 0), 0);
+        assert_eq!(offset_in_block(15, 511), 4095);
+    }
+
+    #[test]
+    fn the_tracepoint_names_the_block_and_keeps_the_worst() {
+        let trace = "\
+ kworker/u8:1-55 [001] ..... 123.456: beamfs_rs_event: dev=253:16 blk=1234 sub=3 symbols=2 flags=0x401\n\
+ cat-77 [000] ..... 124.000: beamfs_rs_event: dev=253:16 blk=1234 sub=3 symbols=0 flags=0x402\n\
+ cat-77 [000] ..... 124.001: beamfs_rs_event: dev=253:16 blk=77 sub=-1 symbols=1 flags=0x8\n\
+ cat-77 [000] ..... 124.002: beamfs_rs_event: dev=253:16 blk=90 sub=0 symbols=3 flags=0x105\n";
+        let (by_sub, by_block) = parse_trace_verdicts(trace);
+        assert_eq!(by_sub[&(1234, 3)].outcome(), "uncorrectable");
+        assert_eq!(by_block[&77].outcome(), "corrected");
+        assert_eq!(by_sub[&(90, 0)].outcome(), "rmw_neutralised");
+        assert_eq!(by_sub.len(), 2);
+    }
+
+    #[test]
+    fn a_record_without_the_trace_field_is_an_older_kernel() {
+        let r = &parse_records(LINE)[0];
+        assert!(r.rs_trace_b64.is_none());
+        let with = format!("{LINE}|RS_TRACE_B64=H4sIAAAAAAAAAwMAAAAAAAAAAAA=");
+        assert!(parse_records(&with)[0].rs_trace_b64.is_some());
+    }
+
+    #[test]
+    fn an_old_database_gains_the_new_columns_once() {
+        let dir = std::env::temp_dir().join(format!("bb-migration-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let db = dir.join("old.db");
+        exec(
+            &db,
+            "CREATE TABLE flip_event (id INTEGER PRIMARY KEY, outcome TEXT);",
+        )
+        .expect("sqlite3");
+        ensure_column(&db, "flip_event", "verdict_source", "TEXT").expect("add");
+        ensure_column(&db, "flip_event", "verdict_source", "TEXT").expect("again");
+        let info = exec(&db, "PRAGMA table_info(flip_event);").expect("pragma");
+        assert_eq!(
+            info.lines()
+                .filter(|l| l.contains("|verdict_source|"))
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

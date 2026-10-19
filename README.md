@@ -52,7 +52,7 @@ analysis rather than the run's. A run passes it whatever it measured.
 
 ## Before a patch series is mailed
 
-`beamfs-bench upstream --base <rev>` checks the kernel patch series on
+`beamfs-bench upstream --base <rev>` runs the crate `beamfs-upstream` (shared with beamfs-xfstests since 0.18.0): it checks the kernel patch series on
 a branch of `~/git/linux` the way its reviewers and their build robots
 will: commits and trailers (one `Assisted-by: LLM` line, the analysis
 tools used named after it if any, as
@@ -133,6 +133,38 @@ commands, options, environment, the lab, the files.
 
 The full record is in [CHANGELOG.md](CHANGELOG.md); its latest entries
 follow.
+
+### [0.17.0] - 2026-10-14
+
+- Every flip is joined to the kernel's own verdict through the
+  `beamfs_rs_event` tracepoint (beamfs v3.1+), armed for the attack
+  window and shipped in the record as `RS_TRACE_B64`: every decode
+  path, no rate limit, keyed by physical block and subblock, so no
+  extent reconstruction stands between a flip and what became of it.
+  Outcomes are `corrected`, `rmw_neutralised`, `uncorrectable` and
+  `no_rs_event`; `verdict_source` says whether the trace or, on an
+  older kernel, the dmesg lines decided, and `rs_symbols` and
+  `rs_flags` keep what the tracepoint said. `queue_idx` and
+  `mechanism` tie a flip to the campaign event that produced it.
+- `offset_in_block` is `(sector % 8) * 512 + byte_offset`, the place
+  of emufi 0.9.0's exact sector; `byte_offset % 4096` read the offset
+  into the bio segment and placed a flip in any segment past the
+  first in the wrong block.
+- A campaign is stated as a beam when `BEAM_FLUX` is set, with
+  `EXPOSURE_SECONDS` or `FLUENCE`, `SIGMA_CM2_PER_BIT`,
+  `SEFI_SIGMA_CM2` or `DUT` (`pi-zero-2w`, `imx8mp`, `orangecrab`, the
+  devices of Memon et al. at `PHYSICS_ENERGY_MEV`), `PHYSICS_SOURCE`
+  and `PHYSICS_GEOMETRY`; `emufi-radsim` writes the manifest beside
+  the run as `campaign-<fs>.json` and it is pushed next to the blob.
+  `SEFI_HOLD_MS`, `SEFI_STATUS` and `SEFI_PERMANENT` reach the
+  injector, and `sefi_clear` is written before every attack.
+- Files go to the nodes with rsync; `scp_to` is gone.
+- Databases created before this version gain the new columns on the
+  next `init`.
+- `--flip-locality` and `--target-struct` are documented as the module
+  numbers them: locality 0 to 5 (the help offered `RANDOM`, `CONSECUTIVE`
+  and `EXACT`, words the module never read), and structure 3 bitmap,
+  4 root directory (the help had them the other way round).
 
 ### [0.16.2] - 2026-10-14
 

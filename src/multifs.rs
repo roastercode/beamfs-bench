@@ -24,8 +24,8 @@
 
 use anyhow::{Context, Result};
 use chrono::Local;
-use std::fs;
 use std::collections::HashMap;
+use std::fs;
 
 /// S3.1: parsed payload from the SETUP record echo emitted by
 /// `worker.sh::setup` case. Captures the file-precise injection range
@@ -118,7 +118,7 @@ pub fn resolve_probs() -> Vec<u32> {
     }
 }
 
-pub const MULTIFS_TARGET_IP: &str = "192.168.56.11";  // compute01 holds the 5 USB sticks (isolation per recadrage R-isolation)
+pub const MULTIFS_TARGET_IP: &str = "192.168.56.11"; // compute01 holds the 5 USB sticks (isolation per recadrage R-isolation)
 pub const REMOTE_WORKER_PATH: &str = "/tmp/beamfs-bench-worker.sh";
 pub const DEFAULT_VM_NAME: &str = "beamfs-compute01";
 
@@ -262,15 +262,32 @@ fn radsim_path() -> String {
 /// Where the node expects the campaign blob.
 const CAMPAIGN_REMOTE: &str = "/tmp/emufi-campaign.bin";
 
+/// Where the node expects the campaign manifest.
+const MANIFEST_REMOTE: &str = "/tmp/emufi-campaign.json";
+
 /// Generate a physics campaign over the target file's extents and push
-/// it to the node.
+/// it to the node, with its manifest.
 ///
-/// Event count, incident energy and seed come from the environment
+/// Event count, energy and seed come from the environment
 /// (PHYSICS_EVENTS, PHYSICS_ENERGY_MEV, PHYSICS_SEED) so a campaign can
-/// be varied without rebuilding.
+/// be varied without rebuilding. PHYSICS_SOURCE and PHYSICS_GEOMETRY
+/// pick the species and the cell. A beam is stated as the facility
+/// states it: BEAM_FLUX in p/(cm^2 s), EXPOSURE_SECONDS or FLUENCE,
+/// SIGMA_CM2_PER_BIT, and for lockups SEFI_SIGMA_CM2 or DUT (a device
+/// Memon et al. measured, at PHYSICS_ENERGY_MEV). With a beam the count
+/// follows from it unless PHYSICS_EVENTS says otherwise.
+///
+/// The manifest, which keeps every event's energy, LET, class,
+/// multiplicity and instant, is written beside the run as
+/// `campaign-<fs>.json` and pushed next to the blob.
 ///
 /// Returns the number of events generated.
-fn generate_campaign(ranges: &str, ssh: &SshTarget) -> Result<usize> {
+fn generate_campaign(
+    ranges: &str,
+    ssh: &SshTarget,
+    fs_name: &str,
+    run_dir: &Path,
+) -> Result<usize> {
     // DEPLOYMENT, when set, derives the count from flux, cross-section
     // and exposure time rather than taking it as given. A campaign
     // then reads as "six months in a linac vault" instead of "64
@@ -298,16 +315,46 @@ fn generate_campaign(ranges: &str, ssh: &SshTarget) -> Result<usize> {
     };
     let energy = std::env::var("PHYSICS_ENERGY_MEV").unwrap_or_else(|_| "14.0".into());
     let seed = std::env::var("PHYSICS_SEED").unwrap_or_else(|_| "3735928559".into());
+    let env_opt = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    let beam = env_opt("BEAM_FLUX");
 
     let local = "/tmp/emufi-campaign.bin";
+    let manifest_local = run_dir.join(format!("campaign-{fs_name}.json"));
+    let mut args: Vec<String> = vec![
+        "--seed".into(),
+        seed,
+        "campaign".into(),
+        "--ranges".into(),
+        ranges.to_string(),
+        "--energy-mev".into(),
+        energy,
+        "--manifest".into(),
+        manifest_local.display().to_string(),
+    ];
+    // With a beam the count follows from flux, cross-section and time;
+    // PHYSICS_EVENTS still pins it when set. Without a beam it is what
+    // the exposure or PHYSICS_EVENTS gave above.
+    if beam.is_none() || env_opt("PHYSICS_EVENTS").is_some() {
+        args.push("--n".into());
+        args.push(n.to_string());
+    }
+    for (var, flag) in [
+        ("PHYSICS_SOURCE", "--source"),
+        ("PHYSICS_GEOMETRY", "--geometry"),
+        ("BEAM_FLUX", "--beam-flux"),
+        ("EXPOSURE_SECONDS", "--seconds"),
+        ("FLUENCE", "--fluence"),
+        ("SIGMA_CM2_PER_BIT", "--sigma-cm2-per-bit"),
+        ("SEFI_SIGMA_CM2", "--sefi-sigma-cm2"),
+        ("DUT", "--dut"),
+    ] {
+        if let Some(v) = env_opt(var) {
+            args.push(flag.into());
+            args.push(v);
+        }
+    }
     let out = std::process::Command::new(radsim_path())
-        .args([
-            "--seed", &seed,
-            "campaign",
-            "--ranges", ranges,
-            "--n", &n.to_string(),
-            "--energy-mev", &energy,
-        ])
+        .args(&args)
         .output()
         .with_context(|| format!("spawn {}", radsim_path()))?;
     if !out.status.success() {
@@ -316,11 +363,14 @@ fn generate_campaign(ranges: &str, ssh: &SshTarget) -> Result<usize> {
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    std::fs::write(local, &out.stdout)
-        .with_context(|| format!("write {local}"))?;
+    std::fs::write(local, &out.stdout).with_context(|| format!("write {local}"))?;
 
-    ssh.scp_to(local, CAMPAIGN_REMOTE)
+    ssh.rsync_to(local, CAMPAIGN_REMOTE)
         .with_context(|| format!("push campaign to {CAMPAIGN_REMOTE}"))?;
+    if manifest_local.is_file() {
+        ssh.rsync_to(&manifest_local.display().to_string(), MANIFEST_REMOTE)
+            .with_context(|| format!("push manifest to {MANIFEST_REMOTE}"))?;
+    }
 
     Ok(out.stdout.len() / 16)
 }
@@ -330,8 +380,7 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
     let ts_compact = ts.format("%Y%m%d-%H%M%S").to_string();
     let ts_human = ts.format("%Y-%m-%d %H:%M:%S").to_string();
 
-    let repo_root = locate_repo_root()
-        .context("could not locate yocto-beamfs repo root")?;
+    let repo_root = locate_repo_root().context("could not locate yocto-beamfs repo root")?;
 
     // ----------------------------------------------------------------
     // Step 0: device validation (pre-flight, before any RUN_DIR creation)
@@ -340,18 +389,18 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
     // dry_run aborts here without creating any directories.
     // ----------------------------------------------------------------
     let validated: Vec<ProposedMapping> = if let Some(m) = &cfg.pre_validated_mappings {
-        eprintln!("beamfs-bench: using pre-validated mappings from caller ({} entries)", m.len());
+        eprintln!(
+            "beamfs-bench: using pre-validated mappings from caller ({} entries)",
+            m.len()
+        );
         m.clone()
     } else {
-        let fs_list_refs: Vec<(&str, &str)> = cfg.fs_list.iter()
+        let fs_list_refs: Vec<(&str, &str)> = cfg
+            .fs_list
+            .iter()
             .map(|(f, v)| (f.as_str(), v.as_str()))
             .collect();
-        devices::discover_and_validate(
-            &cfg.vm_name,
-            &fs_list_refs,
-            cfg.auto_confirm,
-            cfg.dry_run,
-        )?
+        devices::discover_and_validate(&cfg.vm_name, &fs_list_refs, cfg.auto_confirm, cfg.dry_run)?
     };
 
     // From here on, RUN_DIR is created and destructive actions begin.
@@ -392,8 +441,12 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
     // S3.1: collect per-FS file-precise injection range from SETUP records.
     let mut setup_parsed: HashMap<String, SetupParse> = HashMap::new();
     for m in &validated {
-        let cmd = crate::cluster::worker_cmd(&cfg.injector, &format!("setup {} {}", m.fs_name, m.disk.guest_dev));
-        let out = ssh.exec_lenient(&cmd)
+        let cmd = crate::cluster::worker_cmd(
+            &cfg.injector,
+            &format!("setup {} {}", m.fs_name, m.disk.guest_dev),
+        );
+        let out = ssh
+            .exec_lenient(&cmd)
             .with_context(|| format!("setup {} on {}", m.fs_name, m.disk.guest_dev))?;
         println!("  {} ({}): {out}", m.fs_name, m.disk.guest_dev);
 
@@ -409,8 +462,13 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
     // Phase 3: per-FS, per-prob attacks
     // ----------------------------------------------------------------
     let n_runs = validated.len() * cfg.probs.len();
-    blue(&format!("[3/5] {} attacks: {} FS x {} probs = {} runs",
-                  cfg.injector, validated.len(), cfg.probs.len(), n_runs));
+    blue(&format!(
+        "[3/5] {} attacks: {} FS x {} probs = {} runs",
+        cfg.injector,
+        validated.len(),
+        cfg.probs.len(),
+        n_runs
+    ));
 
     let all_records_path = run_dir.join("all-records.txt");
     let mut all_records = fs::File::create(&all_records_path)
@@ -430,8 +488,14 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
         let setup_p = setup_parsed.get(&m.fs_name).cloned().unwrap_or_default();
         let range_active = setup_p.target_block_range_end > setup_p.target_block_range_start;
         if range_active {
-            std::env::set_var("TARGET_BLOCK_RANGE_START", setup_p.target_block_range_start.to_string());
-            std::env::set_var("TARGET_BLOCK_RANGE_END",   setup_p.target_block_range_end.to_string());
+            std::env::set_var(
+                "TARGET_BLOCK_RANGE_START",
+                setup_p.target_block_range_start.to_string(),
+            );
+            std::env::set_var(
+                "TARGET_BLOCK_RANGE_END",
+                setup_p.target_block_range_end.to_string(),
+            );
         } else {
             std::env::remove_var("TARGET_BLOCK_RANGE_START");
             std::env::remove_var("TARGET_BLOCK_RANGE_END");
@@ -460,28 +524,38 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
         if std::env::var("PHYSICS_DRIVEN").as_deref() == Ok("1")
             && !setup_p.target_ranges.is_empty()
         {
-            match generate_campaign(&setup_p.target_ranges, &ssh) {
+            match generate_campaign(&setup_p.target_ranges, &ssh, &m.fs_name, &run_dir) {
                 Ok(n) => println!("  {} : campaign of {n} events pushed", m.fs_name),
                 Err(e) => eprintln!("  {} : campaign generation failed: {e:#}", m.fs_name),
             }
         }
 
         for &prob in &cfg.probs {
-            let attack_cmd = crate::cluster::worker_cmd(&cfg.injector,
-                &format!("attack {} {} {prob}", m.fs_name, m.disk.guest_dev));
-            let attack_out = ssh.exec_lenient(&attack_cmd)
+            let attack_cmd = crate::cluster::worker_cmd(
+                &cfg.injector,
+                &format!("attack {} {} {prob}", m.fs_name, m.disk.guest_dev),
+            );
+            let attack_out = ssh
+                .exec_lenient(&attack_cmd)
                 .with_context(|| format!("attack {} prob={prob}", m.fs_name))?;
 
-            let verify_cmd = crate::cluster::worker_cmd(&cfg.injector,
-                &format!("verify {} {}", m.fs_name, m.disk.guest_dev));
-            let verify_out = ssh.exec_lenient(&verify_cmd)
+            let verify_cmd = crate::cluster::worker_cmd(
+                &cfg.injector,
+                &format!("verify {} {}", m.fs_name, m.disk.guest_dev),
+            );
+            let verify_out = ssh
+                .exec_lenient(&verify_cmd)
                 .with_context(|| format!("verify {} prob={prob}", m.fs_name))?;
 
             println!("  {} prob={prob}: {attack_out}", m.fs_name);
             println!("                {verify_out}");
 
             writeln!(all_records, "ATTACK|{attack_out}")?;
-            writeln!(all_records, "VERIFY|fs={}|prob={prob}|{verify_out}", m.fs_name)?;
+            writeln!(
+                all_records,
+                "VERIFY|fs={}|prob={prob}|{verify_out}",
+                m.fs_name
+            )?;
 
             writeln!(attacks_f, "{attack_out}")?;
             writeln!(verifies_f, "{verify_out}")?;
@@ -494,7 +568,8 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
     // Phase 4: synthesis report
     // ----------------------------------------------------------------
     blue("[4/5] Synthesis report");
-    let fs_list_refs: Vec<(&str, &str)> = validated.iter()
+    let fs_list_refs: Vec<(&str, &str)> = validated
+        .iter()
         .map(|m| (m.fs_name.as_str(), m.disk.guest_dev.as_str()))
         .collect();
     let probs_owned: Vec<u32> = cfg.probs.clone();
@@ -504,16 +579,14 @@ pub fn run_with_config(cfg: &MultifsConfig) -> Result<MultifsResult> {
         &fs_list_refs,
         &probs_owned,
         &per_fs_dir,
-    ).context("write synthesis.md")?;
-    synthesis::write_synthesis_json(
-        &run_dir,
-        &ts_human,
-        &all_records_path,
-    ).context("write synthesis.json")?;
+    )
+    .context("write synthesis.md")?;
+    synthesis::write_synthesis_json(&run_dir, &ts_human, &all_records_path)
+        .context("write synthesis.json")?;
 
     if !cfg.suppress_synthesis_print {
-        let synth_md = fs::read_to_string(run_dir.join("synthesis.md"))
-            .context("read back synthesis.md")?;
+        let synth_md =
+            fs::read_to_string(run_dir.join("synthesis.md")).context("read back synthesis.md")?;
         print!("{synth_md}");
     }
 
@@ -555,34 +628,43 @@ fn persist_validated_mapping(
     validated: &[ProposedMapping],
 ) -> Result<()> {
     let path = run_dir.join("devices-validated.txt");
-    let mut f = fs::File::create(&path)
-        .with_context(|| format!("create {}", path.display()))?;
+    let mut f = fs::File::create(&path).with_context(|| format!("create {}", path.display()))?;
     writeln!(f, "# beamfs-bench device validation audit")?;
     writeln!(f, "# vm        : {vm_name}")?;
-    writeln!(f, "# generated : {}", Local::now().format("%Y-%m-%d %H:%M:%S"))?;
-    writeln!(f, "# format    : <fs>|<guest_dev>|<host_resolved>|<host_size>|<host_byid>")?;
+    writeln!(
+        f,
+        "# generated : {}",
+        Local::now().format("%Y-%m-%d %H:%M:%S")
+    )?;
+    writeln!(
+        f,
+        "# format    : <fs>|<guest_dev>|<host_resolved>|<host_size>|<host_byid>"
+    )?;
     writeln!(f)?;
     for m in validated {
-        let resolved = m.disk.host_resolved.as_ref().map_or_else(|| "?".to_string(), |p| p.display().to_string());
+        let resolved = m
+            .disk
+            .host_resolved
+            .as_ref()
+            .map_or_else(|| "?".to_string(), |p| p.display().to_string());
         let size = m.disk.host_size.as_deref().unwrap_or("?");
-        writeln!(f, "{}|{}|{}|{}|{}",
-                 m.fs_name,
-                 m.disk.guest_dev,
-                 resolved,
-                 size,
-                 m.disk.host_byid_path)?;
+        writeln!(
+            f,
+            "{}|{}|{}|{}|{}",
+            m.fs_name, m.disk.guest_dev, resolved, size, m.disk.host_byid_path
+        )?;
     }
     Ok(())
 }
 
 /// Deploy the embedded worker.sh to a target via SSH.
 pub fn deploy_worker(ssh: &SshTarget) -> Result<()> {
-    let local_worker = std::env::temp_dir()
-        .join(format!("beamfs-bench-worker-{}.sh", std::process::id()));
+    let local_worker =
+        std::env::temp_dir().join(format!("beamfs-bench-worker-{}.sh", std::process::id()));
     fs::write(&local_worker, WORKER_SH)
         .with_context(|| format!("write local worker {}", local_worker.display()))?;
-    ssh.scp_to(local_worker.to_str().unwrap(), REMOTE_WORKER_PATH)
-        .context("scp worker to target")?;
+    ssh.rsync_to(local_worker.to_str().unwrap(), REMOTE_WORKER_PATH)
+        .context("rsync worker to target")?;
     ssh.exec(&format!("chmod +x {REMOTE_WORKER_PATH}"))
         .context("chmod +x worker on target")?;
     let _ = fs::remove_file(&local_worker);
@@ -590,14 +672,19 @@ pub fn deploy_worker(ssh: &SshTarget) -> Result<()> {
 }
 
 fn validated_display(validated: &[ProposedMapping]) -> String {
-    validated.iter()
+    validated
+        .iter()
         .map(|m| format!("{}:{}", m.fs_name, m.disk.guest_dev))
         .collect::<Vec<_>>()
         .join(" ")
 }
 
 fn probs_display(probs: &[u32]) -> String {
-    probs.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join(" ")
+    probs
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn blue(msg: &str) {
@@ -618,7 +705,11 @@ fn write_text(path: &Path, content: &str) -> Result<()> {
 /// rejected by the filter: `call_count` 0 and `skipped_filter` 12863 on
 /// the master, twelve cluster cells `NOT_EXERCISED`.
 pub(crate) fn clear_target_env() {
-    for var in ["TARGET_BLOCK_RANGE_START", "TARGET_BLOCK_RANGE_END", "TARGET_RANGES"] {
+    for var in [
+        "TARGET_BLOCK_RANGE_START",
+        "TARGET_BLOCK_RANGE_END",
+        "TARGET_RANGES",
+    ] {
         std::env::remove_var(var);
     }
 }
@@ -633,12 +724,17 @@ pub fn locate_repo_root() -> Result<PathBuf> {
             return Ok(root);
         }
     }
-    Err(anyhow::anyhow!("could not locate yocto-beamfs repo root from {} or exe path", cwd.display()))
+    Err(anyhow::anyhow!(
+        "could not locate yocto-beamfs repo root from {} or exe path",
+        cwd.display()
+    ))
 }
 
 fn walk_up_for_repo(start: &Path) -> Option<PathBuf> {
     let mut cur = start.to_path_buf();
-    if cur.is_file() { cur.pop(); }
+    if cur.is_file() {
+        cur.pop();
+    }
     loop {
         if cur.join("Documentation").is_dir()
             && cur.join("bin").is_dir()
@@ -646,7 +742,9 @@ fn walk_up_for_repo(start: &Path) -> Option<PathBuf> {
         {
             return Some(cur);
         }
-        if !cur.pop() { return None; }
+        if !cur.pop() {
+            return None;
+        }
     }
 }
 
@@ -685,9 +783,7 @@ mod tests_cluster_targeting {
         let start = w
             .find("fiemap_ranges() {")
             .expect("worker.sh defines fiemap_ranges");
-        let len = w[start..]
-            .find("\n}\n")
-            .expect("fiemap_ranges is closed");
+        let len = w[start..].find("\n}\n").expect("fiemap_ranges is closed");
         let script = format!(
             "{}\n}}\nprintf '%s\\n' \"$LISTING\" | fiemap_ranges",
             &w[start..start + len]
@@ -820,7 +916,10 @@ rm -rf "$INJECTOR_DBG"
     #[test]
     fn pose_target_ranges_writes_the_list_and_checks_it() {
         let (rc, why, held) = pose("8:16,24:32", "28672:29184", false);
-        assert_eq!((rc.as_str(), why.as_str(), held.as_str()), ("0", "", "8:16,24:32\n"));
+        assert_eq!(
+            (rc.as_str(), why.as_str(), held.as_str()),
+            ("0", "", "8:16,24:32\n")
+        );
     }
 
     #[test]
@@ -848,7 +947,11 @@ rm -rf "$INJECTOR_DBG"
         let (rc, why, held) = pose("144112:144400,144408:144672", "28672:29184", true);
         assert_eq!(
             (rc.as_str(), why.as_str(), held.as_str()),
-            ("1", "target_ranges_not_applied:got_28672:29184", "28672:29184\n")
+            (
+                "1",
+                "target_ranges_not_applied:got_28672:29184",
+                "28672:29184\n"
+            )
         );
     }
 
@@ -895,12 +998,23 @@ rm -rf "$INJECTOR_DBG"
 
     #[test]
     fn the_multifs_loop_leaves_no_target_behind() {
-        for var in ["TARGET_BLOCK_RANGE_START", "TARGET_BLOCK_RANGE_END", "TARGET_RANGES"] {
+        for var in [
+            "TARGET_BLOCK_RANGE_START",
+            "TARGET_BLOCK_RANGE_END",
+            "TARGET_RANGES",
+        ] {
             std::env::set_var(var, "28672");
         }
         clear_target_env();
-        for var in ["TARGET_BLOCK_RANGE_START", "TARGET_BLOCK_RANGE_END", "TARGET_RANGES"] {
-            assert!(std::env::var(var).is_err(), "{var} survived the multifs loop");
+        for var in [
+            "TARGET_BLOCK_RANGE_START",
+            "TARGET_BLOCK_RANGE_END",
+            "TARGET_RANGES",
+        ] {
+            assert!(
+                std::env::var(var).is_err(),
+                "{var} survived the multifs loop"
+            );
         }
     }
 }

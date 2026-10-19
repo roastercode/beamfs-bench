@@ -11,6 +11,69 @@ on the commit they point to. From the next version on, each version adds
 its entry, written with the change, and the README carries the latest
 entries.
 
+## 0.19.2
+
+### Changed
+- `upstream --plan`: the plan's `cc` takes precedence over `--cc`.
+
+## 0.19.1
+
+### Changed
+- The GPG priming of a session comes from beamfs-upstream 0.7.0, shared
+  with beamfs-xfstests.
+
+## 0.19.0
+
+### Changed
+- `upstream --plan`: `checkpatch --strict` blocks, with the plan's
+  justified exceptions (beamfs-upstream 0.6.1).
+
+## 0.18.0
+
+- `upstream` moved to the crate beamfs-upstream (0.3.0), shared with
+  beamfs-xfstests: the series is built from `upstream/series.toml` of
+  the beamfs repository with `--plan`, from a commit, on the newest
+  mainline tag; the build checks hold against the series only the
+  diagnostics of its own files; the MAINTAINERS entry may end the
+  series; `--quick` runs the checks of seconds as a gate before a
+  measurement, with no verdict on mailing.
+- With beamfs-upstream 0.4.0, `upstream` ends with git am of the mails
+  and git send-email --dry-run to the recipients get_maintainer names
+  plus `--cc` (the author's gmail by default), and builds fs/ at every
+  commit; `send.sh` beside the patches is the real command.
+
+## [0.17.0] - 2026-10-14
+
+- Every flip is joined to the kernel's own verdict through the
+  `beamfs_rs_event` tracepoint (beamfs v3.1+), armed for the attack
+  window and shipped in the record as `RS_TRACE_B64`: every decode
+  path, no rate limit, keyed by physical block and subblock, so no
+  extent reconstruction stands between a flip and what became of it.
+  Outcomes are `corrected`, `rmw_neutralised`, `uncorrectable` and
+  `no_rs_event`; `verdict_source` says whether the trace or, on an
+  older kernel, the dmesg lines decided, and `rs_symbols` and
+  `rs_flags` keep what the tracepoint said. `queue_idx` and
+  `mechanism` tie a flip to the campaign event that produced it.
+- `offset_in_block` is `(sector % 8) * 512 + byte_offset`, the place
+  of emufi 0.9.0's exact sector; `byte_offset % 4096` read the offset
+  into the bio segment and placed a flip in any segment past the
+  first in the wrong block.
+- A campaign is stated as a beam when `BEAM_FLUX` is set, with
+  `EXPOSURE_SECONDS` or `FLUENCE`, `SIGMA_CM2_PER_BIT`,
+  `SEFI_SIGMA_CM2` or `DUT` (`pi-zero-2w`, `imx8mp`, `orangecrab`, the
+  devices of Memon et al. at `PHYSICS_ENERGY_MEV`), `PHYSICS_SOURCE`
+  and `PHYSICS_GEOMETRY`; `emufi-radsim` writes the manifest beside
+  the run as `campaign-<fs>.json` and it is pushed next to the blob.
+  `SEFI_HOLD_MS`, `SEFI_STATUS` and `SEFI_PERMANENT` reach the
+  injector, and `sefi_clear` is written before every attack.
+- Files go to the nodes with rsync; `scp_to` is gone.
+- Databases created before this version gain the new columns on the
+  next `init`.
+- `--flip-locality` and `--target-struct` are documented as the module
+  numbers them: locality 0 to 5 (the help offered `RANDOM`, `CONSECUTIVE`
+  and `EXACT`, words the module never read), and structure 3 bitmap,
+  4 root directory (the help had them the other way round).
+
 ## [0.16.2] - 2026-10-14
 
 - `upstream` checks that the base holds the newest mainline tag

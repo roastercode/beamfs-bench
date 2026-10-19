@@ -2,7 +2,7 @@
 # beamfs-bench multifs/analyse worker - embedded as include_str! in the Rust binary.
 #
 # Deployed to /tmp/beamfs-bench-worker.sh on the master VM (and on each compute
-# for cluster scope) via scp, then invoked once per (action, ...) tuple.
+# for cluster scope) via rsync, then invoked once per (action, ...) tuple.
 #
 # Actions (read-only, safe to call before any destructive op):
 #   discover_devices          : list /dev/vd[c-z] with size + mountpoint + fstype
@@ -535,6 +535,11 @@ attack)
 
     echo 0 | sudo tee ${INJECTOR_DBG}/enabled  >/dev/null
     echo 0 | sudo tee ${INJECTOR_DBG}/hook_blk >/dev/null
+    # A lockup left by the previous attack would fail this one's I/O
+    # before it started (emufi 0.10.0: sefi_permanent).
+    if sudo test -e ${INJECTOR_DBG}/sefi_clear; then
+        echo 1 | sudo tee ${INJECTOR_DBG}/sefi_clear >/dev/null
+    fi
 
     CALL_B=$(sudo cat ${INJECTOR_DBG}/call_count)
     FLIP_B=$(sudo cat ${INJECTOR_DBG}/${FLIP_COUNT_KEY})
@@ -695,6 +700,16 @@ attack)
     if [ -n "${SEFI_WINDOW_MS:-}" ] && sudo test -e ${INJECTOR_DBG}/sefi_window_ms; then
         echo ${SEFI_WINDOW_MS} | sudo tee ${INJECTOR_DBG}/sefi_window_ms >/dev/null
     fi
+    # emufi 0.10.0: how a lockup answers, and for how long.
+    if [ -n "${SEFI_HOLD_MS:-}" ] && sudo test -e ${INJECTOR_DBG}/sefi_hold_ms; then
+        echo ${SEFI_HOLD_MS} | sudo tee ${INJECTOR_DBG}/sefi_hold_ms >/dev/null
+    fi
+    if [ -n "${SEFI_STATUS:-}" ] && sudo test -e ${INJECTOR_DBG}/sefi_status; then
+        echo ${SEFI_STATUS} | sudo tee ${INJECTOR_DBG}/sefi_status >/dev/null
+    fi
+    if [ -n "${SEFI_PERMANENT:-}" ] && sudo test -e ${INJECTOR_DBG}/sefi_permanent; then
+        echo ${SEFI_PERMANENT} | sudo tee ${INJECTOR_DBG}/sefi_permanent >/dev/null
+    fi
 
     # v0.8.0 : full emufi 0.3.2 debugfs surface. All optional, cumulative
     # simultaneous. Each push guarded by [ -n VAR ] && sudo test -e entry,
@@ -747,6 +762,21 @@ attack)
 
     echo 1        | sudo tee ${INJECTOR_DBG}/hook_blk     >/dev/null
     echo 1        | sudo tee ${INJECTOR_DBG}/enabled      >/dev/null
+
+    # The kernel's own account of every RS decode, on every path, with
+    # no rate limit: the tracepoint beamfs_rs_event (beamfs v3.1+). The
+    # dmesg lines it replaces are rate-limited and name only the data
+    # path, so a correction in the scrubber, a bitmap or an indirect
+    # block never joined a flip. Armed for the attack window, read back
+    # below, shipped as RS_TRACE_B64. Absent on an older kernel, and the
+    # record then carries no field, which is how the ingest knows.
+    RS_TRACE_ARMED=0
+    TRACING=/sys/kernel/debug/tracing
+    if sudo test -e $TRACING/events/beamfs/beamfs_rs_event/enable; then
+        sudo sh -c "echo > $TRACING/trace"
+        echo 1 | sudo tee $TRACING/events/beamfs/beamfs_rs_event/enable >/dev/null
+        RS_TRACE_ARMED=1
+    fi
 
     # Phase A.5 : SB-targeted I/O burst for RS saturation campaign.
     # When TARGET_STRUCT=1 (SUPERBLOCK) and SB_READ_LOOPS is set,
@@ -1145,9 +1175,19 @@ print(f'{bits} {frac_bp} {len(blocks)}')
         FLIP_LOG_SHA=na
     fi
 
+    RS_TRACE_B64=na
+    if [ "$RS_TRACE_ARMED" = "1" ]; then
+        echo 0 | sudo tee $TRACING/events/beamfs/beamfs_rs_event/enable >/dev/null
+        sudo cat $TRACING/trace 2>/dev/null | grep 'beamfs_rs_event:' > /tmp/rs-trace-$FS-$PROB.txt || true
+        RS_TRACE_B64=$(gzip -9 -c /tmp/rs-trace-$FS-$PROB.txt 2>/dev/null | base64 -w0 2>/dev/null)
+        # An armed trace with no event is a result (nothing was decoded)
+        # and must not look like an older kernel: ship it, empty.
+        [ -z "$RS_TRACE_B64" ] && RS_TRACE_B64=$(printf '' | gzip -9 -c | base64 -w0)
+    fi
+
     sudo rm -f /tmp/pre-cat-$FS.bin /tmp/post-cat-$FS.bin /tmp/cat-err-$FS.log 2>/dev/null || true
 
-    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_PRECAT=$HASH_PRECAT|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|FRAG_PRE_PHYS=$FRAG_PRE_PHYS|FRAG_POST_PHYS=$FRAG_POST_PHYS|FRAG_RELOCATED=$FRAG_RELOCATED|WORKLOAD_MODE=$WORKLOAD_MODE_VAL|WORKLOAD_DURATION=$WORKLOAD_DURATION_VAL|ATTACKED_BYTES_UNIQUE=$ATTACKED_BYTES_UNIQUE|FLIPS_ON_TARGET=$FLIPS_ON_TARGET|FLIP_LOG_SHA256=$FLIP_LOG_SHA|FLIP_LOG_B64=$FLIP_LOG_B64|DMESG_B64=$DMESG_B64|TARGET_RANGES=$TARGET_RANGES"
+    echo "FS=$FS|PROB=$PROB|CALL_DELTA=$CALL_DELTA|FLIP_DELTA=$FLIP_DELTA|TARGET=$TARGET_REL|HASH_PRE=$HASH_PRE|HASH_PRECAT=$HASH_PRECAT|HASH_POST=$HASH_POST|CAT_RC=$CAT_RC|RS_CORRECTED=$RS_CORRECTED|DMESG_UNCORRECTABLE=$DMESG_UNCORR|DMESG_EIO=$DMESG_EIO|BITS_DIFF=$BITS_DIFF|FRAC_CORRUPT=$FRAC_CORRUPT|HAMM_BLOCKS=$HAMM_BLOCKS|FILE_SIZE=$PRE_SIZE|FRAG_PRE_PHYS=$FRAG_PRE_PHYS|FRAG_POST_PHYS=$FRAG_POST_PHYS|FRAG_RELOCATED=$FRAG_RELOCATED|WORKLOAD_MODE=$WORKLOAD_MODE_VAL|WORKLOAD_DURATION=$WORKLOAD_DURATION_VAL|ATTACKED_BYTES_UNIQUE=$ATTACKED_BYTES_UNIQUE|FLIPS_ON_TARGET=$FLIPS_ON_TARGET|FLIP_LOG_SHA256=$FLIP_LOG_SHA|FLIP_LOG_B64=$FLIP_LOG_B64|DMESG_B64=$DMESG_B64|TARGET_RANGES=$TARGET_RANGES|RS_TRACE_B64=$RS_TRACE_B64"
     ;;
 
 verify)
@@ -1291,6 +1331,11 @@ cluster_attack)
 
     echo 0 | sudo tee ${INJECTOR_DBG}/enabled  >/dev/null
     echo 0 | sudo tee ${INJECTOR_DBG}/hook_blk >/dev/null
+    # A lockup left by the previous attack would fail this one's I/O
+    # before it started (emufi 0.10.0: sefi_permanent).
+    if sudo test -e ${INJECTOR_DBG}/sefi_clear; then
+        echo 1 | sudo tee ${INJECTOR_DBG}/sefi_clear >/dev/null
+    fi
 
     CALL_B=$(sudo cat ${INJECTOR_DBG}/call_count)
     FLIP_B=$(sudo cat ${INJECTOR_DBG}/${FLIP_COUNT_KEY})
@@ -1461,6 +1506,16 @@ cluster_attack)
     fi
     if [ -n "${SEFI_WINDOW_MS:-}" ] && sudo test -e ${INJECTOR_DBG}/sefi_window_ms; then
         echo ${SEFI_WINDOW_MS} | sudo tee ${INJECTOR_DBG}/sefi_window_ms >/dev/null
+    fi
+    # emufi 0.10.0: how a lockup answers, and for how long.
+    if [ -n "${SEFI_HOLD_MS:-}" ] && sudo test -e ${INJECTOR_DBG}/sefi_hold_ms; then
+        echo ${SEFI_HOLD_MS} | sudo tee ${INJECTOR_DBG}/sefi_hold_ms >/dev/null
+    fi
+    if [ -n "${SEFI_STATUS:-}" ] && sudo test -e ${INJECTOR_DBG}/sefi_status; then
+        echo ${SEFI_STATUS} | sudo tee ${INJECTOR_DBG}/sefi_status >/dev/null
+    fi
+    if [ -n "${SEFI_PERMANENT:-}" ] && sudo test -e ${INJECTOR_DBG}/sefi_permanent; then
+        echo ${SEFI_PERMANENT} | sudo tee ${INJECTOR_DBG}/sefi_permanent >/dev/null
     fi
 
     echo 1          | sudo tee ${INJECTOR_DBG}/hook_blk     >/dev/null
@@ -1907,6 +1962,11 @@ metadata_inject)
 
     echo 0 | sudo tee ${INJECTOR_DBG}/enabled  >/dev/null
     echo 0 | sudo tee ${INJECTOR_DBG}/hook_blk >/dev/null
+    # A lockup left by the previous attack would fail this one's I/O
+    # before it started (emufi 0.10.0: sefi_permanent).
+    if sudo test -e ${INJECTOR_DBG}/sefi_clear; then
+        echo 1 | sudo tee ${INJECTOR_DBG}/sefi_clear >/dev/null
+    fi
 
     CALL_B=$(sudo cat ${INJECTOR_DBG}/call_count)
     FLIP_B=$(sudo cat ${INJECTOR_DBG}/${FLIP_COUNT_KEY})

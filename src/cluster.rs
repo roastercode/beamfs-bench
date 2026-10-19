@@ -63,18 +63,18 @@ pub fn worker_cmd(injector: &str, action_args: &str) -> String {
     for var in &[
         // v0.7.x baseline (kept verbatim):
         "FLIP_WIDTH",
-        "MAX_FLIPS",                 // u64, injection budget (emufi 0.6.0+)
-        "INJECT_SCOPE",              // "targeted" (default) or "uniform"
-        "DEPLOYMENT",                // named environment; derives the event
-                                     // count from flux and exposure time
-        "EXPOSURE_HOURS",            // f64, hours of modelled exposure
-        "EXPOSURE_BYTES",            // u64, medium under exposure
-        "SIGMA_CM2_PER_BIT",         // f64, measured SEU cross-section
-        "FIXED_DOSE",                // 1 = every filtered bio injected until
-        "PHYSICS_DRIVEN",            // 1 = placement from the generated
-                                     // campaign in /tmp/emufi-campaign.bin
-                                     // the budget runs out (emufi 0.8.0+)
-        "TARGET_RANGES",             // "s:e,s:e" sectors (emufi 0.7.0+)
+        "MAX_FLIPS",    // u64, injection budget (emufi 0.6.0+)
+        "INJECT_SCOPE", // "targeted" (default) or "uniform"
+        "DEPLOYMENT",   // named environment; derives the event
+        // count from flux and exposure time
+        "EXPOSURE_HOURS",    // f64, hours of modelled exposure
+        "EXPOSURE_BYTES",    // u64, medium under exposure
+        "SIGMA_CM2_PER_BIT", // f64, measured SEU cross-section
+        "FIXED_DOSE",        // 1 = every filtered bio injected until
+        "PHYSICS_DRIVEN",    // 1 = placement from the generated
+        // campaign in /tmp/emufi-campaign.bin
+        // the budget runs out (emufi 0.8.0+)
+        "TARGET_RANGES", // "s:e,s:e" sectors (emufi 0.7.0+)
         "LET_CLASS",
         "FLIP_LOCALITY",
         "BURST_SYMBOLS",
@@ -82,36 +82,48 @@ pub fn worker_cmd(injector: &str, action_args: &str) -> String {
         "TARGET_STRUCT_BLOCK_NO",
         "SEFI_PROBABILITY",
         "SEFI_WINDOW_MS",
+        "SEFI_HOLD_MS",   // u32, a taken bio waits this long (emufi 0.10.0+)
+        "SEFI_STATUS",    // 0 BLK_STS_IOERR, 1 BLK_STS_TIMEOUT
+        "SEFI_PERMANENT", // 1 = locked until sefi_clear
+        // Beam parameters, consumed on the host by generate_campaign and
+        // recorded in the campaign manifest (emufi-physics 0.7.0+):
+        "PHYSICS_SOURCE",   // neutron, proton, fe56...
+        "PHYSICS_GEOMETRY", // ddr3, ddr4, ddr5, nand-tlc...
+        "BEAM_FLUX",        // f64, p/(cm^2 s)
+        "EXPOSURE_SECONDS", // f64
+        "FLUENCE",          // f64, p/cm^2
+        "SEFI_SIGMA_CM2",   // f64, whole-system Linux-SEFI cross-section
+        "DUT",              // pi-zero-2w, imx8mp, orangecrab (Memon et al.)
         // Phase A.5: SB-targeted I/O burst loop count for RS saturation
         "SB_READ_LOOPS",
         // v0.8.0 additions, expose remaining emufi 0.3.2 surface:
-        "TARGET_STRUCT_OFFSET",      // u32, byte offset within struct block
-        "TARGET_INODE",              // u64, inode-aware FS targeting
-        "HOOK_FS",                   // bool 0/1, FS-level hook (vs blk-only)
-        "MULTI_SEGMENT",             // bool 0/1, multi-segment burst
-        "MULTI_CHIP",                // bool 0/1, multi-chip injection
-        "CHIP_COUNT",                // u8, number of chips when multi_chip=1
-        "WIDTH_MODE",                // u8, MBU width sampling mode
-        "FLIP_STRIDE_BITS",          // u8, stride between flips in a burst
-        "CODEWORD_SIZE_BYTES",       // u32, RS codeword size for FEC-aware
-        "CODEWORD_ALIGN_BYTES",      // u32, RS codeword alignment
-        "RESEED",                    // u64, reseed PRNG (write-only command)
+        "TARGET_STRUCT_OFFSET", // u32, byte offset within struct block
+        "TARGET_INODE",         // u64, inode-aware FS targeting
+        "HOOK_FS",              // bool 0/1, FS-level hook (vs blk-only)
+        "MULTI_SEGMENT",        // bool 0/1, multi-segment burst
+        "MULTI_CHIP",           // bool 0/1, multi-chip injection
+        "CHIP_COUNT",           // u8, number of chips when multi_chip=1
+        "WIDTH_MODE",           // u8, MBU width sampling mode
+        "FLIP_STRIDE_BITS",     // u8, stride between flips in a burst
+        "CODEWORD_SIZE_BYTES",  // u32, RS codeword size for FEC-aware
+        "CODEWORD_ALIGN_BYTES", // u32, RS codeword alignment
+        "RESEED",               // u64, reseed PRNG (write-only command)
         // Phase A.3 -- workload mode declaration:
-        "WORKLOAD_MODE",             // string: "static" (default) or "write-active"
-        "WORKLOAD_DURATION",         // u32, seconds for active workload (default 15)
+        "WORKLOAD_MODE",     // string: "static" (default) or "write-active"
+        "WORKLOAD_DURATION", // u32, seconds for active workload (default 15)
         // S3.1 -- file-precise targeting via emufi v0.3.4+ target_block_range:
-        "TARGET_BLOCK_RANGE_START",  // u64, sector unit (= fs_block × 8)
-        "TARGET_BLOCK_RANGE_END",    // u64, sector unit, exclusive bound
+        "TARGET_BLOCK_RANGE_START", // u64, sector unit (= fs_block × 8)
+        "TARGET_BLOCK_RANGE_END",   // u64, sector unit, exclusive bound
         // pre-N100 fix : forward beamfs publication-campaign env vars
         // BEAMFS_SCHEME is consumed directly by worker.sh:62 (mkfs.beamfs -s)
         // BEAMFS_BENCH_FS_LIST and BEAMFS_BENCH_PROBS are consumed orchestrator-
         // side but forwarded for consistency (Rust reads from local env, not SSH).
-        "BEAMFS_SCHEME",             // string: "inline" | "inode-universal"
-        "BEAMFS_INODE_COUNT",        // u64, total inodes at mkfs time (0=default 256)
-        "BEAMFS_DATA_CSUM",          // "1" -> mkfs --data-csum (format-v6 DATA_CSUM)
-        "BEAMFS_INTERLEAVE",         // "1" -> mkfs --interleave (capsule layout)
-        "BEAMFS_BENCH_FS_LIST",      // CSV: "beamfs,ext4,btrfs,xfs,ext2"
-        "BEAMFS_BENCH_PROBS",        // CSV: "100,1000,10000,100000,500000,1000000"
+        "BEAMFS_SCHEME",        // string: "inline" | "inode-universal"
+        "BEAMFS_INODE_COUNT",   // u64, total inodes at mkfs time (0=default 256)
+        "BEAMFS_DATA_CSUM",     // "1" -> mkfs --data-csum (format-v6 DATA_CSUM)
+        "BEAMFS_INTERLEAVE",    // "1" -> mkfs --interleave (capsule layout)
+        "BEAMFS_BENCH_FS_LIST", // CSV: "beamfs,ext4,btrfs,xfs,ext2"
+        "BEAMFS_BENCH_PROBS",   // CSV: "100,1000,10000,100000,500000,1000000"
     ] {
         if let Ok(v) = std::env::var(var) {
             if !v.is_empty() {
@@ -169,15 +181,17 @@ pub fn discover_cluster() -> Result<Vec<ClusterNode>> {
         let h = thread::spawn(move || -> ClusterNode {
             let ssh = match ssh_for(&ip) {
                 Ok(s) => s,
-                Err(e) => return ClusterNode {
-                    ip: ip.clone(),
-                    expected_hostname: hostname,
-                    discovered: NodeState {
-                        reachable: false,
-                        error: Some(format!("ssh setup: {e:#}")),
-                        ..Default::default()
-                    },
-                },
+                Err(e) => {
+                    return ClusterNode {
+                        ip: ip.clone(),
+                        expected_hostname: hostname,
+                        discovered: NodeState {
+                            reachable: false,
+                            error: Some(format!("ssh setup: {e:#}")),
+                            ..Default::default()
+                        },
+                    }
+                }
             };
 
             let cmd = format!("{REMOTE_WORKER_PATH} discover_cluster");
@@ -228,7 +242,9 @@ pub fn discover_cluster() -> Result<Vec<ClusterNode>> {
 
     let mut nodes: Vec<ClusterNode> = Vec::with_capacity(handles.len());
     for h in handles {
-        let node = h.join().map_err(|_| anyhow!("cluster discovery thread panicked"))?;
+        let node = h
+            .join()
+            .map_err(|_| anyhow!("cluster discovery thread panicked"))?;
         nodes.push(node);
     }
     Ok(nodes)
@@ -242,33 +258,62 @@ pub fn render_cluster_table(nodes: &[ClusterNode]) -> String {
     out.push_str(" beamfs-bench cluster topology (auto-discovered)\n");
     out.push_str("================================================================\n");
     out.push('\n');
-    out.push_str(" Node              | IP            | Kernel | beamfs | injector | inj.ko | perf | /data\n");
+    out.push_str(
+        " Node              | IP            | Kernel | beamfs | injector | inj.ko | perf | /data\n",
+    );
     out.push_str(" ------------------+---------------+--------+--------+-------+----------+------+-----------\n");
     for n in nodes {
-        let host = n.discovered.hostname.as_deref().unwrap_or(&n.expected_hostname);
+        let host = n
+            .discovered
+            .hostname
+            .as_deref()
+            .unwrap_or(&n.expected_hostname);
         let kernel = n.discovered.kernel.as_deref().unwrap_or("?");
-        let beamfs = if n.discovered.beamfs_loaded { "yes" } else { "no " };
+        let beamfs = if n.discovered.beamfs_loaded {
+            "yes"
+        } else {
+            "no "
+        };
         // emufi is the only injector since radfi was removed.
-        let injector = if n.discovered.emufi_loaded { "yes" } else { "no " };
-        let injector_ko = if n.discovered.emufi_ko_present { "yes" } else { "no " };
-        let perf = if n.discovered.perf_available { "yes" } else { "no " };
+        let injector = if n.discovered.emufi_loaded {
+            "yes"
+        } else {
+            "no "
+        };
+        let injector_ko = if n.discovered.emufi_ko_present {
+            "yes"
+        } else {
+            "no "
+        };
+        let perf = if n.discovered.perf_available {
+            "yes"
+        } else {
+            "no "
+        };
         let data = n.discovered.data_used.as_deref().unwrap_or("?");
         if n.discovered.reachable {
-            writeln!(out,
+            writeln!(
+                out,
                 " {host:<17} | {:<13} | {:<6} | {:<6} | {:<5} | {:<8} | {:<4} | {:<10}",
                 n.ip, kernel, beamfs, injector, injector_ko, perf, data
-            ).unwrap();
+            )
+            .unwrap();
         } else {
-            writeln!(out,
+            writeln!(
+                out,
                 " {host:<17} | {:<13} | UNREACHABLE: {}",
-                n.ip, n.discovered.error.as_deref().unwrap_or("?")
-            ).unwrap();
+                n.ip,
+                n.discovered.error.as_deref().unwrap_or("?")
+            )
+            .unwrap();
         }
     }
     out.push('\n');
     out.push_str(" Legend:\n");
     out.push_str("   beamfs   = beamfs.ko currently loaded\n");
-    out.push_str("   injector = emufi module loaded; will be insmod'ed by attack action if missing\n");
+    out.push_str(
+        "   injector = emufi module loaded; will be insmod'ed by attack action if missing\n",
+    );
     out.push_str("   inj.ko   = /lib/modules/$(uname -r)/updates/<injector>.ko present on disk\n");
     out.push_str("   perf     = /usr/bin/perf available (required for --scope=full perf record)\n");
     out.push_str("   /data    = used / total on the beamfs-on-vdb mount\n");
@@ -276,7 +321,7 @@ pub fn render_cluster_table(nodes: &[ClusterNode]) -> String {
     out
 }
 
-/// Deploy the worker on every reachable node. Each node gets its own scp+chmod.
+/// Deploy the worker on every reachable node. Each node gets its own rsync+chmod.
 /// Errors per-node are collected and reported but do not abort the whole deploy
 /// (a failed compute should not stop master-side work).
 pub fn deploy_worker_all(nodes: &[ClusterNode]) -> Result<Vec<(String, Result<()>)>> {
@@ -292,11 +337,14 @@ pub fn deploy_worker_all(nodes: &[ClusterNode]) -> Result<Vec<(String, Result<()
         let h = thread::spawn(move || -> (String, Result<()>) {
             let result = (|| -> Result<()> {
                 let ssh = ssh_for(&ip)?;
-                let local_path = std::env::temp_dir()
-                    .join(format!("beamfs-bench-worker-{}-{}.sh", std::process::id(), ip.replace('.', "_")));
+                let local_path = std::env::temp_dir().join(format!(
+                    "beamfs-bench-worker-{}-{}.sh",
+                    std::process::id(),
+                    ip.replace('.', "_")
+                ));
                 std::fs::write(&local_path, *worker)
                     .with_context(|| format!("write local worker for {ip}"))?;
-                ssh.scp_to(local_path.to_str().unwrap(), REMOTE_WORKER_PATH)?;
+                ssh.rsync_to(local_path.to_str().unwrap(), REMOTE_WORKER_PATH)?;
                 ssh.exec(&format!("chmod +x {REMOTE_WORKER_PATH}"))?;
                 let _ = std::fs::remove_file(&local_path);
                 Ok(())
@@ -307,7 +355,9 @@ pub fn deploy_worker_all(nodes: &[ClusterNode]) -> Result<Vec<(String, Result<()
     }
     let mut out = Vec::with_capacity(handles.len());
     for h in handles {
-        let r = h.join().map_err(|_| anyhow!("worker deploy thread panicked"))?;
+        let r = h
+            .join()
+            .map_err(|_| anyhow!("worker deploy thread panicked"))?;
         out.push(r);
     }
     Ok(out)
@@ -321,28 +371,48 @@ pub struct ClusterActionResult {
 }
 
 /// Run `cluster_setup <ts_tag>` on all reachable nodes in parallel.
-pub fn cluster_setup_all(nodes: &[ClusterNode], ts_tag: &str, injector: &str) -> Result<Vec<ClusterActionResult>> {
+pub fn cluster_setup_all(
+    nodes: &[ClusterNode],
+    ts_tag: &str,
+    injector: &str,
+) -> Result<Vec<ClusterActionResult>> {
     run_cluster_action(nodes, &format!("cluster_setup {ts_tag}"), injector)
 }
 
 /// Run `cluster_attack <ts_tag> <prob>` on all reachable nodes in parallel.
-pub fn cluster_attack_all(nodes: &[ClusterNode], ts_tag: &str, prob: u32, injector: &str) -> Result<Vec<ClusterActionResult>> {
+pub fn cluster_attack_all(
+    nodes: &[ClusterNode],
+    ts_tag: &str,
+    prob: u32,
+    injector: &str,
+) -> Result<Vec<ClusterActionResult>> {
     run_cluster_action(nodes, &format!("cluster_attack {ts_tag} {prob}"), injector)
 }
 
 /// Run `cluster_verify <ts_tag>` on all reachable nodes in parallel.
-pub fn cluster_verify_all(nodes: &[ClusterNode], ts_tag: &str, injector: &str) -> Result<Vec<ClusterActionResult>> {
+pub fn cluster_verify_all(
+    nodes: &[ClusterNode],
+    ts_tag: &str,
+    injector: &str,
+) -> Result<Vec<ClusterActionResult>> {
     run_cluster_action(nodes, &format!("cluster_verify {ts_tag}"), injector)
 }
 
 /// Run `bootstrap_data` on all reachable nodes in parallel. Used as a
 /// recovery action when `cluster_setup` fails (e.g. /data was umounted
 /// collaterally by `RadFI` attack on vdb between probability iterations).
-pub fn bootstrap_data_all(nodes: &[ClusterNode], injector: &str) -> Result<Vec<ClusterActionResult>> {
+pub fn bootstrap_data_all(
+    nodes: &[ClusterNode],
+    injector: &str,
+) -> Result<Vec<ClusterActionResult>> {
     run_cluster_action(nodes, "bootstrap_data", injector)
 }
 
-fn run_cluster_action(nodes: &[ClusterNode], action_args: &str, injector: &str) -> Result<Vec<ClusterActionResult>> {
+fn run_cluster_action(
+    nodes: &[ClusterNode],
+    action_args: &str,
+    injector: &str,
+) -> Result<Vec<ClusterActionResult>> {
     let mut handles = Vec::with_capacity(nodes.len());
     for n in nodes {
         if !n.discovered.reachable {
@@ -356,13 +426,18 @@ fn run_cluster_action(nodes: &[ClusterNode], action_args: &str, injector: &str) 
                 Ok(s) => s,
                 Err(e) => format!("CLUSTER|HOST={hostname}|ERROR={e:#}"),
             };
-            ClusterActionResult { host: hostname, raw_output: raw }
+            ClusterActionResult {
+                host: hostname,
+                raw_output: raw,
+            }
         });
         handles.push(h);
     }
     let mut results = Vec::with_capacity(handles.len());
     for h in handles {
-        let r = h.join().map_err(|_| anyhow!("cluster action thread panicked"))?;
+        let r = h
+            .join()
+            .map_err(|_| anyhow!("cluster action thread panicked"))?;
         results.push(r);
     }
     Ok(results)

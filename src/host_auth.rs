@@ -44,16 +44,16 @@
 //! the process. It exits cleanly when the main thread exits.
 
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use std::io::Write;
 
 const SUDO_KEEPALIVE_INTERVAL: Duration = Duration::from_mins(4); // 4 min
-const GPG_KEEPALIVE_INTERVAL:  Duration = Duration::from_mins(30); // 30 min
+const GPG_KEEPALIVE_INTERVAL: Duration = Duration::from_mins(30); // 30 min
 
 /// Prime sudo + GPG + ssh-agent caches and spawn keep-alive threads.
 ///
@@ -97,9 +97,11 @@ pub fn prime_session() -> Result<()> {
     if gpg_ready {
         println!("[priming] credentials primed, keep-alive thread spawned");
     } else {
-        println!("[priming] credentials primed except the GPG key: a manifest \
+        println!(
+            "[priming] credentials primed except the GPG key: a manifest \
                   written by this run is signed only if a key is cached by then; \
-                  keep-alive thread spawned");
+                  keep-alive thread spawned"
+        );
     }
     println!();
     Ok(())
@@ -145,53 +147,8 @@ fn prime_sudo() -> Result<()> {
 }
 
 fn prime_gpg() -> Result<()> {
-    print!("[priming] checking gpg-agent cache state... ");
-    std::io::stdout().flush().ok();
-    let out = Command::new("gpg-connect-agent")
-        .args(["KEYINFO --list", "/bye"])
-        .env("PAGER", "cat")
-        .output()
-        .context("spawn gpg-connect-agent")?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "gpg-connect-agent failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let mut any_primed = false;
-    for line in stdout.lines() {
-        if !line.starts_with("S KEYINFO ") { continue; }
-        let toks: Vec<&str> = line.split_whitespace().collect();
-        if toks.len() >= 7 && toks[6] == "1" {
-            any_primed = true;
-            break;
-        }
-    }
-    if any_primed {
-        println!("primed");
-        return Ok(());
-    }
-    println!("empty, triggering interactive sign");
-
-    // Trigger interactive sign to populate cache.
-    let mut child = Command::new("gpg")
-        .args(["--clearsign", "--armor", "-o", "/dev/null"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("spawn gpg --clearsign")?;
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(b"beamfs-bench session priming\n")
-            .context("write to gpg stdin")?;
-    }
-    let status = child.wait().context("wait gpg")?;
-    if !status.success() {
-        anyhow::bail!("gpg sign returned {status} (passphrase declined)");
-    }
-    println!("[priming] gpg cache populated");
-    Ok(())
+    // Shared with beamfs-xfstests through the crate: one way to ask.
+    beamfs_upstream::session::prime_gpg("beamfs-bench")
 }
 
 fn prime_ssh() -> Result<()> {
@@ -234,7 +191,7 @@ fn spawn_keepalive(alive: &Arc<AtomicBool>) {
     let alive2 = Arc::clone(alive);
     thread::spawn(move || {
         let mut last_sudo = std::time::Instant::now();
-        let mut last_gpg  = std::time::Instant::now();
+        let mut last_gpg = std::time::Instant::now();
         while alive2.load(Ordering::Relaxed) {
             thread::sleep(Duration::from_secs(30));
             if last_sudo.elapsed() >= SUDO_KEEPALIVE_INTERVAL {

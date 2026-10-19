@@ -41,21 +41,22 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-mod checkpoint;
-mod bell;
 mod analyse;
+mod bell;
 mod bitrot;
 mod bootstrap;
 mod bpf;
 mod chain;
+mod checkpoint;
 mod cluster;
-mod db;
 mod code_analysis;
 mod crash;
+mod db;
 mod devices;
 mod forensics;
 mod forensics_host;
 mod fsck;
+mod host_auth;
 mod lab;
 mod lifecycle;
 mod mega;
@@ -63,16 +64,14 @@ mod metadata;
 mod multifs;
 mod pipeline;
 mod regression_check;
-mod host_auth;
 mod scrub;
 mod ssh;
 mod synthesis;
 mod tindirect;
-mod upstream;
-mod kernelorg;
-mod usb_health;
-mod perf;
+use beamfs_upstream::check as upstream;
 mod dose;
+mod perf;
+mod usb_health;
 
 const BEAMFS_BENCH_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -137,14 +136,17 @@ struct EmufiAttackArgs {
     /// emufi entry: `let_class`. Baumann 2005 / JEDEC JEP89 calibrated.
     #[arg(long, value_name = "U8", global = true)]
     let_class: Option<u8>,
-    /// Spatial flip pattern: RANDOM | CONSECUTIVE | EXACT. emufi entry: `flip_locality`.
+    /// Spatial flip pattern, as the module numbers it: 0 anywhere, 1 adjacent,
+    /// 2 aligned in one byte, 3 by DRAM organization, 4 a burst in one RS
+    /// codeword, 5 a codeword replaced by a valid one. emufi entry: `flip_locality`.
     #[arg(long, value_name = "STR", global = true)]
     flip_locality: Option<String>,
     /// Symbols per burst (RS codeword targeting). emufi entry: `burst_symbols`.
     #[arg(long, value_name = "U8", global = true)]
     burst_symbols: Option<u8>,
-    /// On-disk struct selector (1=SUPERBLOCK `2=INODE_TABLE` `3=ROOT_DIR`
-    /// `4=INODE_BITMAP` `5=DATA_BLOCK`). emufi entry: `target_struct`.
+    /// On-disk struct selector, as `emufi.h` numbers it: 1 superblock,
+    /// 2 inode table, 3 bitmap, 4 root directory, 5 data block, 6 RAJ
+    /// entry. emufi entry: `target_struct`.
     #[arg(long, value_name = "U8", global = true)]
     target_struct: Option<u8>,
     /// Block number within the target structure. emufi entry: `target_struct_block_no`.
@@ -213,26 +215,66 @@ impl EmufiAttackArgs {
     fn export_to_env(&self) {
         // Macro-free table-driven export. Each (var_name, formatter)
         // pair maps an Option<T> field to the corresponding env var.
-        if let Some(v) = self.flip_width { std::env::set_var("FLIP_WIDTH", v.to_string()); }
-        if let Some(v) = self.let_class { std::env::set_var("LET_CLASS", v.to_string()); }
-        if let Some(v) = self.flip_locality.as_ref() { std::env::set_var("FLIP_LOCALITY", v); }
-        if let Some(v) = self.burst_symbols { std::env::set_var("BURST_SYMBOLS", v.to_string()); }
-        if let Some(v) = self.target_struct { std::env::set_var("TARGET_STRUCT", v.to_string()); }
-        if let Some(v) = self.target_struct_block_no { std::env::set_var("TARGET_STRUCT_BLOCK_NO", v.to_string()); }
-        if let Some(v) = self.sefi_probability { std::env::set_var("SEFI_PROBABILITY", v.to_string()); }
-        if let Some(v) = self.sefi_window_ms { std::env::set_var("SEFI_WINDOW_MS", v.to_string()); }
-        if let Some(v) = self.sb_read_loops { std::env::set_var("SB_READ_LOOPS", v.to_string()); }
-        if let Some(v) = self.target_struct_offset { std::env::set_var("TARGET_STRUCT_OFFSET", v.to_string()); }
-        if let Some(v) = self.target_inode { std::env::set_var("TARGET_INODE", v.to_string()); }
-        if self.hook_fs { std::env::set_var("HOOK_FS", "1"); }
-        if self.multi_segment { std::env::set_var("MULTI_SEGMENT", "1"); }
-        if self.multi_chip { std::env::set_var("MULTI_CHIP", "1"); }
-        if let Some(v) = self.chip_count { std::env::set_var("CHIP_COUNT", v.to_string()); }
-        if let Some(v) = self.width_mode { std::env::set_var("WIDTH_MODE", v.to_string()); }
-        if let Some(v) = self.flip_stride_bits { std::env::set_var("FLIP_STRIDE_BITS", v.to_string()); }
-        if let Some(v) = self.codeword_size_bytes { std::env::set_var("CODEWORD_SIZE_BYTES", v.to_string()); }
-        if let Some(v) = self.codeword_align_bytes { std::env::set_var("CODEWORD_ALIGN_BYTES", v.to_string()); }
-        if let Some(v) = self.reseed { std::env::set_var("RESEED", v.to_string()); }
+        if let Some(v) = self.flip_width {
+            std::env::set_var("FLIP_WIDTH", v.to_string());
+        }
+        if let Some(v) = self.let_class {
+            std::env::set_var("LET_CLASS", v.to_string());
+        }
+        if let Some(v) = self.flip_locality.as_ref() {
+            std::env::set_var("FLIP_LOCALITY", v);
+        }
+        if let Some(v) = self.burst_symbols {
+            std::env::set_var("BURST_SYMBOLS", v.to_string());
+        }
+        if let Some(v) = self.target_struct {
+            std::env::set_var("TARGET_STRUCT", v.to_string());
+        }
+        if let Some(v) = self.target_struct_block_no {
+            std::env::set_var("TARGET_STRUCT_BLOCK_NO", v.to_string());
+        }
+        if let Some(v) = self.sefi_probability {
+            std::env::set_var("SEFI_PROBABILITY", v.to_string());
+        }
+        if let Some(v) = self.sefi_window_ms {
+            std::env::set_var("SEFI_WINDOW_MS", v.to_string());
+        }
+        if let Some(v) = self.sb_read_loops {
+            std::env::set_var("SB_READ_LOOPS", v.to_string());
+        }
+        if let Some(v) = self.target_struct_offset {
+            std::env::set_var("TARGET_STRUCT_OFFSET", v.to_string());
+        }
+        if let Some(v) = self.target_inode {
+            std::env::set_var("TARGET_INODE", v.to_string());
+        }
+        if self.hook_fs {
+            std::env::set_var("HOOK_FS", "1");
+        }
+        if self.multi_segment {
+            std::env::set_var("MULTI_SEGMENT", "1");
+        }
+        if self.multi_chip {
+            std::env::set_var("MULTI_CHIP", "1");
+        }
+        if let Some(v) = self.chip_count {
+            std::env::set_var("CHIP_COUNT", v.to_string());
+        }
+        if let Some(v) = self.width_mode {
+            std::env::set_var("WIDTH_MODE", v.to_string());
+        }
+        if let Some(v) = self.flip_stride_bits {
+            std::env::set_var("FLIP_STRIDE_BITS", v.to_string());
+        }
+        if let Some(v) = self.codeword_size_bytes {
+            std::env::set_var("CODEWORD_SIZE_BYTES", v.to_string());
+        }
+        if let Some(v) = self.codeword_align_bytes {
+            std::env::set_var("CODEWORD_ALIGN_BYTES", v.to_string());
+        }
+        if let Some(v) = self.reseed {
+            std::env::set_var("RESEED", v.to_string());
+        }
     }
 }
 
@@ -258,6 +300,9 @@ enum DbAction {
 }
 
 #[derive(Subcommand)]
+// One value of this enum lives for the whole run; its size is the
+// largest subcommand's arguments, which is of no consequence.
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Print version and build info, then exit.
     Version,
@@ -507,11 +552,27 @@ enum Command {
         #[arg(long, default_value = "beamfs-rfc-v1")]
         series: String,
 
-        /// Commit the series is based on, v7.3-rc5 for instance.
+        /// Commit the series is based on, v7.3-rc5 for instance; not
+        /// needed with --plan, which builds on the newest tag on kernel.org.
         #[arg(long, value_name = "REV")]
-        base: String,
+        base: Option<String>,
 
-        /// beamfs commit whose sources the series carries, byte for byte.
+        /// Build the series first, from the filesystem repository holding
+        /// this plan (its upstream/series.toml), at the commit --measured
+        /// names, on the newest mainline tag; then check it.
+        #[arg(long, value_name = "FILE")]
+        plan: Option<String>,
+
+        /// The quick profile: the checks that take seconds, as a gate
+        /// before a measurement; builds, maintainers, the newer trees and
+        /// the documentation are left out and the run gives no verdict on
+        /// mailing. Exits 0 when nothing it ran failed.
+        #[arg(long)]
+        quick: bool,
+
+        /// beamfs commit whose sources the series carries, byte for byte;
+        /// with --plan, WORKTREE takes the working tree as it is, through
+        /// a commit stored nowhere.
         #[arg(long, value_name = "REV", default_value = "HEAD")]
         measured: String,
 
@@ -521,7 +582,11 @@ enum Command {
 
         /// Revisions the series must merge into and build on, comma
         /// separated; empty for none.
-        #[arg(long, value_name = "REVS", default_value = "origin/master,linux-next/master")]
+        #[arg(
+            long,
+            value_name = "REVS",
+            default_value = "origin/master,linux-next/master"
+        )]
         newer: String,
 
         /// Do not fetch the remotes of the newer revisions first.
@@ -539,6 +604,10 @@ enum Command {
         /// Value of the Assisted-by line every patch carries; empty for none.
         #[arg(long, default_value = "LLM")]
         assisted_by: String,
+
+        /// Addresses in Cc of every mail, besides what get_maintainer names.
+        #[arg(long, value_name = "ADDR", default_values_t = ["aurelien.desbrieres@gmail.com".to_string()])]
+        cc: Vec<String>,
 
         /// Largest mail accepted, in bytes.
         #[arg(long, value_name = "BYTES", default_value_t = 100_000)]
@@ -621,17 +690,23 @@ struct FullConfig {
 fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     use anyhow::Context;
     let FullConfig {
-        auto_confirm, no_tarball, shutdown, skip_vm_bootstrap,
-        skip_bitbake, bpftrace, full_code_analysis, accept_regression,
-        per_inode_rs, injector,
+        auto_confirm,
+        no_tarball,
+        shutdown,
+        skip_vm_bootstrap,
+        skip_bitbake,
+        bpftrace,
+        full_code_analysis,
+        accept_regression,
+        per_inode_rs,
+        injector,
     } = cfg;
 
     println!("================================================================");
     println!(" beamfs-bench full - MIL no-NAK validation pipeline");
     println!("================================================================");
 
-    let mut manifest = pipeline::build_initial_manifest()
-        .context("manifest init")?;
+    let mut manifest = pipeline::build_initial_manifest().context("manifest init")?;
 
     // Phase 0.0 -- R21 isolation architecture invariant
     if let Err(e) = pipeline::assert_isolation_r21() {
@@ -736,8 +811,7 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
             },
         })
         .collect();
-    let deploys = cluster::deploy_worker_all(&bootstrap_nodes)
-        .context("worker deploy")?;
+    let deploys = cluster::deploy_worker_all(&bootstrap_nodes).context("worker deploy")?;
     for (host, r) in &deploys {
         match r {
             Ok(()) => println!("  {host} : worker deployed"),
@@ -754,7 +828,8 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     if skip_vm_bootstrap {
         println!("[full] Phase 2 skipped (--skip-vm-bootstrap)");
     } else {
-        bootstrap::bootstrap_all_data(&nodes, per_inode_rs, &injector).context("Phase 2 bootstrap failed")?;
+        bootstrap::bootstrap_all_data(&nodes, per_inode_rs, &injector)
+            .context("Phase 2 bootstrap failed")?;
 
         println!();
         println!("[full] Re-discovering topology post-bootstrap...");
@@ -789,7 +864,7 @@ fn cmd_full(cfg: FullConfig) -> anyhow::Result<i32> {
     pipeline::record(&mut manifest, "8.1_dmesg", 0);
 
     // Phase 8.2
-    manifest.overall_rc  = analyse_rc;
+    manifest.overall_rc = analyse_rc;
     manifest.finished_at = pipeline::now_iso();
     let _ = pipeline::emit_manifest(&manifest);
 
@@ -875,7 +950,13 @@ fn main() {
             0
         }
 
-        Command::Perf { regimes, prob, runtime, size, injector } => {
+        Command::Perf {
+            regimes,
+            prob,
+            runtime,
+            size,
+            injector,
+        } => {
             std::env::set_var("PERF_RUNTIME", runtime.to_string());
             std::env::set_var("PERF_SIZE", &size);
 
@@ -909,7 +990,9 @@ fn main() {
                         .and_then(|id| db::ingest_perf(&db, id, &rows))
                     {
                         Ok(n) => println!("\n  {n} measurements stored in {}", db.display()),
-                        Err(e) => eprintln!("\n  {} measurements, ingest failed: {e:#}", rows.len()),
+                        Err(e) => {
+                            eprintln!("\n  {} measurements, ingest failed: {e:#}", rows.len())
+                        }
                     }
                     0
                 }
@@ -920,7 +1003,11 @@ fn main() {
             }
         }
 
-        Command::Multifs { auto_confirm, dry_run, injector } => {
+        Command::Multifs {
+            auto_confirm,
+            dry_run,
+            injector,
+        } => {
             // L5 : also probe USB health when Multifs is invoked standalone.
             let usb_verdicts = match usb_health::run() {
                 Ok(v) => v,
@@ -943,7 +1030,14 @@ fn main() {
             }
         }
 
-        Command::Analyse { scope, auto_confirm, dry_run, no_tarball, bpftrace, injector } => {
+        Command::Analyse {
+            scope,
+            auto_confirm,
+            dry_run,
+            no_tarball,
+            bpftrace,
+            injector,
+        } => {
             // L5 : Analyse standalone also probes USBs.
             let usb_verdicts = match usb_health::run() {
                 Ok(v) => v,
@@ -971,11 +1065,29 @@ fn main() {
             }
         }
 
-        Command::Full { auto_confirm, no_tarball, shutdown, skip_vm_bootstrap, skip_bitbake, bpftrace, full_code_analysis, accept_regression, per_inode_rs, injector } => {
+        Command::Full {
+            auto_confirm,
+            no_tarball,
+            shutdown,
+            skip_vm_bootstrap,
+            skip_bitbake,
+            bpftrace,
+            full_code_analysis,
+            accept_regression,
+            per_inode_rs,
+            injector,
+        } => {
             let cfg = FullConfig {
-                auto_confirm, no_tarball, shutdown, skip_vm_bootstrap,
-                skip_bitbake, bpftrace, full_code_analysis, accept_regression,
-                per_inode_rs, injector,
+                auto_confirm,
+                no_tarball,
+                shutdown,
+                skip_vm_bootstrap,
+                skip_bitbake,
+                bpftrace,
+                full_code_analysis,
+                accept_regression,
+                per_inode_rs,
+                injector,
             };
             match cmd_full(cfg) {
                 Ok(rc) => rc,
@@ -985,42 +1097,39 @@ fn main() {
                 }
             }
         }
-        Command::Metadata { injector } => {
-            match metadata::run(&injector) {
-                Ok(rc) => rc,
-                Err(e) => {
-                    eprintln!("beamfs-bench: metadata failed: {e:#}");
-                    1
-                }
+        Command::Metadata { injector } => match metadata::run(&injector) {
+            Ok(rc) => rc,
+            Err(e) => {
+                eprintln!("beamfs-bench: metadata failed: {e:#}");
+                1
             }
-        }
-        Command::Crash { injector } => {
-            match crash::run(&injector) {
-                Ok(rc) => rc,
-                Err(e) => {
-                    eprintln!("beamfs-bench: crash failed: {e:#}");
-                    1
-                }
+        },
+        Command::Crash { injector } => match crash::run(&injector) {
+            Ok(rc) => rc,
+            Err(e) => {
+                eprintln!("beamfs-bench: crash failed: {e:#}");
+                1
             }
-        }
-        Command::Scrub { deployment, sweeps, node, device } => {
-            match scrub::run_cli(&deployment, sweeps, &node, &device) {
-                Ok(rc) => rc,
-                Err(e) => {
-                    eprintln!("beamfs-bench: scrub failed: {e:#}");
-                    1
-                }
+        },
+        Command::Scrub {
+            deployment,
+            sweeps,
+            node,
+            device,
+        } => match scrub::run_cli(&deployment, sweeps, &node, &device) {
+            Ok(rc) => rc,
+            Err(e) => {
+                eprintln!("beamfs-bench: scrub failed: {e:#}");
+                1
             }
-        }
-        Command::Bitrot { injector } => {
-            match bitrot::run(&injector) {
-                Ok(rc) => rc,
-                Err(e) => {
-                    eprintln!("beamfs-bench: bitrot failed: {e:#}");
-                    1
-                }
+        },
+        Command::Bitrot { injector } => match bitrot::run(&injector) {
+            Ok(rc) => rc,
+            Err(e) => {
+                eprintln!("beamfs-bench: bitrot failed: {e:#}");
+                1
             }
-        }
+        },
         Command::Db { action } => {
             let rc = match action {
                 DbAction::Ingest { runs_dir } => db::cmd_ingest(runs_dir.as_deref()),
@@ -1031,36 +1140,38 @@ fn main() {
             };
             match rc {
                 Ok(c) => c,
-                Err(e) => { eprintln!("beamfs-bench: db: {e:#}"); 1 }
-            }
-        }
-        Command::Fsck { injector } => {
-            match fsck::run(&injector) {
-                Ok(rc) => rc,
                 Err(e) => {
-                    eprintln!("beamfs-bench: fsck failed: {e:#}");
+                    eprintln!("beamfs-bench: db: {e:#}");
                     1
                 }
             }
         }
-        Command::Tindirect { injector } => {
-            match tindirect::run(&injector) {
-                Ok(rc) => rc,
-                Err(e) => {
-                    eprintln!("beamfs-bench: tindirect failed: {e:#}");
-                    1
-                }
+        Command::Fsck { injector } => match fsck::run(&injector) {
+            Ok(rc) => rc,
+            Err(e) => {
+                eprintln!("beamfs-bench: fsck failed: {e:#}");
+                1
             }
-        }
-        Command::Trace { script, target, seconds, list } => {
-            match bpf::run_cli(&script, &target, seconds, list) {
-                Ok(rc) => rc,
-                Err(e) => {
-                    eprintln!("beamfs-bench: trace failed: {e:#}");
-                    1
-                }
+        },
+        Command::Tindirect { injector } => match tindirect::run(&injector) {
+            Ok(rc) => rc,
+            Err(e) => {
+                eprintln!("beamfs-bench: tindirect failed: {e:#}");
+                1
             }
-        }
+        },
+        Command::Trace {
+            script,
+            target,
+            seconds,
+            list,
+        } => match bpf::run_cli(&script, &target, seconds, list) {
+            Ok(rc) => rc,
+            Err(e) => {
+                eprintln!("beamfs-bench: trace failed: {e:#}");
+                1
+            }
+        },
         Command::Upstream {
             linux,
             series,
@@ -1072,35 +1183,90 @@ fn main() {
             subject_prefix,
             author,
             assisted_by,
+            cc,
             max_mail_bytes,
             strict_blocking,
             no_cross,
             stack_limit,
             out,
+            plan,
+            quick,
         } => {
+            let linux = linux.map_or_else(upstream::linux_repo, std::path::PathBuf::from);
+            let out = out.map_or_else(|| upstream::default_out(&series), std::path::PathBuf::from);
+            let built = match (&plan, &base) {
+                (Some(p), _) => {
+                    let tree = std::path::PathBuf::from(format!("{}-series", out.display()));
+                    match beamfs_upstream::series::build(
+                        std::path::Path::new(p),
+                        &measured,
+                        &linux,
+                        &tree,
+                    ) {
+                        Ok(b) => {
+                            println!(
+                                "  series built: {} on {} ({}), from {} {}",
+                                b.branch,
+                                b.base,
+                                &b.base_sha[..12],
+                                b.repo.display(),
+                                &b.measured[..12]
+                            );
+                            Some(b)
+                        }
+                        Err(e) => {
+                            eprintln!("beamfs-bench: the series was not built: {e:#}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                (None, Some(_)) => None,
+                (None, None) => {
+                    eprintln!("beamfs-bench: --base or --plan is needed");
+                    std::process::exit(1);
+                }
+            };
+            let plan_newer = built.as_ref().and_then(|b| b.newer.clone());
+            let plan_strict = built.as_ref().map(|b| b.strict_exceptions.clone());
+            let plan_cc = built.as_ref().map(|b| b.cc.clone()).filter(|c| !c.is_empty());
+            let (series, base, measured, beamfs) = match built {
+                Some(b) => (b.branch, b.base, b.measured, b.repo),
+                None => (
+                    series,
+                    base.unwrap_or_default(),
+                    measured,
+                    std::path::PathBuf::from(lab::beamfs_repo()),
+                ),
+            };
             let cfg = upstream::Config {
-                linux: linux.map_or_else(upstream::linux_repo, std::path::PathBuf::from),
-                beamfs: std::path::PathBuf::from(lab::beamfs_repo()),
-                out: out.map_or_else(|| upstream::default_out(&series), std::path::PathBuf::from),
+                linux,
+                beamfs,
+                out,
                 series,
                 base,
                 measured,
                 same_text_as,
                 fs: "beamfs".to_string(),
-                newer: newer
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-                    .collect(),
-                fetch: !no_fetch,
+                newer: plan_newer.unwrap_or_else(|| {
+                    newer
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                }),
+                fetch: !no_fetch && !quick,
                 subject_prefix,
                 author,
                 assisted_by,
+                cc: plan_cc.unwrap_or(cc),
                 max_mail_bytes,
-                strict_blocking,
+                strict_blocking: strict_blocking || plan_strict.is_some(),
+                strict_exceptions: plan_strict.unwrap_or_default(),
+                cover_placeholders_allowed: Vec::new(),
                 cross: !no_cross,
                 stack_limit,
+                quick,
             };
             match upstream::run(&cfg) {
                 Ok(rc) => rc,
@@ -1110,15 +1276,13 @@ fn main() {
                 }
             }
         }
-        Command::Mega { injector } => {
-            match mega::run(&injector) {
-                Ok(rc) => rc,
-                Err(e) => {
-                    eprintln!("beamfs-bench: mega failed: {e:#}");
-                    1
-                }
+        Command::Mega { injector } => match mega::run(&injector) {
+            Ok(rc) => rc,
+            Err(e) => {
+                eprintln!("beamfs-bench: mega failed: {e:#}");
+                1
             }
-        }
+        },
     };
 
     // Ring, except after version, which returns at once and would only
@@ -1197,7 +1361,7 @@ mod cli_tests {
         else {
             panic!("not upstream");
         };
-        assert_eq!(base, "v7.3-rc5");
+        assert_eq!(base.as_deref(), Some("v7.3-rc5"));
         assert_eq!(same_text_as.as_deref(), Some("1bf151d"));
         assert_eq!(newer, "origin/master");
         assert!(no_cross);

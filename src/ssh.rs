@@ -2,7 +2,7 @@
 //!
 //! Mirrors exactly what Tir-multifs.sh does:
 //!   ssh $`SSH_OPTS` user@host "cmd"
-//!   scp $`SSH_OPTS` file user@host:dest
+//!   rsync -a -e "ssh $`SSH_OPTS`" file user@host:dest
 //!
 //! No fancy session reuse, no async. Each call spawns ssh. Same semantics
 //! as the bash, same failure modes, same exit codes propagated.
@@ -33,10 +33,14 @@ impl SshTarget {
     ///   -i <`key_path`>
     fn opts(&self) -> Vec<String> {
         vec![
-            "-o".into(), "StrictHostKeyChecking=no".into(),
-            "-o".into(), "UserKnownHostsFile=/dev/null".into(),
-            "-o".into(), "LogLevel=ERROR".into(),
-            "-i".into(), self.key_path.clone(),
+            "-o".into(),
+            "StrictHostKeyChecking=no".into(),
+            "-o".into(),
+            "UserKnownHostsFile=/dev/null".into(),
+            "-o".into(),
+            "LogLevel=ERROR".into(),
+            "-i".into(),
+            self.key_path.clone(),
         ]
     }
 
@@ -58,7 +62,8 @@ impl SshTarget {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let output = cmd.output()
+        let output = cmd
+            .output()
             .with_context(|| format!("failed to spawn ssh for {}", self.user_at_host()))?;
 
         if std::env::var("BEAMFS_BENCH_DEBUG_SSH").is_ok() {
@@ -95,7 +100,8 @@ impl SshTarget {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let output = cmd.output()
+        let output = cmd
+            .output()
             .with_context(|| format!("failed to spawn ssh for {}", self.user_at_host()))?;
 
         if std::env::var("BEAMFS_BENCH_DEBUG_SSH").is_ok() {
@@ -109,23 +115,32 @@ impl SshTarget {
         Ok(stdout.trim_end_matches('\n').to_string())
     }
 
-    /// Copy a local file to remote. Mirror of scp behaviour.
-    pub fn scp_to(&self, local_path: &str, remote_path: &str) -> Result<()> {
-        let mut cmd = Command::new("scp");
-        for opt in self.opts() {
-            cmd.arg(opt);
-        }
+    /// Push one file to the node with rsync over this connection's ssh
+    /// options. rsync, not scp: the project moves files with rsync only,
+    /// and the image carries it.
+    pub fn rsync_to(&self, local_path: &str, remote_path: &str) -> Result<()> {
+        let ssh_cmd = std::iter::once("ssh".to_string())
+            .chain(self.opts())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut cmd = Command::new("rsync");
+        cmd.arg("-a").arg("-e").arg(ssh_cmd);
         cmd.arg(local_path);
         cmd.arg(format!("{}:{}", self.user_at_host(), remote_path));
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::piped());
 
-        let output = cmd.output()
-            .with_context(|| format!("failed to spawn scp to {}:{}", self.user_at_host(), remote_path))?;
+        let output = cmd.output().with_context(|| {
+            format!(
+                "failed to spawn rsync to {}:{}",
+                self.user_at_host(),
+                remote_path
+            )
+        })?;
 
         if !output.status.success() {
             return Err(anyhow!(
-                "scp to {}:{} failed: {}",
+                "rsync to {}:{} failed: {}",
                 self.user_at_host(),
                 remote_path,
                 String::from_utf8_lossy(&output.stderr).trim()

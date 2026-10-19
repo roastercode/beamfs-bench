@@ -285,8 +285,23 @@ CREATE TABLE IF NOT EXISTS flip_event (
     over_budget     INTEGER,      -- 1 when sub_bytes_hit > rs_budget
 
     -- outcome, filled from the kernel's own account
-    outcome         TEXT          -- corrected | uncorrectable | unprotected
-                                  -- | no_effect | unknown
+    outcome         TEXT,         -- corrected | rmw_neutralised
+                                  -- | uncorrectable | unprotected
+                                  -- | no_rs_event | no_effect | unknown
+
+    -- where the outcome came from: the beamfs_rs_event tracepoint
+    -- (every decode path, no rate limit) or the dmesg lines (data
+    -- path only, rate-limited), and what the tracepoint said
+    verdict_source  TEXT,         -- trace | dmesg
+    rs_symbols      INTEGER,      -- symbols the decoder corrected
+    rs_flags        INTEGER,      -- re_flags as journalled
+
+    -- the physics event this flip came from (emufi 0.9.0+): index
+    -- into the campaign's flip_queue, -1 for the probabilistic path,
+    -- and its mechanism (0 unknown, 1 ionization, 2 spallation,
+    -- 3 photon, 4 adversarial, 5 sefi)
+    queue_idx       INTEGER,
+    mechanism       INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_run    ON flip_event(run_id, fs);

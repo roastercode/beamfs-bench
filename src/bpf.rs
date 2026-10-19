@@ -57,7 +57,10 @@ pub fn script_roots() -> Vec<PathBuf> {
     if let Ok(p) = std::env::var("BEAMFS_BENCH_BPF_SCRIPTS") {
         v.push(PathBuf::from(p));
     }
-    v.push(PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/scripts")));
+    v.push(PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/scripts"
+    )));
     if let Ok(home) = std::env::var("HOME") {
         v.push(PathBuf::from(format!("{home}/git/beamfs-xfstests/scripts")));
     }
@@ -100,13 +103,17 @@ pub fn find_script(name: &str) -> Result<PathBuf> {
 pub fn list_scripts() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     for root in script_roots() {
-        let Ok(rd) = std::fs::read_dir(&root) else { continue };
+        let Ok(rd) = std::fs::read_dir(&root) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             if p.extension().is_none_or(|x| x != "bt") {
                 continue;
             }
-            let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else { continue };
+            let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
             if out.iter().any(|(n, _)| n == stem) {
                 continue;
             }
@@ -123,9 +130,7 @@ fn first_sentence(p: &Path) -> String {
         return String::from("(unreadable)");
     };
     for line in text.lines().take(12) {
-        let t = line
-            .trim_start_matches(['#', '/', '*', ' '])
-            .trim();
+        let t = line.trim_start_matches(['#', '/', '*', ' ']).trim();
         if t.is_empty() || t.starts_with("!/") || t == "SPDX-License-Identifier: GPL-2.0-only" {
             continue;
         }
@@ -203,8 +208,8 @@ fn ssh_for(ip: &str) -> Result<SshTarget> {
 /// on the target.
 pub fn attach(script: &str, target: &Target, seconds: u64) -> Result<String> {
     let path = find_script(script)?;
-    let body = std::fs::read_to_string(&path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let body =
+        std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
 
     match target {
         Target::Host => attach_host(&body, seconds),
@@ -252,7 +257,7 @@ fn attach_node(ip: &str, path: &Path, seconds: u64) -> Result<String> {
     }
 
     s.exec_lenient("sudo pkill -x bpftrace 2>/dev/null; true")?;
-    s.scp_to(
+    s.rsync_to(
         path.to_str().context("script path is not valid UTF-8")?,
         REMOTE_SCRIPT,
     )
@@ -297,7 +302,10 @@ pub fn run_cli(script: &str, target: &str, seconds: u64, list: bool) -> Result<i
     println!("  script  : {}", path.display());
     println!("  target  : {}", t.label());
     println!("  seconds : {seconds}");
-    println!("  grace   : {}s to compile and attach", ATTACH_GRACE.as_secs());
+    println!(
+        "  grace   : {}s to compile and attach",
+        ATTACH_GRACE.as_secs()
+    );
     println!();
 
     let out = attach(script, &t, seconds)?;
@@ -307,10 +315,7 @@ pub fn run_cli(script: &str, target: &str, seconds: u64, list: bool) -> Result<i
         .map_or(0, |d| d.as_secs());
     let dir = PathBuf::from("/tmp/beamfs-bench-current-run/trace");
     std::fs::create_dir_all(&dir).context("create trace dir")?;
-    let name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("probe");
+    let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("probe");
     let log = dir.join(format!("{name}-{}-{stamp}.log", t.label()));
     std::fs::write(&log, &out).with_context(|| format!("write {}", log.display()))?;
 
@@ -343,7 +348,10 @@ mod tests {
     fn the_station_and_a_node_are_both_targets() {
         assert!(matches!(Target::parse("host"), Ok(Target::Host)));
         assert!(matches!(Target::parse("compute01"), Ok(Target::Node(_))));
-        assert!(matches!(Target::parse("192.168.56.10"), Ok(Target::Node(_))));
+        assert!(matches!(
+            Target::parse("192.168.56.10"),
+            Ok(Target::Node(_))
+        ));
     }
 
     /// Anything else is refused rather than guessed at.
@@ -367,7 +375,9 @@ mod tests {
         unsafe { std::env::set_var("BEAMFS_BENCH_BPF_SCRIPTS", "/tmp/bpf-elsewhere") };
         let roots = script_roots();
         unsafe { std::env::remove_var("BEAMFS_BENCH_BPF_SCRIPTS") };
-        assert_eq!(roots.first().map(|p| p.display().to_string()),
-                   Some("/tmp/bpf-elsewhere".to_string()));
+        assert_eq!(
+            roots.first().map(|p| p.display().to_string()),
+            Some("/tmp/bpf-elsewhere".to_string())
+        );
     }
 }

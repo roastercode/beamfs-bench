@@ -63,58 +63,91 @@ fn kernel_sources() -> Result<Vec<String>> {
 /// so the lockstep check cannot compare them -- but they are part of
 /// what a run measures and belong in the manifest.
 const YOCTO_ONLY_SOURCES: &[&str] = &[
-    "mkfs.beamfs.c", "rs_decode.c", "rs_decode.h", "rs_decode_internal.h",
+    "mkfs.beamfs.c",
+    "rs_decode.c",
+    "rs_decode.h",
+    "rs_decode_internal.h",
 ];
 
-
-const VM_NAMES: &[&str] = &["beamfs-master", "beamfs-compute01", "beamfs-compute02", "beamfs-compute03"];
-const VM_IPS:   &[&str] = &["192.168.56.10", "192.168.56.11", "192.168.56.12", "192.168.56.13"];
+const VM_NAMES: &[&str] = &[
+    "beamfs-master",
+    "beamfs-compute01",
+    "beamfs-compute02",
+    "beamfs-compute03",
+];
+const VM_IPS: &[&str] = &[
+    "192.168.56.10",
+    "192.168.56.11",
+    "192.168.56.12",
+    "192.168.56.13",
+];
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PipelineManifest {
-    pub started_at:        String,
-    pub finished_at:       String,
-    pub commit_beamfs:     String,
-    pub commit_yocto:      String,
-    pub commit_bench:      String,
-    pub source_sha256:     Vec<(String, String)>,
+    pub started_at: String,
+    pub finished_at: String,
+    pub commit_beamfs: String,
+    pub commit_yocto: String,
+    pub commit_bench: String,
+    pub source_sha256: Vec<(String, String)>,
     pub canonical_beamfs_sha256: String,
     /// "Matched" or "Ignored". Empty when the phase did not run.
-    pub chain_verdict:     String,
+    pub chain_verdict: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub chain_seal:        Option<crate::chain::Seal>,
-    pub reference_image_sha256:   String,
-    pub in_vm_kernel_stamp:   Vec<(String, String)>,
+    pub chain_seal: Option<crate::chain::Seal>,
+    pub reference_image_sha256: String,
+    pub in_vm_kernel_stamp: Vec<(String, String)>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resolved_vda_paths: BTreeMap<String, String>,
-    pub phases:            Vec<(String, String, i32)>,
-    pub overall_rc:        i32,
+    pub phases: Vec<(String, String, i32)>,
+    pub overall_rc: i32,
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
-    let out = Command::new("sha256sum").arg(path).output()
+    let out = Command::new("sha256sum")
+        .arg(path)
+        .output()
         .with_context(|| format!("sha256sum {}", path.display()))?;
     if !out.status.success() {
-        bail!("sha256sum failed on {}: {}", path.display(), String::from_utf8_lossy(&out.stderr));
+        bail!(
+            "sha256sum failed on {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     let s = String::from_utf8_lossy(&out.stdout);
     Ok(s.split_whitespace().next().unwrap_or("").to_string())
 }
 
 fn git_head_sha(repo: &str) -> Result<String> {
-    let out = Command::new("git").args(["-C", repo, "rev-parse", "HEAD"]).output()
+    let out = Command::new("git")
+        .args(["-C", repo, "rev-parse", "HEAD"])
+        .output()
         .with_context(|| format!("git rev-parse HEAD in {repo}"))?;
     if !out.status.success() {
-        bail!("git rev-parse failed in {repo}: {}", String::from_utf8_lossy(&out.stderr));
+        bail!(
+            "git rev-parse failed in {repo}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 fn ssh_exec(ip: &str, cmd: &str) -> Result<String> {
     let out = Command::new("ssh")
-        .args(["-T", "-i", crate::lab::ssh_key(), "-o", "StrictHostKeyChecking=no",
-               "-o", "ConnectTimeout=10", "-o", "BatchMode=yes",
-               &format!("hpcadmin@{ip}"), cmd])
+        .args([
+            "-T",
+            "-i",
+            crate::lab::ssh_key(),
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "BatchMode=yes",
+            &format!("hpcadmin@{ip}"),
+            cmd,
+        ])
         .stdin(Stdio::null())
         .output()
         .with_context(|| format!("ssh {ip}"))?;
@@ -134,7 +167,9 @@ pub fn verify_clean_working_trees() -> Result<()> {
     // tool itself; it is intentionally excluded so that bench refactors can
     // run their own validation chain without requiring a self-commit first.
     for repo in &[crate::lab::beamfs_repo(), crate::lab::yocto_repo()] {
-        let out = Command::new("git").args(["-C", repo, "status", "-s"]).output()
+        let out = Command::new("git")
+            .args(["-C", repo, "status", "-s"])
+            .output()
             .with_context(|| format!("git status in {repo}"))?;
         let dirty = String::from_utf8_lossy(&out.stdout);
         if !dirty.trim().is_empty() {
@@ -144,13 +179,18 @@ pub fn verify_clean_working_trees() -> Result<()> {
     }
     // beamfs-bench check downgraded from blocking to informative WARN.
     {
-        let out = Command::new("git").args(["-C", crate::lab::bench_repo(), "status", "-s"]).output()
+        let out = Command::new("git")
+            .args(["-C", crate::lab::bench_repo(), "status", "-s"])
+            .output()
             .with_context(|| format!("git status in {}", crate::lab::bench_repo()))?;
         let dirty = String::from_utf8_lossy(&out.stdout);
         if dirty.trim().is_empty() {
             println!("  {} clean", crate::lab::bench_repo());
         } else {
-            println!("  {} dirty (informative, non-blocking):", crate::lab::bench_repo());
+            println!(
+                "  {} dirty (informative, non-blocking):",
+                crate::lab::bench_repo()
+            );
             for line in dirty.lines().take(20) {
                 println!("    {line}");
             }
@@ -164,7 +204,10 @@ pub fn verify_clean_working_trees() -> Result<()> {
 // ---------------------------------------------------------------------
 pub fn verify_lockstep_sources() -> Result<Vec<(String, String)>> {
     let sources = kernel_sources()?;
-    println!("[pipeline 0.2] verify lockstep sources ({} files)", sources.len());
+    println!(
+        "[pipeline 0.2] verify lockstep sources ({} files)",
+        sources.len()
+    );
 
     let mut manifest = Vec::new();
     for f in &sources {
@@ -226,9 +269,15 @@ pub fn bitbake_image_to(skip: bool, log_dir: Option<&Path>) -> Result<()> {
         std::env::var("HOME").unwrap_or_else(|_| "/home/aurelien".to_string())
     );
     let status = Command::new("env")
-        .args(["-i", &home_env, "TERM=xterm",
-               "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-               "bash", "-c", &cmd])
+        .args([
+            "-i",
+            &home_env,
+            "TERM=xterm",
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "bash",
+            "-c",
+            &cmd,
+        ])
         .status()
         .context("bitbake spawn")?;
     if !status.success() {
@@ -257,8 +306,8 @@ pub fn bitbake_image_to(skip: bool, log_dir: Option<&Path>) -> Result<()> {
 /// every node byte for byte.
 pub fn canonical_image_sha() -> Result<String> {
     println!("[pipeline 0.4] hash the canonical image");
-    let beamfs_sha = sha256_file(Path::new(crate::lab::canonical_image()))
-        .context("hash canonical .beamfs")?;
+    let beamfs_sha =
+        sha256_file(Path::new(crate::lab::canonical_image())).context("hash canonical .beamfs")?;
     println!("  canonical beamfs sha256: {beamfs_sha}");
     Ok(beamfs_sha)
 }
@@ -288,8 +337,7 @@ pub fn verify_chain_seal(
 // ---------------------------------------------------------------------
 pub fn assert_isolation_r21() -> Result<()> {
     println!("[pipeline 0.0] verify R21 cluster isolation architecture");
-    crate::lifecycle::assert_isolation_architecture()
-        .context("R21 isolation pre-flight failed")
+    crate::lifecycle::assert_isolation_architecture().context("R21 isolation pre-flight failed")
 }
 
 // ---------------------------------------------------------------------
@@ -319,13 +367,12 @@ pub fn resolve_vda_source(vm_name: &str) -> Result<String> {
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    let xml = String::from_utf8(output.stdout)
-        .context("virsh dumpxml stdout is not UTF-8")?;
+    let xml = String::from_utf8(output.stdout).context("virsh dumpxml stdout is not UTF-8")?;
     let doc = roxmltree::Document::parse(&xml)
         .with_context(|| format!("parse virsh dumpxml output for {vm_name}"))?;
 
     for disk in doc.descendants().filter(|n| n.has_tag_name("disk")) {
-        let disk_type   = disk.attribute("type").unwrap_or("");
+        let disk_type = disk.attribute("type").unwrap_or("");
         let device_kind = disk.attribute("device").unwrap_or("");
         if disk_type != "file" || device_kind != "disk" {
             continue;
@@ -341,7 +388,8 @@ pub fn resolve_vda_source(vm_name: &str) -> Result<String> {
         if target.attribute("bus").unwrap_or("") != "virtio" {
             continue;
         }
-        let src_file = source.attribute("file")
+        let src_file = source
+            .attribute("file")
             .ok_or_else(|| anyhow::anyhow!("vm {vm_name}: <disk vda> has no <source file=>"))?;
         return Ok(src_file.to_string());
     }
@@ -351,16 +399,15 @@ pub fn resolve_vda_source(vm_name: &str) -> Result<String> {
 pub fn redeploy_4_vms() -> Result<BTreeMap<String, String>> {
     println!("[pipeline 0.5] redeploy 4 VMs from canonical .beamfs");
 
-    crate::lifecycle::define_missing_vms()
-        .context("define missing VMs (cold-start safety)")?;
+    crate::lifecycle::define_missing_vms().context("define missing VMs (cold-start safety)")?;
 
     // R31 step 0.5a: resolve each VM's actual vda backing path from
     // libvirt XML BEFORE destroy. Pins the cp target to whatever libvirt
     // is actually configured to use, instead of assuming <vm>.beamfs.
     let mut resolved: BTreeMap<String, String> = BTreeMap::new();
     for vm in VM_NAMES {
-        let path = resolve_vda_source(vm)
-            .with_context(|| format!("resolve vda source for {vm}"))?;
+        let path =
+            resolve_vda_source(vm).with_context(|| format!("resolve vda source for {vm}"))?;
         println!("  {vm} : resolved vda source = {path}");
         resolved.insert((*vm).to_string(), path);
     }
@@ -386,24 +433,29 @@ pub fn redeploy_4_vms() -> Result<BTreeMap<String, String>> {
 
     let _ = Command::new("sync").status();
 
-    let canonical_sha = sha256_file(Path::new(crate::lab::canonical_image()))
-        .context("hash canonical .beamfs")?;
+    let canonical_sha =
+        sha256_file(Path::new(crate::lab::canonical_image())).context("hash canonical .beamfs")?;
     println!("  canonical .beamfs sha256: {canonical_sha}");
 
     for vm in VM_NAMES {
         let dst = &resolved[*vm];
         let st = Command::new("sudo")
             .args(["cp", crate::lab::canonical_image(), dst])
-            .status().with_context(|| format!("cp beamfs -> {dst}"))?;
-        if !st.success() { bail!("cp failed for {dst}"); }
+            .status()
+            .with_context(|| format!("cp beamfs -> {dst}"))?;
+        if !st.success() {
+            bail!("cp failed for {dst}");
+        }
         let st = Command::new("sudo")
-            .args(["chown", "qemu:qemu", dst]).status()
+            .args(["chown", "qemu:qemu", dst])
+            .status()
             .with_context(|| format!("chown {dst}"))?;
-        if !st.success() { bail!("chown failed for {dst}"); }
+        if !st.success() {
+            bail!("chown failed for {dst}");
+        }
 
         let _ = Command::new("sync").status();
-        let dst_sha = sha256_file(Path::new(dst))
-            .with_context(|| format!("hash {dst}"))?;
+        let dst_sha = sha256_file(Path::new(dst)).with_context(|| format!("hash {dst}"))?;
         if dst_sha != canonical_sha {
             bail!(
                 "redeploy verify FAIL for {dst}: deployed sha256={dst_sha} != canonical={canonical_sha} (R31: a stale VM held a FD on this file, or cp was interrupted; ensure no out-of-pipeline VM is running and rerun)"
@@ -412,10 +464,8 @@ pub fn redeploy_4_vms() -> Result<BTreeMap<String, String>> {
         println!("  {vm} -> {dst} sha256 verified");
     }
 
-    crate::lifecycle::start_network()
-        .context("start hpcnet network")?;
-    crate::lifecycle::start_all_vms()
-        .context("start all 4 VMs")?;
+    crate::lifecycle::start_network().context("start hpcnet network")?;
+    crate::lifecycle::start_all_vms().context("start all 4 VMs")?;
 
     Ok(resolved)
 }
@@ -447,32 +497,43 @@ pub fn verify_kernel_identity_in_vm() -> Result<Vec<(String, String)>> {
     let mut first: Option<String> = None;
 
     for (i, ip) in VM_IPS.iter().enumerate() {
-        let out = ssh_exec(ip, "cat /proc/version")
-            .with_context(|| format!("ssh {ip} /proc/version"))?;
+        let out =
+            ssh_exec(ip, "cat /proc/version").with_context(|| format!("ssh {ip} /proc/version"))?;
         let stamp = out.trim().to_string();
 
         // beamfs has to be in this kernel, not beside it.
         // The path in modules.builtin is kernel/fs/beamfs/beamfs.ko, not
         // fs/beamfs: anchoring at the start matched nothing and failed
         // a cluster that was correctly built.
-        let builtin = ssh_exec(ip, "grep -c '/beamfs/' /lib/modules/$(uname -r)/modules.builtin || true")
-            .unwrap_or_default();
+        let builtin = ssh_exec(
+            ip,
+            "grep -c '/beamfs/' /lib/modules/$(uname -r)/modules.builtin || true",
+        )
+        .unwrap_or_default();
         if builtin.trim() == "0" {
-            bail!("{} ({ip}): beamfs is not builtin in the running kernel",
-                  VM_NAMES[i]);
+            bail!(
+                "{} ({ip}): beamfs is not builtin in the running kernel",
+                VM_NAMES[i]
+            );
         }
 
         match &first {
             None => first = Some(stamp.clone()),
             Some(f) if *f != stamp => {
-                bail!("kernel skew: {} ({ip}) booted\n  {stamp}\nwhile {} booted\n  {f}",
-                      VM_NAMES[i], VM_NAMES[0]);
+                bail!(
+                    "kernel skew: {} ({ip}) booted\n  {stamp}\nwhile {} booted\n  {f}",
+                    VM_NAMES[i],
+                    VM_NAMES[0]
+                );
             }
             _ => {}
         }
 
         stamps.push((VM_NAMES[i].to_string(), stamp));
-        println!("  {} ({ip}) builtin, same build as {}", VM_NAMES[i], VM_NAMES[0]);
+        println!(
+            "  {} ({ip}) builtin, same build as {}",
+            VM_NAMES[i], VM_NAMES[0]
+        );
     }
     Ok(stamps)
 }
@@ -490,8 +551,10 @@ pub fn verify_dmesg_clean() -> Result<()> {
         let n: usize = out.trim().parse().unwrap_or(0);
         if n > 0 {
             let detail = ssh_exec(ip, &format!("sudo dmesg | grep -E '{pat}' | head -20"))?;
-            bail!("dmesg DIRTY on {} ({ip}): {n} matches\n{detail}",
-                  VM_NAMES[i]);
+            bail!(
+                "dmesg DIRTY on {} ({ip}): {n} matches\n{detail}",
+                VM_NAMES[i]
+            );
         }
         total += n;
         println!("  {} ({ip}) clean", VM_NAMES[i]);
@@ -500,88 +563,7 @@ pub fn verify_dmesg_clean() -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------
-// Phase 8.2
-// ---------------------------------------------------------------------
-/// How long gpg is given to sign a manifest.
-pub(crate) const SIGN_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(2);
-
-/// Whether gpg-agent holds a key it can sign with, without asking.
-///
-/// The question session priming asks at start, asked again here: the
-/// cache has a lifetime of its own (max-cache-ttl), and a pipeline that
-/// started with the key cached can end after it has expired.
-pub(crate) fn gpg_key_cached() -> bool {
-    Command::new("gpg-connect-agent")
-        .args(["KEYINFO --list", "/bye"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .is_some_and(|o| {
-            String::from_utf8_lossy(&o.stdout).lines().any(|l| {
-                let t: Vec<&str> = l.split_whitespace().collect();
-                l.starts_with("S KEYINFO ") && t.len() >= 7 && t[6] == "1"
-            })
-        })
-}
-
-/// Sign `path` into `<path>.asc` with `gpg` (the program and its leading
-/// arguments), within `timeout`.
-///
-/// The signature is written to `<path>.asc.part` and renamed once gpg has
-/// succeeded. On a refusal or a timeout gpg is killed and nothing is
-/// left beside the manifest.
-pub(crate) fn sign_manifest(gpg: &[&str], path: &std::path::Path, timeout: std::time::Duration)
-    -> std::result::Result<PathBuf, String>
-{
-    let asc = PathBuf::from(format!("{}.asc", path.display()));
-    let part = PathBuf::from(format!("{}.asc.part", path.display()));
-    let _ = std::fs::remove_file(&part);
-    let (prog, lead) = gpg.split_first().ok_or("no signing program")?;
-    let mut child = Command::new(prog)
-        .args(lead)
-        .args(["--batch", "--pinentry-mode", "loopback",
-               "--detach-sign", "--armor", "--yes", "--output"])
-        .arg(&part)
-        .arg(path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("{prog} did not start: {e}"))?;
-    let t0 = std::time::Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) if t0.elapsed() < timeout => {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = std::fs::remove_file(&part);
-                return Err(format!("{prog} did not finish within {}s and was killed",
-                                   timeout.as_secs()));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = std::fs::remove_file(&part);
-                return Err(format!("waiting for {prog}: {e}"));
-            }
-        }
-    };
-    let mut said = String::new();
-    if let Some(mut err) = child.stderr.take() {
-        let _ = std::io::Read::read_to_string(&mut err, &mut said);
-    }
-    if !status.success() {
-        let _ = std::fs::remove_file(&part);
-        return Err(format!("{prog} exited with {status}: {}", said.trim()));
-    }
-    std::fs::rename(&part, &asc).map_err(|e| format!("rename {}: {e}", part.display()))?;
-    Ok(asc)
-}
+pub(crate) use beamfs_upstream::sign::{gpg_key_cached, sign_manifest, SIGN_TIMEOUT};
 
 pub fn emit_manifest(m: &PipelineManifest) -> Result<PathBuf> {
     let stamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
@@ -619,24 +601,26 @@ pub fn emit_manifest(m: &PipelineManifest) -> Result<PathBuf> {
     Ok(path)
 }
 
-pub fn now_iso() -> String { Utc::now().to_rfc3339() }
+pub fn now_iso() -> String {
+    Utc::now().to_rfc3339()
+}
 
 pub fn build_initial_manifest() -> Result<PipelineManifest> {
     Ok(PipelineManifest {
-        started_at:  now_iso(),
+        started_at: now_iso(),
         finished_at: String::new(),
         commit_beamfs: git_head_sha(crate::lab::beamfs_repo())?,
-        commit_yocto:  git_head_sha(crate::lab::yocto_repo())?,
-        commit_bench:  git_head_sha(crate::lab::bench_repo())?,
+        commit_yocto: git_head_sha(crate::lab::yocto_repo())?,
+        commit_bench: git_head_sha(crate::lab::bench_repo())?,
         source_sha256: Vec::new(),
         resolved_vda_paths: BTreeMap::new(),
         canonical_beamfs_sha256: String::new(),
         chain_verdict: String::new(),
-        chain_seal:    None,
-        reference_image_sha256:   String::new(),
-        in_vm_kernel_stamp:       Vec::new(),
-        phases:                Vec::new(),
-        overall_rc:            -1,
+        chain_seal: None,
+        reference_image_sha256: String::new(),
+        in_vm_kernel_stamp: Vec::new(),
+        phases: Vec::new(),
+        overall_rc: -1,
     })
 }
 
@@ -646,7 +630,7 @@ pub fn record(m: &mut PipelineManifest, name: &str, rc: i32) {
 
 pub fn fail(m: &mut PipelineManifest, name: &str, e: &anyhow::Error) -> anyhow::Error {
     record(m, name, 2);
-    m.overall_rc  = 2;
+    m.overall_rc = 2;
     m.finished_at = now_iso();
     let _ = emit_manifest(m);
     anyhow!("pipeline phase {name} FAILED: {e:#}")
@@ -685,7 +669,10 @@ mod sign_tests {
     #[test]
     fn a_refusal_leaves_nothing() {
         // What gpg said on 2026-10-01, before it stopped answering.
-        let (d, m) = scratch("refused", "echo \"gpg: Sorry, we are in batchmode - can't get input\" >&2\nexit 2\n");
+        let (d, m) = scratch(
+            "refused",
+            "echo \"gpg: Sorry, we are in batchmode - can't get input\" >&2\nexit 2\n",
+        );
         let g = gpg(&d);
         let e = sign_manifest(&["sh", &g], &m, Duration::from_secs(20)).expect_err("refused");
         assert!(e.contains("can't get input"), "{e}");

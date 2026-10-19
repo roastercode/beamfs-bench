@@ -1,6 +1,6 @@
 [package]
 name = "beamfs-bench"
-version = "0.16.2"
+version = "0.19.2"
 edition = "2021"
 authors = ["Aurelien DESBRIERES <aurelien@hackers.camp>"]
 license = "GPL-2.0-only"
@@ -27,6 +27,10 @@ roxmltree = "0.20"
 
 # walkdir: recursive file walking for full-mode code analysis scope.
 walkdir = "2.5"
+
+# beamfs-upstream: the kernel.org submission checker, shared with
+# beamfs-xfstests so both control the same code by the same rules.
+beamfs-upstream = { path = "../beamfs-upstream" }
 
 [dev-dependencies]
 # tempfile: temp dirs for unit tests of regression_check + code_analysis.
