@@ -11,6 +11,13 @@ on the commit they point to. From the next version on, each version adds
 its entry, written with the change, and the README carries the latest
 entries.
 
+## 0.20.1
+
+- Built against beamfs-upstream 0.9.0: `upstream` builds the filesystem as a
+  module on hexagon, where a 64-bit division the other ports do inline shows
+  in modpost, and refuses a MAINTAINERS entry out of alphabetical order
+  (Cargo.lock).
+
 ## 0.20.0
 
 - `upstream` carries the plan's `base.behind` reason to the checker: a base

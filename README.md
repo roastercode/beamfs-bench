@@ -134,6 +134,13 @@ commands, options, environment, the lab, the files.
 The full record is in [CHANGELOG.md](CHANGELOG.md); its latest entries
 follow.
 
+### [0.20.1] - 2026-10-24
+
+- Built against beamfs-upstream 0.9.0: `upstream` builds the filesystem
+  as a module on hexagon, where a 64-bit division the other ports do
+  inline shows in modpost, and refuses a MAINTAINERS entry out of
+  alphabetical order (Cargo.lock).
+
 ### [0.17.0] - 2026-10-14
 
 - Every flip is joined to the kernel's own verdict through the

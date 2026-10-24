@@ -75,7 +75,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "beamfs-bench"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "beamfs-upstream",
@@ -91,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "beamfs-upstream"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
