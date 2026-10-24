@@ -11,6 +11,12 @@ on the commit they point to. From the next version on, each version adds
 its entry, written with the change, and the README carries the latest
 entries.
 
+## 0.20.3
+
+- README: 0.17.0 to 0.19.1 are dated by 0.19.2, the version that shipped
+  them (Cargo.toml went from 0.16.2 to 0.19.2 in `800f15a`); 0.20.2 had
+  written their dates without the day.
+
 ## 0.20.2
 
 - README: the entries 0.18.0 to 0.20.0, which the Changelog section had

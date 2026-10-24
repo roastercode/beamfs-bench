@@ -134,6 +134,11 @@ commands, options, environment, the lab, the files.
 The full record is in [CHANGELOG.md](CHANGELOG.md); its latest entries
 follow.
 
+### [0.20.3] - 2026-10-24
+
+- README: 0.17.0 to 0.19.1 are dated by 0.19.2, the version that shipped
+  them; 0.20.2 had written their dates without the day.
+
 ### [0.20.2] - 2026-10-24
 
 - README: the entries 0.18.0 to 0.20.0, which this section had skipped.
@@ -153,19 +158,23 @@ follow.
 
 ### [0.19.2] - 2026-10-19
 
+0.17.0 to 0.19.1 were never built on their own: Cargo.toml went from
+0.16.2 (2026-10-14) to 0.19.2 (`800f15a`, 2026-10-19), and their entries
+shipped together in it.
+
 - `upstream --plan`: the plan's `cc` takes precedence over `--cc`.
 
-### [0.19.1] - 2026-10
+### [0.19.1] - 2026-10-19
 
 - The GPG priming of a session comes from beamfs-upstream 0.7.0, shared
   with beamfs-xfstests.
 
-### [0.19.0] - 2026-10
+### [0.19.0] - 2026-10-19
 
 - `upstream --plan`: `checkpatch --strict` blocks, with the plan's
   justified exceptions (beamfs-upstream 0.6.1).
 
-### [0.18.0] - 2026-10
+### [0.18.0] - 2026-10-19
 
 - `upstream` moved to the crate beamfs-upstream (0.3.0), shared with
   beamfs-xfstests: the series is built from `upstream/series.toml` of
