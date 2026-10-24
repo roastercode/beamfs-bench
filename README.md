@@ -134,12 +134,50 @@ commands, options, environment, the lab, the files.
 The full record is in [CHANGELOG.md](CHANGELOG.md); its latest entries
 follow.
 
+### [0.20.2] - 2026-10-24
+
+- README: the entries 0.18.0 to 0.20.0, which this section had skipped.
+
 ### [0.20.1] - 2026-10-24
 
 - Built against beamfs-upstream 0.9.0: `upstream` builds the filesystem
   as a module on hexagon, where a 64-bit division the other ports do
   inline shows in modpost, and refuses a MAINTAINERS entry out of
   alphabetical order (Cargo.lock).
+
+### [0.20.0] - 2026-10-19
+
+- `upstream` carries the plan's `base.behind` reason to the checker: a
+  base that does not hold the newest tag on kernel.org is mailed as the
+  plan declares, the reason in the signed summary (beamfs-upstream 0.8.0).
+
+### [0.19.2] - 2026-10-19
+
+- `upstream --plan`: the plan's `cc` takes precedence over `--cc`.
+
+### [0.19.1] - 2026-10
+
+- The GPG priming of a session comes from beamfs-upstream 0.7.0, shared
+  with beamfs-xfstests.
+
+### [0.19.0] - 2026-10
+
+- `upstream --plan`: `checkpatch --strict` blocks, with the plan's
+  justified exceptions (beamfs-upstream 0.6.1).
+
+### [0.18.0] - 2026-10
+
+- `upstream` moved to the crate beamfs-upstream (0.3.0), shared with
+  beamfs-xfstests: the series is built from `upstream/series.toml` of
+  the beamfs repository with `--plan`, from a commit, on the newest
+  mainline tag; the build checks hold against the series only the
+  diagnostics of its own files; the MAINTAINERS entry may end the
+  series; `--quick` runs the checks of seconds as a gate before a
+  measurement, with no verdict on mailing.
+- With beamfs-upstream 0.4.0, `upstream` ends with git am of the mails
+  and git send-email --dry-run to the recipients get_maintainer names
+  plus `--cc` (the author's gmail by default), and builds fs/ at every
+  commit; `send.sh` beside the patches is the real command.
 
 ### [0.17.0] - 2026-10-14
 

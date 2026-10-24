@@ -11,6 +11,11 @@ on the commit they point to. From the next version on, each version adds
 its entry, written with the change, and the README carries the latest
 entries.
 
+## 0.20.2
+
+- README: the entries 0.18.0 to 0.20.0, which the Changelog section had
+  skipped; it carries every version since 0.16.0 again.
+
 ## 0.20.1
 
 - Built against beamfs-upstream 0.9.0: `upstream` builds the filesystem as a
